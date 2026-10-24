@@ -5,7 +5,7 @@ import { Video, VideoOff } from "lucide-react";
 import { useStore } from "@/lib/client/store";
 import { setCinematic } from "./MapView";
 
-function fmt(ms: number) {
+export function fmt(ms: number) {
   const s = Math.max(0, Math.floor(ms / 1000));
   return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 }
@@ -21,10 +21,10 @@ function Stat({ label, value, total, accent }: { label: string; value: number | 
   );
 }
 
-export default function StatusBar() {
-  const { region, running, runStartedAt, runDurationMs, agentState, findingOrder, findings, revealed, insights } = useStore();
+/** Live mission counters (elapsed ticks while running). Shared with the mobile sheet's peek row. */
+export function useMissionStats() {
+  const { running, runStartedAt, runDurationMs, agentState, findingOrder, findings, revealed, insights } = useStore();
   const [now, setNow] = useState(() => Date.now());
-  const [cinematic, setCine] = useState(true);
 
   useEffect(() => {
     if (!running) return;
@@ -34,27 +34,44 @@ export default function StatusBar() {
   }, [running]);
 
   const sources = useMemo(() => new Set(findingOrder.map((id) => findings[id]?.source_type).filter(Boolean)).size, [findingOrder, findings]);
+  const states = Object.values(agentState);
+  return {
+    running,
+    done: !running && runDurationMs != null,
+    elapsed: running && runStartedAt ? now - runStartedAt : runDurationMs ?? 0,
+    active: states.filter((s) => s.status === "deploying" || s.status === "scanning").length,
+    agents: states.length,
+    shown: findingOrder.filter((id) => revealed[id]).length,
+    total: findingOrder.length,
+    sources,
+    insights: insights.length,
+  };
+}
+
+let cinematicOn = true;
+/** Cinematic-camera toggle state shared by the status bar and the mobile sheet. */
+export function useCinematic() {
+  const [on, setOn] = useState(cinematicOn);
+  return [on, () => { cinematicOn = !cinematicOn; setOn(cinematicOn); setCinematic(cinematicOn); }] as const;
+}
+
+export default function StatusBar() {
+  const region = useStore((s) => s.region);
+  const { running, done, elapsed, active, agents, shown, total, sources, insights } = useMissionStats();
+  const [cinematic, toggleCine] = useCinematic();
 
   if (!region) return null;
 
-  const states = Object.values(agentState);
-  const active = states.filter((s) => s.status === "deploying" || s.status === "scanning").length;
-  const shown = findingOrder.filter((id) => revealed[id]).length;
-  const elapsed = running && runStartedAt ? now - runStartedAt : runDurationMs ?? 0;
-  const done = !running && runDurationMs != null;
-
-  const toggleCine = () => { const v = !cinematic; setCine(v); setCinematic(v); };
-
   const stats = [
     <Stat key="t" label="Elapsed" value={fmt(elapsed)} accent={running} />,
-    <Stat key="a" label="Agents" value={active} total={states.length} />,
-    <Stat key="f" label="Findings" value={shown} total={findingOrder.length} />,
+    <Stat key="a" label="Agents" value={active} total={agents} />,
+    <Stat key="f" label="Findings" value={shown} total={total} />,
     <Stat key="s" label="Sources" value={sources} />,
-    <Stat key="i" label="Insights" value={insights.length} accent={insights.length > 0} />,
+    <Stat key="i" label="Insights" value={insights} accent={insights > 0} />,
   ];
 
   return (
-    <div className="glass pointer-events-auto absolute bottom-6 left-1/2 z-20 flex -translate-x-1/2 items-center gap-4 rounded-full py-2 pl-4 pr-2">
+    <div className="glass pointer-events-auto absolute bottom-6 left-1/2 z-20 flex -translate-x-1/2 items-center gap-4 rounded-full py-2 pl-4 pr-2 max-lg:hidden">
       <div className="flex w-[78px] items-center gap-2">
         {running ? (
           <>

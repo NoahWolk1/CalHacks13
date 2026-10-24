@@ -1,18 +1,20 @@
 "use client";
 
-import { Hand, BoxSelect, Pentagon, MapPin, Boxes } from "lucide-react";
+import { useState } from "react";
+import { Hand, BoxSelect, Pentagon, MapPin, Boxes, Search } from "lucide-react";
 import { useStore, type Tool } from "@/lib/client/store";
+import { useIsDesktop } from "@/lib/client/useMedia";
 import { APP_NAME } from "@/lib/brand";
 import PlaceSearch from "./PlaceSearch";
 
-const TOOLS: { id: Tool; label: string; icon: typeof Hand; hint: string }[] = [
-  { id: "pan", label: "Pan", icon: Hand, hint: "Drag to orbit · scroll to zoom" },
-  { id: "box", label: "Box", icon: BoxSelect, hint: "Drag to draw a box" },
-  { id: "polygon", label: "Polygon", icon: Pentagon, hint: "Click points, click first point or press Enter to close" },
-  { id: "pin", label: "Pin", icon: MapPin, hint: "Click to drop a pin" },
+export const TOOLS: { id: Tool; label: string; icon: typeof Hand; hint: string; touchHint: string }[] = [
+  { id: "pan", label: "Pan", icon: Hand, hint: "Drag to orbit · scroll to zoom", touchHint: "Drag to pan · pinch to zoom" },
+  { id: "box", label: "Box", icon: BoxSelect, hint: "Drag to draw a box", touchHint: "Drag a finger to draw a box" },
+  { id: "polygon", label: "Polygon", icon: Pentagon, hint: "Click points, click first point or press Enter to close", touchHint: "Tap corners to outline" },
+  { id: "pin", label: "Pin", icon: MapPin, hint: "Click to drop a pin", touchHint: "Tap to drop a pin" },
 ];
 
-function RadarMark() {
+export function RadarMark() {
   return (
     <span className="relative grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-teal-300/10 ring-1 ring-teal-300/30">
       <svg viewBox="0 0 32 32" className="h-6 w-6 drop-shadow-[0_0_6px_rgba(94,234,212,0.7)]">
@@ -38,11 +40,16 @@ function RadarMark() {
 }
 
 export default function TopBar() {
+  const desktop = useIsDesktop();
+  return desktop ? <DesktopTopBar /> : <MobileTopBar />;
+}
+
+function DesktopTopBar() {
   const { tool, pinRadius, running, llm, agents, set } = useStore();
   const current = TOOLS.find((t) => t.id === tool);
 
   return (
-    <header className="pointer-events-none absolute left-4 right-4 top-4 z-30 flex h-[48px] items-stretch justify-between gap-3">
+    <header className="pointer-events-none absolute left-4 right-4 top-4 z-30 flex h-[48px] items-stretch justify-between gap-3 max-lg:hidden">
       {/* Brand */}
       <div className="glass pointer-events-auto flex w-[360px] shrink-0 items-center gap-3 rounded-2xl px-3">
         <RadarMark />
@@ -111,5 +118,51 @@ export default function TopBar() {
         </button>
       </div>
     </header>
+  );
+}
+
+/** Phones/tablets: logo mark, expandable search, Agent Hub; drawing tools live in a floating rail. */
+function MobileTopBar() {
+  const { tool, running, llm, agents, set } = useStore();
+  const [searching, setSearching] = useState(false);
+  const btn = "glass pointer-events-auto grid h-11 w-11 shrink-0 place-items-center rounded-2xl text-slate-300 transition active:scale-95";
+
+  return (
+    <>
+      <header className="pointer-events-none absolute inset-x-4 z-30 flex h-11 items-stretch gap-2" style={{ top: "max(12px, env(safe-area-inset-top))" }}>
+        {searching ? (
+          <PlaceSearch variant="mobile" onClose={() => setSearching(false)} />
+        ) : (
+          <>
+            <div className="glass pointer-events-auto relative flex items-center gap-2 rounded-2xl pl-1.5 pr-3">
+              <RadarMark />
+              <span className="text-glow text-[14px] font-bold tracking-tight text-white">{APP_NAME}</span>
+              <span title={llm ? "Claude online" : "Heuristic mode"} className={`h-1.5 w-1.5 rounded-full ${llm ? "bg-emerald-400 shadow-[0_0_6px] shadow-emerald-400" : "bg-amber-400"}`} />
+            </div>
+            <div className="flex-1" />
+            <button onClick={() => setSearching(true)} className={btn} aria-label="Search a place"><Search size={17} /></button>
+            <button onClick={() => set({ hubOpen: true })} className={`${btn} relative`} aria-label="Agent Hub">
+              <Boxes size={17} className="text-teal-300" />
+              <span className="absolute -right-1 -top-1 min-w-[18px] rounded-full bg-teal-300 px-1 text-center font-mono text-[10px] font-semibold leading-[18px] text-slate-950">{agents.length}</span>
+            </button>
+          </>
+        )}
+      </header>
+
+      {/* Floating tool rail */}
+      {!running && (
+        <div className="glass pointer-events-auto absolute right-4 z-20 flex flex-col gap-1 rounded-2xl p-1" style={{ top: "calc(max(12px, env(safe-area-inset-top)) + 100px)" }}>
+          {TOOLS.map(({ id, label, icon: Icon }) => {
+            const on = tool === id;
+            return (
+              <button key={id} onClick={() => set({ tool: id })} aria-label={label} aria-pressed={on}
+                className={`grid h-10 w-10 place-items-center rounded-xl transition active:scale-95 ${on ? "bg-teal-300/15 text-teal-200 ring-1 ring-teal-300/40 shadow-[0_0_16px_-4px] shadow-teal-300/60" : "text-slate-400"}`}>
+                <Icon size={17} />
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </>
   );
 }

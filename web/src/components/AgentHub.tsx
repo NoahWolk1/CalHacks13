@@ -100,7 +100,7 @@ export default function AgentHub() {
   return (
     <AnimatePresence>
       {hubOpen && (
-        <motion.div key="hub" className="pointer-events-auto fixed inset-0 z-50 grid place-items-center bg-[#03060c]/70 p-6 backdrop-blur-md"
+        <motion.div key="hub" className="pointer-events-auto fixed inset-0 z-50 grid place-items-center bg-[#03060c]/70 p-6 backdrop-blur-md max-lg:p-3 max-lg:pt-[var(--safe-top)]"
           initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onMouseDown={close}>
           <motion.div role="dialog" aria-modal="true" aria-label="Agent Hub"
             className="glass flex max-h-[86vh] w-full max-w-[1080px] flex-col overflow-hidden rounded-2xl"

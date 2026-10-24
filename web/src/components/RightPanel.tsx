@@ -14,17 +14,36 @@ const KIND: Record<Insight["kind"], { icon: typeof Info; label: string; color: s
   note: { icon: Info, label: "Signal", color: "#38bdf8" },
 };
 
-export default function RightPanel() {
-  const { rightTab, set, insights, findingOrder, answer, mode, plan, agentState } = useStore();
-  const tabs = [
+export type RightTab = "agents" | "insights" | "answer" | "findings";
+
+/** Tab list (with live counts) shared by the desktop panel and the mobile sheet. */
+export function useRightTabs() {
+  const { insights, findingOrder, answer, mode, plan, agentState } = useStore();
+  return [
     { id: "agents", label: "Agents", n: Object.keys(agentState).length || plan.length },
     { id: "insights", label: "Insights", n: insights.length },
     ...(mode === "ask" || answer ? [{ id: "answer", label: "Answer", n: 0 }] : []),
     { id: "findings", label: "Findings", n: findingOrder.length },
-  ] as { id: "agents" | "insights" | "answer" | "findings"; label: string; n: number }[];
+  ] as { id: RightTab; label: string; n: number }[];
+}
+
+export function RightTabBody({ tab }: { tab: RightTab }) {
+  return (
+    <>
+      {tab === "agents" && <AgentsTab />}
+      {tab === "insights" && <InsightsTab />}
+      {tab === "answer" && <AnswerTab />}
+      {tab === "findings" && <FindingsTab />}
+    </>
+  );
+}
+
+export default function RightPanel() {
+  const { rightTab, set } = useStore();
+  const tabs = useRightTabs();
 
   return (
-    <aside className="glass pointer-events-auto absolute bottom-4 right-4 top-[76px] z-20 flex w-[400px] flex-col overflow-hidden rounded-2xl">
+    <aside className="glass pointer-events-auto absolute bottom-4 right-4 top-[76px] z-20 flex w-[400px] flex-col overflow-hidden rounded-2xl max-lg:hidden">
       <div className="flex gap-1 border-b border-white/5 p-1.5">
         {tabs.map((t) => (
           <button key={t.id} onClick={() => set({ rightTab: t.id })}
@@ -35,10 +54,7 @@ export default function RightPanel() {
         ))}
       </div>
       <div className="scroll-thin min-h-0 flex-1 overflow-y-auto p-3">
-        {rightTab === "agents" && <AgentsTab />}
-        {rightTab === "insights" && <InsightsTab />}
-        {rightTab === "answer" && <AnswerTab />}
-        {rightTab === "findings" && <FindingsTab />}
+        <RightTabBody tab={rightTab} />
       </div>
     </aside>
   );

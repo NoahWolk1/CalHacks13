@@ -19,7 +19,7 @@ export const complaintsWorker: Worker = {
   builtin: true,
   async run({ task, emit, log, signal }) {
     if (!touchesSF(task.region)) { log("Outside San Francisco: no 311 feed for this area yet."); return; }
-    const since = new Date(Date.now() - 1000 * 60 * 60 * 24 * 90).toISOString().slice(0, 19);
+    const since = new Date(Date.now() - 1000 * 60 * 60 * 24 * 90).toISOString().slice(0, 10) + "T00:00:00"; // day-aligned: stable cache key
     const geo = `within_polygon(point_geom, '${regionWkt(task.region)}') AND requested_datetime > '${since}'`;
     log("Aggregating 90 days of 311 cases…");
     const counts = await getJson<{ service_name: string; n: string }[]>(

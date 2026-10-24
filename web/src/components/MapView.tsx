@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import maplibregl, { type Map as MLMap, type MapMouseEvent } from "maplibre-gl";
+import maplibregl, { type Map as MLMap, type MapMouseEvent, type MapTouchEvent } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { MapboxOverlay } from "@deck.gl/mapbox";
 import { ScatterplotLayer, PathLayer, SolidPolygonLayer, IconLayer, LineLayer, TextLayer, ArcLayer } from "@deck.gl/layers";
@@ -118,7 +118,7 @@ export default function MapView() {
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    const ll = (e: MapMouseEvent): LL => [e.lngLat.lng, e.lngLat.lat];
+    const ll = (e: { lngLat: MapMouseEvent["lngLat"] }): LL => [e.lngLat.lng, e.lngLat.lat];
     const st = useStore.getState;
     if (tool === "pan") { map.dragPan.enable(); map.doubleClickZoom.enable(); return; }
     map.dragPan.disable();
@@ -144,7 +144,8 @@ export default function MapView() {
       if (tool !== "polygon") return;
       const pts = (draft.current.poly ??= []);
       const px = map.project(e.lngLat);
-      if (pts.length >= 3 && px.dist(map.project(pts[0])) < 14) return finishPoly();
+      const snap = window.matchMedia("(pointer: coarse)").matches ? 28 : 14; // fingers are less precise
+      if (pts.length >= 3 && px.dist(map.project(pts[0])) < snap) return finishPoly();
       pts.push(ll(e));
     };
     const finishPoly = () => {
@@ -157,11 +158,28 @@ export default function MapView() {
     const dbl = (e: MapMouseEvent) => { if (tool === "polygon") { e.preventDefault(); finishPoly(); } };
     const key = (e: KeyboardEvent) => { if (e.key === "Escape") { draft.current = {}; st().set({ tool: "pan" }); } if (e.key === "Enter" && tool === "polygon") finishPoly(); };
 
+    // Touch: one-finger drag draws the box (taps already arrive as clicks for pin/polygon).
+    const tdown = (e: MapTouchEvent) => {
+      if (tool !== "box" || e.points.length !== 1) return;
+      e.preventDefault();
+      draft.current = { box: [ll(e), ll(e)] };
+    };
+    const tmove = (e: MapTouchEvent) => {
+      if (tool !== "box" || !draft.current.box) return;
+      if (e.points.length !== 1) { draft.current = {}; return; } // pinch → cancel draft
+      e.preventDefault();
+      draft.current.box[1] = ll(e);
+    };
+
     map.on("mousedown", down); map.on("mousemove", move); map.on("mouseup", up); map.on("click", click); map.on("dblclick", dbl);
+    map.on("touchstart", tdown); map.on("touchmove", tmove); map.on("touchend", up);
     window.addEventListener("keydown", key);
+    window.addEventListener("gs:finish-polygon", finishPoly);
     return () => {
       map.off("mousedown", down); map.off("mousemove", move); map.off("mouseup", up); map.off("click", click); map.off("dblclick", dbl);
+      map.off("touchstart", tdown); map.off("touchmove", tmove); map.off("touchend", up);
       window.removeEventListener("keydown", key);
+      window.removeEventListener("gs:finish-polygon", finishPoly);
     };
   }, [tool]);
 

@@ -6,6 +6,8 @@
   --line: rgba(148, 163, 184, 0.12);
   --accent: #5eead4;
   --accent-2: #38bdf8;
+  --safe-top: max(12px, env(safe-area-inset-top));
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 @theme inline {
@@ -53,3 +55,8 @@ html, body { background: var(--bg); color: #e2e8f0; height: 100%; overflow: hidd
 .maplibregl-ctrl-attrib { background: rgba(6, 10, 17, 0.6) !important; color: #475569 !important; font-size: 10px; }
 .maplibregl-ctrl-attrib a { color: #64748b !important; }
 .maplibregl-ctrl-attrib-button { filter: invert(1) opacity(0.4); }
+
+/* Below lg the bottom sheet's peek covers the map's bottom edge: lift the attribution above it. */
+@media (max-width: 1023.98px) {
+  .maplibregl-ctrl-bottom-right, .maplibregl-ctrl-bottom-left { bottom: calc(124px + var(--safe-bottom)); }
+}

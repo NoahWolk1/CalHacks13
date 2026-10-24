@@ -88,7 +88,7 @@ export default function FindingInspector() {
       {f && (
         <motion.div key={f.id} initial={{ opacity: 0, y: -12, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -10 }}
           transition={{ type: "spring", stiffness: 380, damping: 32 }}
-          className="glass pointer-events-auto absolute left-[392px] top-[120px] z-20 w-[340px] overflow-hidden rounded-2xl">
+          className="glass pointer-events-auto absolute left-[392px] top-[120px] z-20 w-[340px] overflow-hidden rounded-2xl max-lg:inset-x-4 max-lg:top-[calc(var(--safe-top)_+_92px)] max-lg:z-30 max-lg:w-auto">
           <div className="h-0.5 w-full" style={{ background: `linear-gradient(90deg, ${color}, transparent)` }} />
           <div className="p-3.5">
             <div className="flex items-start gap-2.5">

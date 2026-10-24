@@ -27,7 +27,7 @@ export const permitsWorker: Worker = {
       log("Outside San Francisco: no permit feed for this area yet.");
       return;
     }
-    const since = new Date(Date.now() - 1000 * 60 * 60 * 24 * 365 * 2).toISOString().slice(0, 19);
+    const since = new Date(Date.now() - 1000 * 60 * 60 * 24 * 365 * 2).toISOString().slice(0, 10) + "T00:00:00"; // day-aligned: stable cache key
     // Cost columns are text in this dataset, so the "major project" filter runs here, not in SoQL.
     const where = `within_polygon(location, '${regionWkt(task.region)}') AND filed_date > '${since}' AND permit_type_definition != 'otc alterations permit'`;
     const qs = new URLSearchParams({ $where: where, $order: "filed_date DESC", $limit: "2000" });

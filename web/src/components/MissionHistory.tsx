@@ -44,7 +44,7 @@ export default function MissionHistory() {
   const watching = !!runId && !isOwnRun(runId);
 
   return (
-    <div ref={ref} className="pointer-events-auto absolute right-[416px] top-[76px] z-20 flex items-start gap-2">
+    <div ref={ref} className="pointer-events-auto absolute right-[416px] top-[76px] z-20 flex items-start gap-2 max-lg:left-4 max-lg:right-auto max-lg:top-[calc(var(--safe-top)_+_52px)]">
       <div className="glass flex items-center gap-1 rounded-full p-1 text-xs">
         <button onClick={() => setOpen((o) => !o)}
           className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.18em] transition ${open ? "bg-white/[0.07] text-white" : "text-slate-400 hover:text-white"}`}>
@@ -65,7 +65,7 @@ export default function MissionHistory() {
       </div>
 
       {open && (
-        <div className="glass absolute right-0 top-full mt-2 w-[320px] overflow-hidden rounded-xl p-1.5">
+        <div className="glass absolute right-0 top-full mt-2 w-[320px] overflow-hidden rounded-xl p-1.5 max-lg:left-0 max-lg:right-auto max-lg:w-[calc(100vw-32px)]">
           <div className="px-2 pb-1.5 pt-1 font-mono text-[10px] uppercase tracking-[0.18em] text-slate-500">Recent missions · synced via Convex</div>
           {recent === undefined && <div className="px-2 py-2 text-xs text-slate-500">Loading…</div>}
           {recent?.length === 0 && <div className="px-2 py-2 text-xs text-slate-500">No missions yet. Deploy one.</div>}

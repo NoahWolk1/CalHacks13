@@ -12,7 +12,7 @@ import { DemoSpotChips } from "./PlaceSearch";
 const ICONS = { ShieldAlert, Store, Siren } as const;
 
 /** Reverse-geocode a freshly drawn region so the chip shows a real place name before the run. */
-function useRegionLabel() {
+export function useRegionLabel() {
   const region = useStore((s) => s.region);
   useEffect(() => {
     if (!region || region.label) return;
@@ -27,17 +27,25 @@ function useRegionLabel() {
   }, [region]);
 }
 
+export const useCanRun = () => useStore((s) => !!s.region && (s.mode === "insights" || s.question.trim().length > 2));
+
 export default function CommandPanel() {
-  const { profiles, profileId, mode, question, region, running, thoughts, plan, set } = useStore();
+  return (
+    <aside className="glass pointer-events-auto absolute bottom-4 left-4 top-[76px] z-20 flex w-[360px] flex-col overflow-hidden rounded-2xl max-lg:hidden">
+      <MissionControls className="p-4" />
+      <OrchestratorLog className="min-h-0 flex-1" />
+    </aside>
+  );
+}
+
+/** Orchestrator picker, mode + question, region chip and the deploy button. Shared by the desktop panel and the mobile sheet. */
+export function MissionControls({ className = "" }: { className?: string }) {
+  const { profiles, profileId, mode, question, region, running, set } = useStore();
   const profile = profiles.find((p) => p.id === profileId);
-  const logRef = useRef<HTMLDivElement>(null);
-  useEffect(() => { logRef.current?.scrollTo({ top: 1e6, behavior: "smooth" }); }, [thoughts.length, plan.length]);
-  useRegionLabel();
-  const canRun = !!region && (mode === "insights" || question.trim().length > 2);
+  const canRun = useCanRun();
 
   return (
-    <aside className="glass pointer-events-auto absolute bottom-4 left-4 top-[76px] z-20 flex w-[360px] flex-col overflow-hidden rounded-2xl">
-      <div className="space-y-5 p-4">
+      <div className={`space-y-5 ${className}`}>
         {/* Orchestrator */}
         <div>
           <SectionLabel>Orchestrator</SectionLabel>
@@ -72,7 +80,7 @@ export default function CommandPanel() {
               <textarea value={question} onChange={(e) => set({ question: e.target.value })} disabled={running} rows={2}
                 onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && canRun) { e.preventDefault(); startRun(); } }}
                 placeholder="Ask anything about the selected area…"
-                className="w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-teal-300/50 focus:outline-none" />
+                className="w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white max-lg:text-base placeholder:text-slate-500 focus:border-teal-300/50 focus:outline-none" />
               <div className="mt-1.5 flex flex-wrap gap-1">
                 {profile?.sampleQuestions.map((q) => (
                   <button key={q} onClick={() => set({ question: q })} className="rounded-full border border-white/10 px-2 py-0.5 text-[11px] text-slate-400 hover:border-teal-300/40 hover:text-teal-200">{q}</button>
@@ -108,9 +116,16 @@ export default function CommandPanel() {
           </button>
         </div>
       </div>
+  );
+}
 
-      {/* Orchestrator log */}
-      <div className="flex min-h-0 flex-1 flex-col border-t border-white/5 bg-black/20">
+/** Streaming orchestrator thoughts + dispatch plan. */
+export function OrchestratorLog({ className = "" }: { className?: string }) {
+  const { running, thoughts, plan } = useStore();
+  const logRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { logRef.current?.scrollTo({ top: 1e6, behavior: "smooth" }); }, [thoughts.length, plan.length]);
+  return (
+      <div className={`flex flex-col border-t border-white/5 bg-black/20 ${className}`}>
         <div className="flex items-center gap-2 px-4 pb-2 pt-3">
           <Cpu size={12} className="text-teal-300" />
           <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-slate-500">Orchestrator log</span>
@@ -140,6 +155,5 @@ export default function CommandPanel() {
           )}
         </div>
       </div>
-    </aside>
   );
 }

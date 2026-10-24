@@ -15,11 +15,13 @@ export const seismicWorker: Worker = {
   builtin: true,
   async run({ task, emit, log, signal }) {
     const [lng, lat] = task.region.center;
-    const start = new Date(Date.now() - 1000 * 60 * 60 * 24 * 365 * 25).toISOString().slice(0, 10);
+    // Year-aligned start keeps the URL (and so the on-disk cache key) stable from day to day.
+    const start = `${new Date().getFullYear() - 25}-01-01`;
     log("Querying USGS catalog (25 yrs, 40 km)…");
     const fc = await getJson<{ features: { id: string; properties: { mag: number; place: string; time: number; url: string }; geometry: { type: "Point"; coordinates: number[] } }[] }>(
-      `https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&latitude=${lat}&longitude=${lng}&maxradiuskm=40&minmagnitude=2.5&starttime=${start}&orderby=magnitude&limit=200`,
-      { signal },
+      `https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&latitude=${lat}&longitude=${lng}&maxradiuskm=40&minmagnitude=2.5&starttime=${start}&orderby=magnitude`,
+      // No `limit`: USGS currently 504s on orderby=magnitude&limit=… (and the CDN caches the 504).
+      { signal, timeoutMs: 20_000 },
     );
     const qs = fc.features;
     log(`${qs.length} events M2.5+`);

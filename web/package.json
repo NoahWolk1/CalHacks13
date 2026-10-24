@@ -6,7 +6,8 @@
     "dev": "next dev --turbopack",
     "build": "next build --turbopack",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "warm": "node scripts/warm.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.3.0",

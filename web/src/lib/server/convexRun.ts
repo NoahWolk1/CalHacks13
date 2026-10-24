@@ -18,12 +18,18 @@ const g = globalThis as unknown as { __geoswarmRuns?: Map<string, AbortControlle
 export const activeRuns = (g.__geoswarmRuns ??= new Map());
 
 const FLUSH_MS = 100;
+const CREATE_TIMEOUT_MS = 5000;
 
 /** Creates the run row, starts the orchestrator in the background, and returns the Convex run id. */
 export async function startConvexRun(body: RunRequest): Promise<string> {
-  const runId: Id<"runs"> = await convex().mutation(api.runs.create, {
-    mode: body.mode, profileId: body.profileId, question: body.question, region: body.region, llm: !!llm(),
-  });
+  // Bounded so a hung (not just down) Convex backend still falls back to SSE quickly.
+  let createTimer: ReturnType<typeof setTimeout> | undefined;
+  const runId: Id<"runs"> = await Promise.race([
+    convex().mutation(api.runs.create, {
+      mode: body.mode, profileId: body.profileId, question: body.question, region: body.region, llm: !!llm(),
+    }),
+    new Promise<never>((_, reject) => { createTimer = setTimeout(() => reject(new Error(`runs.create timed out after ${CREATE_TIMEOUT_MS}ms`)), CREATE_TIMEOUT_MS); }),
+  ]).finally(() => clearTimeout(createTimer));
   const ctl = new AbortController();
   activeRuns.set(runId, ctl);
 
