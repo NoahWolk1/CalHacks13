@@ -143,6 +143,7 @@ async function reverseGeocode([lng, lat]: [number, number]) {
 
 const KEYWORDS: Record<string, RegExp> = {
   "fema-flood": /flood|water|storm|rain|surge|sea|insur|hazard|risk|safe|build|develop/i,
+  "sf-stormwater": /flood|storm|rain|water|creek|drain|sewer|risk|build|develop|insur/i,
   "terrain-elevation": /flood|sea.?level|elevation|low|surge|climate|risk|build/i,
   "sf-permits": /build|construct|develop|permit|housing|units|project|new|zoning|invest/i,
   "sf-311": /noise|complain|clean|safe|crime|encamp|street|homeless|condition|foot|flood/i,

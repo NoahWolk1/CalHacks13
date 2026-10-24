@@ -3,6 +3,7 @@
 import { Hand, BoxSelect, Pentagon, MapPin, Boxes } from "lucide-react";
 import { useStore, type Tool } from "@/lib/client/store";
 import { APP_NAME } from "@/lib/brand";
+import PlaceSearch from "./PlaceSearch";
 
 const TOOLS: { id: Tool; label: string; icon: typeof Hand; hint: string }[] = [
   { id: "pan", label: "Pan", icon: Hand, hint: "Drag to orbit · scroll to zoom" },
@@ -51,7 +52,8 @@ export default function TopBar() {
         </div>
       </div>
 
-      {/* Drawing tools */}
+      {/* Drawing tools + place search */}
+      <div className="flex min-w-0 items-stretch gap-2">
       <div className="relative flex min-w-0 flex-col items-center">
         <div className={`glass pointer-events-auto flex h-full items-center gap-1 rounded-full px-1.5 transition ${running ? "opacity-60" : ""}`}>
           {TOOLS.map(({ id, label, icon: Icon }) => {
@@ -80,6 +82,8 @@ export default function TopBar() {
             {current.hint}
           </div>
         )}
+      </div>
+      <PlaceSearch />
       </div>
 
       {/* Status + hub */}

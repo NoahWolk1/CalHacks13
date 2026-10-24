@@ -51,8 +51,8 @@ export class Fleet {
     this.kx = 111_320 * Math.cos((r.center[1] * Math.PI) / 180);
     const [a, b, c, d] = r.bbox;
     this.diag = Math.hypot((c - a) * this.kx, (d - b) * this.ky);
-    // Command post: just off the region's south-west corner.
-    this.base = this.fromM([this.toM([a, b])[0] - this.diag * 0.12, this.toM([a, b])[1] - this.diag * 0.12]);
+    // Command post: just below the middle of the region's south edge (the side panels hide the corners).
+    this.base = this.fromM([this.toM([(a + c) / 2, b])[0], this.toM([(a + c) / 2, b])[1] - this.diag * 0.1]);
   }
 
   setRoads(lines: LL[][]) {

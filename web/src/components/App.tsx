@@ -3,12 +3,15 @@
 import dynamic from "next/dynamic";
 import { useEffect } from "react";
 import { useStore } from "@/lib/client/store";
-import { loadCatalog } from "@/lib/client/runClient";
+import { convexEnabled, loadCatalog } from "@/lib/client/runClient";
 import CommandPanel from "./CommandPanel";
 import RightPanel from "./RightPanel";
 import TopBar from "./TopBar";
 import StatusBar from "./StatusBar";
 import AgentHub from "./AgentHub";
+import ConvexClientProvider from "./ConvexClientProvider";
+import ConvexRunSync from "./ConvexRunSync";
+import MissionHistory from "./MissionHistory";
 
 const MapView = dynamic(() => import("./MapView"), { ssr: false });
 
@@ -17,6 +20,7 @@ export default function App() {
   const error = useStore((s) => s.error);
   useEffect(() => { loadCatalog(); }, []);
   return (
+    <ConvexClientProvider>
     <main className="relative h-screen w-screen overflow-hidden bg-[#060a11]">
       <MapView />
       <TopBar />
@@ -32,6 +36,8 @@ export default function App() {
       )}
       {error && <div className="glass absolute bottom-20 left-1/2 z-30 -translate-x-1/2 rounded-xl px-4 py-2 text-xs text-rose-300">{error}</div>}
       <AgentHub />
+      {convexEnabled && <><ConvexRunSync /><MissionHistory /></>}
     </main>
+    </ConvexClientProvider>
   );
 }

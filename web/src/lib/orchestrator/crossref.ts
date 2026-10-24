@@ -13,7 +13,8 @@ export interface Link {
   findingIds: string[];
 }
 
-const SFHA = new Set(["A", "AE", "AO", "AH", "V", "VE"]);
+const SFHA = new Set(["A", "AE", "AO", "AH", "V", "VE", "STORM100"]);
+const zoneName = (z: unknown) => (z === "STORM100" ? "SFPUC 100-year storm flood" : `FEMA ${z}`);
 const isPoly = (f: Finding) => f.geometry.type === "Polygon" || f.geometry.type === "MultiPolygon";
 const pointIn = (p: [number, number], f: Finding) =>
   turf.booleanPointInPolygon(p, { type: "Feature", geometry: f.geometry as never, properties: {} });
@@ -36,8 +37,8 @@ export function crossReference(findings: Finding[]): Link[] {
     const cost = permitsInZone.reduce((s, { p }) => s + Number(p.props?.cost ?? 0), 0);
     links.push({
       kind: "risk",
-      title: `${permitsInZone.length} permitted project${permitsInZone.length > 1 ? "s" : ""} inside a FEMA flood zone`,
-      body: `${permitsInZone.map(({ p }) => p.claim.split(":")[0]).slice(0, 4).join("; ")}${permitsInZone.length > 4 ? "…" : ""} sit inside ${[...new Set(permitsInZone.map(({ z }) => z.props?.zone))].join("/")} zones${cost ? ` (≈$${(cost / 1e6).toFixed(1)}M of permitted work)` : ""}.`,
+      title: `${permitsInZone.length} permitted project${permitsInZone.length > 1 ? "s" : ""} inside a mapped flood zone`,
+      body: `${permitsInZone.map(({ p }) => p.claim.split(":")[0]).slice(0, 4).join("; ")}${permitsInZone.length > 4 ? "…" : ""} sit inside ${[...new Set(permitsInZone.map(({ z }) => zoneName(z.props?.zone)))].join(" / ")} zones${cost ? ` (≈$${(cost / 1e6).toFixed(1)}M of permitted work)` : ""}.`,
       severity: Math.min(1, 0.7 + permitsInZone.length * 0.05),
       findingIds: [...new Set(permitsInZone.flatMap(({ p, z }) => [p.id, z.id]))],
     });
@@ -51,10 +52,23 @@ export function crossReference(findings: Finding[]): Link[] {
   if (nearLow.length) {
     links.push({
       kind: "risk",
-      title: `${nearLow.length} project${nearLow.length > 1 ? "s" : ""} on low-lying ground outside FEMA zones`,
-      body: `These permits aren't in a mapped floodplain, but sit within 150 m of ground ≤5 m above sea level, exposed to sea-level rise that current FEMA maps don't model.`,
+      title: `${nearLow.length} project${nearLow.length > 1 ? "s" : ""} on low-lying ground outside mapped flood zones`,
+      body: `These permits aren't in a mapped flood zone, but sit within 150 m of ground ≤5 m above sea level, exposed to sea-level rise that current FEMA maps don't model.`,
       severity: 0.6,
       findingIds: [...new Set(nearLow.flatMap(({ p, l }) => [p.id, l!.id]))],
+    });
+  }
+
+  // 2b. Investment × filled land: permits on former lagoons/marsh (settlement + liquefaction).
+  const fill = findings.filter((f) => f.category === "history" && isPoly(f));
+  const onFill = permits.filter((p) => fill.some((w) => pointIn(anchorOf(p.geometry), w)));
+  if (onFill.length) {
+    links.push({
+      kind: "risk",
+      title: `${onFill.length} project${onFill.length > 1 ? "s" : ""} built on filled-in former water`,
+      body: `These permits sit on historical lagoon/marsh fill, ground prone to settlement and liquefaction in an earthquake, and to ponding in storms.`,
+      severity: 0.7,
+      findingIds: [...onFill.map((p) => p.id), ...fill.slice(0, 2).map((w) => w.id)],
     });
   }
 

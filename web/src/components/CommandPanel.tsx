@@ -5,15 +5,34 @@ import { ShieldAlert, Store, Siren, Sparkles, MessageSquareText, Rocket, Square,
 import { useStore, agentById } from "@/lib/client/store";
 import { startRun, stopRun } from "@/lib/client/runClient";
 import { regionAreaKm2 } from "@/lib/geo";
+import { reverseLabel } from "@/lib/client/geocode";
 import { SectionLabel, VehicleGlyph } from "./ui";
+import { DemoSpotChips } from "./PlaceSearch";
 
 const ICONS = { ShieldAlert, Store, Siren } as const;
+
+/** Reverse-geocode a freshly drawn region so the chip shows a real place name before the run. */
+function useRegionLabel() {
+  const region = useStore((s) => s.region);
+  useEffect(() => {
+    if (!region || region.label) return;
+    const ctl = new AbortController();
+    const t = setTimeout(() => {
+      reverseLabel(region.center, ctl.signal).then((label) => {
+        const cur = useStore.getState().region;
+        if (label && cur && cur.bbox === region.bbox && !cur.label) useStore.getState().set({ region: { ...cur, label } });
+      }).catch(() => {});
+    }, 250);
+    return () => { clearTimeout(t); ctl.abort(); };
+  }, [region]);
+}
 
 export default function CommandPanel() {
   const { profiles, profileId, mode, question, region, running, thoughts, plan, set } = useStore();
   const profile = profiles.find((p) => p.id === profileId);
   const logRef = useRef<HTMLDivElement>(null);
   useEffect(() => { logRef.current?.scrollTo({ top: 1e6, behavior: "smooth" }); }, [thoughts.length, plan.length]);
+  useRegionLabel();
   const canRun = !!region && (mode === "insights" || question.trim().length > 2);
 
   return (
@@ -77,7 +96,10 @@ export default function CommandPanel() {
               {!running && <button onClick={() => set({ region: null })} className="text-slate-500 hover:text-white"><X size={14} /></button>}
             </div>
           ) : (
-            <div className="rounded-xl border border-dashed border-white/10 px-3 py-2.5 text-xs text-slate-500">Draw a box, polygon or pin on the map to choose an area.</div>
+            <div className="rounded-xl border border-dashed border-white/10 px-3 py-2.5 text-xs text-slate-500">
+              Draw a box, polygon or pin on the map, or jump to a demo spot:
+              <DemoSpotChips />
+            </div>
           )}
           <button onClick={() => (running ? stopRun() : startRun())} disabled={!running && !canRun}
             className={`group relative flex w-full items-center justify-center gap-2 overflow-hidden rounded-xl py-2.5 text-sm font-semibold transition ${running ? "bg-rose-500/15 text-rose-200 ring-1 ring-rose-400/30 hover:bg-rose-500/25" : "bg-gradient-to-r from-teal-300 to-sky-400 text-slate-950 shadow-[0_0_30px_-6px] shadow-teal-300/70 hover:brightness-110 disabled:from-slate-700 disabled:to-slate-700 disabled:text-slate-400 disabled:shadow-none"}`}>

@@ -17,6 +17,7 @@
     "@deck.gl/mapbox": "~9.4.0",
     "@mapbox/vector-tile": "^3.0.0",
     "@turf/turf": "^7.4.0",
+    "convex": "^1.48.0",
     "fast-xml-parser": "^5.11.2",
     "framer-motion": "^14.6.0",
     "lucide-react": "^1.61.0",

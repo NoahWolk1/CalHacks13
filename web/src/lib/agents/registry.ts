@@ -8,9 +8,10 @@ import { seismicWorker } from "./workers/seismic";
 import { alertsWorker } from "./workers/alerts";
 import { newsWorker } from "./workers/news";
 import { demographicsWorker } from "./workers/demographics";
+import { stormwaterWorker } from "./workers/stormwater";
 
 export const BUILTIN_WORKERS: Worker[] = [
-  floodWorker, terrainWorker, permitsWorker, complaintsWorker, placesWorker,
+  floodWorker, stormwaterWorker, terrainWorker, permitsWorker, complaintsWorker, placesWorker,
   seismicWorker, alertsWorker, newsWorker, demographicsWorker,
 ];
 
