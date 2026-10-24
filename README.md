@@ -1,4 +1,4 @@
-c# Geo Research Agents (working title)
+# Geo Research Agents (working title)
 
 > **Status:** Planning / early build. Written Saturday, Oct 24, 2026 as a handoff so a teammate can pick this up with full context.
 > **Deadline:** Devpost submission **Sunday 9:00 AM**. Nothing after that counts.
@@ -7,7 +7,17 @@ c# Geo Research Agents (working title)
 
 ## 1. The idea in one paragraph
 
-A tool where you **select an area on a map** (draw a polygon or drop a pin), **ask a question about that area**, and a team of AI agents goes out and researches it. Results stream back onto the map as pins/regions with sources attached, and an orchestrator agent synthesizes them into an answer. There's also an **agent workshop/marketplace** where users can create, edit, and reuse agents.
+A tool where you **drag/select a region on a map** (draw a box/polygon or drop a pin), **ask a question about that area**, and the **relevant agents spin up and work together** to answer it. Results stream back onto the map as pins/regions with sources attached, and an orchestrator agent synthesizes them into an answer. Even without a question, the agents can **generate insights** about the area by cross-referencing each other's findings (e.g. one agent finds the area is likely to flood, another finds new buildings planned there, and together they flag that building there may be a bad idea). There's also an **agent hub/library** where users can browse our built-in agents and **prompt the creation of new ones** for niche tasks our defaults don't cover (e.g. "scrape the site at `<url>`", "transcribe these videos").
+
+### User flow
+
+1. **Select a region.** Drag a box, draw a polygon, or drop a pin on the map.
+2. **Pick a mode:**
+   - **Ask:** type a question ("Is this a good spot for a coffee shop?"). The orchestrator picks only the agents relevant to that question and dispatches them.
+   - **Insights:** no question needed. A broad set of agents surveys the area, and the orchestrator looks for findings that *combine* into something notable (risks, opportunities, contradictions).
+3. **Watch agents work.** Each active agent shows up in a side panel with its status; its findings drop onto the map as they arrive.
+4. **Get the answer / insights.** The orchestrator returns a written answer or a ranked list of insights, each linked to the pins and sources that support it.
+5. **Missing an agent?** Open the **Agent Hub**, describe the agent you need in plain English, and it's generated, saved to your library, and available for the next run. Agents can also **create new agents themselves** mid-run when no existing one fits (see §2).
 
 ---
 
@@ -18,28 +28,45 @@ Two tiers of agents:
 ### Orchestrator agents: one per user type
 - Each orchestrator is built for a specific kind of user (e.g. small business owner scouting a storefront, insurance adjuster assessing a disaster zone).
 - The orchestrator holds the **domain knowledge**: what this user cares about, which data matters, how to weigh it.
-- It receives the user's area + question, dispatches worker agents, and combines their output into a final answer.
+- It receives the user's area + question (or an Insights request), decides which worker agents are relevant, spins them up, and combines their output into a final answer or a set of insights.
 
 ### Worker agents: simple, reusable data gatherers
-- Narrow, less complex agents that each pull one kind of data: e.g. permits, news, listings, demographics/census, reviews.
+- Narrow, less complex agents that each pull one kind of data: e.g. permits, news, listings, demographics/census, reviews, flood/hazard maps.
 - Workers are **generic and shared across orchestrators**. The storefront orchestrator and the disaster orchestrator might both use the same permits worker.
 
-### How the marketplace fits
-- **Workers are the building blocks** people publish, edit, and remix.
-- **Orchestrators are the "products"** that combine workers for a specific user.
+### How agents work together
+Workers don't just report back in isolation. All findings land in a **shared findings store** for the current region, so:
+- The orchestrator can **cross-reference** findings from different workers (flood risk × planned construction → "this development is in a likely flood zone").
+- A finding from one worker can **trigger another worker** (permits worker finds a new 6-story build → orchestrator sends the hazard worker to check that exact parcel).
+
+### Agents can create agents
+If no agent in the library can do what's needed, an agent can **create a new one on the fly**, using the same prompt-to-create path users have in the Agent Hub. Examples:
+- The orchestrator is asked about noise complaints, finds no worker for it, and generates a "scrape the city 311 portal" worker.
+- The news worker finds a city council meeting about the area, and spawns a "transcribe this meeting video" worker to pull out the relevant part.
+
+Generated agents run immediately as part of the current task. They show up in the agent panel marked **"created by `<parent agent>`"**, and after the run the user can **keep** (save to library) or **discard** them. Guardrails are in §3c.
+
+### How the Agent Hub fits
+- **Built-in library:** the workers we ship (permits, news, hazards, etc.), browsable with a description of what each one does and what data it uses.
+- **Prompt-to-create:** users describe a new worker in natural language ("scrape the listings at `<url>`", "transcribe the city council videos on this channel and pull out anything about this neighborhood"). An LLM turns that description into an agent config (see §3c) that runs on the same runtime.
+- **Workers are the building blocks** people create, edit, and reuse. **Orchestrators are the "products"** that combine workers for a specific user. Once a custom worker is in your library, the orchestrator can pick it like any built-in one.
 
 ---
 
 ## 3. Design principles we agreed on
 
 ### 3a. The orchestrator must do more than summarize
-If it just concatenates worker outputs into a paragraph, judges will see a prompt chain. It should do three things a summarizer can't:
+If it just concatenates worker outputs into a paragraph, judges will see a prompt chain. It should do five things a summarizer can't:
 
 | Responsibility | What it means |
 |---|---|
 | **Plan** | Decide *which* workers to call based on the question and area, rather than calling all of them every time. |
-| **Reconcile** | When two workers disagree about the same place, flag the conflict and explain which source it trusts and why. **This is the demo moment** (see §5). |
-| **Re-dispatch** | Spot gaps ("no foot-traffic data for the east half of the polygon") and send a worker back out with a narrower task. |
+| **Cross-reference** | Combine findings from *different* workers into an insight none of them could produce alone (flood risk + planned construction → "risky development"). **This powers Insights mode** (see §5). |
+| **Reconcile** | When two workers disagree about the same place, flag the conflict and explain which source it trusts and why. |
+| **Re-dispatch** | Spot gaps ("no foot-traffic data for the east half of the polygon") or follow-ups ("check flood risk for this specific parcel") and send a worker back out with a narrower task. |
+| **Spawn** | When no existing worker can fill a gap, create a new one (e.g. a scraper for a specific site) instead of giving up. |
+
+Each insight should cite the findings it was built from, so a user can click through to the pins and sources behind it.
 
 ### 3b. Every worker returns findings in one shared schema
 This lets the orchestrator reason over all findings the same way, and lets the map render any worker's output without custom code per worker.
@@ -60,14 +87,32 @@ This lets the orchestrator reason over all findings the same way, and lets the m
 - `observed_at` + `source_type` are what let the orchestrator resolve conflicts sensibly (e.g. a permit from last month beats a listing from last year).
 - `worker_id` gives provenance so we can show *which agent found what*.
 
-### 3c. Keep the marketplace thin
+### 3c. Keep the Agent Hub thin
 We have very little time. An agent is just a **saved config**:
-- name
+- name + one-line description (the orchestrator reads this to decide when the agent is relevant)
 - prompt
 - allowed tools / data sources
-- output schema (the finding schema above for workers)
+- inputs (e.g. a URL, a channel, a search term) and output schema (the finding schema above for workers)
 
 "Editing an agent" = a form. "Running an agent" = the same orchestrator/worker runtime with different settings. That's enough to show the concept without building a real marketplace.
+
+**Prompt-to-create** is just an LLM call that fills in that form from the user's description. The user reviews/edits the generated config before saving. To keep generated agents safe and working, they can only use a **fixed set of tool primitives** we provide, for example:
+
+| Primitive | Example custom agent |
+|---|---|
+| Fetch/scrape a URL | "Scrape the listings at `<url>` and pin each address" |
+| Transcribe video/audio | "Transcribe these city council meeting videos and pull out mentions of this area" |
+| Web/news search | "Find local news about road closures here" |
+| Call a public API (GET) | "Pull air-quality readings from `<api>`" |
+
+Every generated agent must still emit findings in the shared schema, so the map and orchestrator work with it without custom code.
+
+**When agents create agents**, the same rules apply, plus a few limits so it can't run away:
+- **Same tool primitives only.** A spawned agent can't get more access than a user-created one.
+- **Depth limit** (e.g. 2): spawned agents can spawn at most one more level.
+- **Per-run cap** on how many agents can be created (e.g. 3–5), plus a time/token budget for the run.
+- **Check the library first.** Reuse an existing agent if one fits; only create when nothing does.
+- **Visible and temporary by default.** Spawned agents appear in the UI with their parent, and only get saved if the user keeps them.
 
 ### 3d. Depth over breadth in the demo
 "Any place, any topic, any agent" is a framework, not a product. Judges get ~2 minutes at our table. **Build one orchestrator end to end and make it really good.** If time allows, show a second orchestrator reusing the same workers with a different plan. A ~10-second clip of that proves the reuse claim without doubling the work.
@@ -90,12 +135,13 @@ Pick **one** to build first. It determines which workers we need and which data 
 
 Design the build backward from this. Example:
 
-1. User draws a polygon and asks a question.
-2. Several workers fan out; pins appear on the map in real time, each with a source.
-3. **One agent flags that two sources disagree**, e.g. a listing says a lot is vacant, but permit records show construction approved last month.
-4. The orchestrator explains which source it trusts and why, and (ideally) re-dispatches a worker to settle it.
+1. User drags a box over a neighborhood and hits **Insights** (or asks a question).
+2. The relevant workers spin up; pins appear on the map in real time, each with a source.
+3. **The hazard worker finds the area is likely to flood. The permits worker finds new buildings approved there.**
+4. The orchestrator connects the two: "3 approved developments sit inside a projected flood zone; building here may not be a good idea," and links the insight to both sets of pins. Ideally it re-dispatches the hazard worker to check each parcel individually.
+5. **Bonus beat:** user opens the Agent Hub, types "scrape the listings at `<url>`", and the new agent shows up in the next run. Or, even better, the orchestrator hits a gap, **spawns that scraper itself**, and it appears in the agent panel mid-run.
 
-The conflict-catch is the moment that shows the system is doing real reasoning, not just summarizing.
+The cross-agent insight is the moment that shows the system is doing real reasoning, not just summarizing. A conflict-catch (a listing says a lot is vacant, but permits show construction approved last month) is a good second example of the same idea.
 
 ---
 
@@ -103,14 +149,15 @@ The conflict-catch is the moment that shows the system is doing real reasoning, 
 
 | # | Step | Notes |
 |---|---|---|
-| 1 | Map with polygon/pin selection + finding schema rendering as pins | Foundation for everything else |
-| 2 | 2–3 workers returning **real** data in the finding schema | Pick sources that are reachable today |
-| 3 | Orchestrator loop: plan → dispatch → synthesize, findings **streaming** onto the map | **Put a draft on Devpost once this works** |
-| 4 | Conflict detection + re-dispatch | This is the demo moment |
-| 5 | Thin "workshop" UI: create/edit a worker config | Bonus |
-| 6 | Second orchestrator reusing the same workers | Bonus |
+| 1 | Map with drag/polygon/pin selection + finding schema rendering as pins | Foundation for everything else |
+| 2 | 2–3 workers returning **real** data in the finding schema | Pick sources that are reachable today; a hazard/flood worker + a permits worker sets up the demo moment |
+| 3 | Orchestrator loop (Ask mode): plan → dispatch relevant workers → synthesize, findings **streaming** onto the map | **Put a draft on Devpost once this works** |
+| 4 | Insights mode: cross-reference findings across workers + re-dispatch | This is the demo moment |
+| 5 | Agent Hub: library view + prompt-to-create a worker (scrape URL, transcribe video), then let agents call that same create path mid-run | Strong bonus; shows extensibility. Agent-spawning is cheap once user-creation works |
+| 6 | Conflict detection between sources | Bonus |
+| 7 | Second orchestrator reusing the same workers | Bonus |
 
-**Steps 1–4 are the demo. Steps 5–6 are bonus.**
+**Steps 1–4 are the demo. Steps 5–7 are bonus, in that order.**
 
 ---
 
@@ -139,7 +186,11 @@ General Cal Hacks judging criteria: impact, quality, technical complexity, creat
 ## 8. Open decisions
 
 - [ ] **Which orchestrator / user type first** (blocks most other decisions)
-- [ ] Which 2–3 workers, and their real data sources
+- [ ] Which 2–3 workers, and their real data sources (need a hazard/flood source + a permits/development source for the demo)
+- [ ] How Insights mode picks workers when there's no question (all built-ins? a default set per orchestrator?)
+- [ ] Which tool primitives generated agents get (scrape, transcribe, search, API GET?) and which transcription service
+- [ ] How the shared findings store works (same as the backend choice below?)
+- [ ] Limits for agents creating agents (depth, per-run cap) and whether spawning needs user approval or just shows up in the panel
 - [ ] Which sponsor tracks we're targeting (drives backend + tooling choices)
 - [ ] Backend: Spacetime vs Convex vs something else
 - [ ] Map library (Leaflet or Mapbox are common choices; Turf.js is handy for geometry ops like "is this point inside the polygon")
