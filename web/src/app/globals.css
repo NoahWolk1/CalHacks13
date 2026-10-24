@@ -1,0 +1,55 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #060a11;
+  --panel: rgba(9, 14, 23, 0.78);
+  --line: rgba(148, 163, 184, 0.12);
+  --accent: #5eead4;
+  --accent-2: #38bdf8;
+}
+
+@theme inline {
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --color-accent: #5eead4;
+}
+
+html, body { background: var(--bg); color: #e2e8f0; height: 100%; overflow: hidden; }
+
+.glass {
+  background: var(--panel);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  border: 1px solid var(--line);
+  box-shadow: 0 10px 40px -10px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.vignette {
+  background:
+    radial-gradient(ellipse at center, transparent 55%, rgba(3, 6, 12, 0.75) 100%),
+    linear-gradient(to bottom, rgba(3, 6, 12, 0.55), transparent 14%, transparent 86%, rgba(3, 6, 12, 0.6));
+}
+
+.grid-bg {
+  background-image: linear-gradient(rgba(94, 234, 212, 0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(94, 234, 212, 0.05) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.scroll-thin { scrollbar-width: thin; scrollbar-color: rgba(148, 163, 184, 0.25) transparent; }
+.scroll-thin::-webkit-scrollbar { width: 6px; }
+.scroll-thin::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.25); border-radius: 3px; }
+
+@keyframes shimmer { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+.shimmer { animation: shimmer 1.4s ease-in-out infinite; }
+
+@keyframes ping-soft { 0% { transform: scale(1); opacity: 0.8; } 100% { transform: scale(2.4); opacity: 0; } }
+.ping-soft { animation: ping-soft 1.4s cubic-bezier(0, 0, 0.2, 1) infinite; }
+
+@keyframes caret { 50% { opacity: 0; } }
+.caret::after { content: "▍"; margin-left: 1px; color: var(--accent); animation: caret 1s steps(1) infinite; }
+
+.text-glow { text-shadow: 0 0 18px rgba(94, 234, 212, 0.45); }
+
+.maplibregl-ctrl-attrib { background: rgba(6, 10, 17, 0.6) !important; color: #475569 !important; font-size: 10px; }
+.maplibregl-ctrl-attrib a { color: #64748b !important; }
+.maplibregl-ctrl-attrib-button { filter: invert(1) opacity(0.4); }
