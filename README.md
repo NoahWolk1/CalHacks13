@@ -3,6 +3,8 @@
 > **Status:** Planning / early build. Written Saturday, Oct 24, 2026 as a handoff so a teammate can pick this up with full context.
 > **Deadline:** Devpost submission **Sunday 9:00 AM**. Nothing after that counts.
 
+**▶ Running the app:** the code lives in [`web/`](web/). See [`web/README.md`](web/README.md) for setup, architecture, the worker list, and the agent-creation contract.
+
 ---
 
 ## 1. The idea in one paragraph
@@ -185,16 +187,23 @@ General Cal Hacks judging criteria: impact, quality, technical complexity, creat
 
 ## 8. Open decisions
 
-- [ ] **Which orchestrator / user type first** (blocks most other decisions)
-- [ ] Which 2–3 workers, and their real data sources (need a hazard/flood source + a permits/development source for the demo)
-- [ ] How Insights mode picks workers when there's no question (all built-ins? a default set per orchestrator?)
+- [x] **Which orchestrator / user type first** (blocks most other decisions)
+  → decided: **Site Risk Analyst** built first. Storefront Scout and Disaster Response also exist and reuse the same workers (`web/src/lib/orchestrator/profiles.ts`).
+- [x] Which 2–3 workers, and their real data sources (need a hazard/flood source + a permits/development source for the demo)
+  → decided: **FEMA NFHL flood zones + SF DBI permits** for the demo moment, plus 7 more (elevation, SF 311, OSM places, USGS quakes, NWS alerts/air quality, news, census). Table in `web/README.md`.
+- [x] How Insights mode picks workers when there's no question (all built-ins? a default set per orchestrator?)
+  → decided: a default set per orchestrator (`defaultAgents` on each profile).
 - [ ] Which tool primitives generated agents get (scrape, transcribe, search, API GET?) and which transcription service
-- [ ] How the shared findings store works (same as the backend choice below?)
+- [x] How the shared findings store works (same as the backend choice below?)
+  → decided for now: in-memory per run, streamed to the map over SSE. Swapping in Convex/Spacetime is still open (see backend below).
 - [ ] Limits for agents creating agents (depth, per-run cap) and whether spawning needs user approval or just shows up in the panel
+  → still open, owned by the agent-creation teammate. Placeholder defaults are `maxDepth: 2, maxPerRun: 4` in `web/src/lib/agents/factory.ts`.
 - [ ] Which sponsor tracks we're targeting (drives backend + tooling choices)
 - [ ] Backend: Spacetime vs Convex vs something else
-- [ ] Map library (Leaflet or Mapbox are common choices; Turf.js is handy for geometry ops like "is this point inside the polygon")
-- [ ] LLM provider for orchestrator and workers
+- [x] Map library (Leaflet or Mapbox are common choices; Turf.js is handy for geometry ops like "is this point inside the polygon")
+  → decided: **MapLibre GL + deck.gl** on OpenFreeMap tiles, with Turf.js for geometry and the cross-reference spatial joins.
+- [x] LLM provider for orchestrator and workers
+  → decided: **Claude** via the Anthropic SDK for planning, insights and answers. Falls back to heuristics when no API key is set. Built-in workers don't call an LLM.
 - [ ] Project name
 
 ---
