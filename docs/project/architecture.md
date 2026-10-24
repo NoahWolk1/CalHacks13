@@ -1,7 +1,7 @@
 # Architecture (decided)
 
 > **Source:** team README / planning conversations, Sat 2026-10-24.  
-> **Summary:** Two-tier agents (orchestrator per user type, shared workers), shared findings store and schema, agents creating agents with guardrails, and a thin Agent Hub. Tech choices (backend, map lib, LLM) are still open in [decisions.md](decisions.md).
+> **Summary:** Two-tier agents (orchestrator per user type, shared workers), shared findings store and schema, agents creating agents with guardrails, and a thin Agent Hub. Map stack (MapLibre + deck.gl + Turf) and LLM (Claude) are decided; the persistent backend is still open. See [decisions.md](decisions.md).
 
 ## Two tiers of agents
 
