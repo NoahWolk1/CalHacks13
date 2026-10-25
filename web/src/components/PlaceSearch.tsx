@@ -12,7 +12,7 @@ export function pickSpot(s: DemoSpot) {
   const st = useStore.getState();
   if (st.running) return;
   st.resetRun();
-  st.set({ region: regionForSpot(s), tool: "pan" });
+  st.set({ region: regionForSpot(s) }); // keep the active tool: the area stays editable by its handles
 }
 
 /** One-click demo regions (used in the search dropdown and the empty region slot). */

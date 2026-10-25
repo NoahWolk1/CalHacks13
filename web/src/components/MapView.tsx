@@ -16,8 +16,9 @@ import { Fleet, type Vehicle } from "@/lib/client/sim";
 import { STYLE_URL, applyTheme, extractRoads } from "@/lib/client/mapStyle";
 import { VEHICLE_ICON, ALTITUDE, hexToRgb } from "@/lib/client/icons";
 import { MAP, agentColor } from "@/lib/client/theme";
-import { regionFromBox, regionFromPin, regionFromPolygon, anchorOf } from "@/lib/geo";
-import type { Finding } from "@/lib/types";
+import { regionFromBox, regionFromPin, regionFromPolygon, regionAreaKm2, anchorOf } from "@/lib/geo";
+import { regionHandles, grabHandle, dragHandle, isPrimary, type Handle } from "@/lib/client/regionEdit";
+import type { Finding, Region } from "@/lib/types";
 import { registerMap, fitBox, panelPadding, panelOffset } from "@/lib/client/camera";
 import { useLayout, geometry } from "@/lib/client/layout";
 import FindingInspector from "./FindingInspector";
@@ -85,7 +86,7 @@ export default function MapView() {
           const f = pickedFinding(info);
           if (f && "claim" in f) useStore.getState().set({ selectedFinding: f.id });
         },
-        getCursor: ({ isHovering }: { isHovering: boolean }) => (isHovering ? "pointer" : useStore.getState().tool === "pan" ? "grab" : "crosshair"),
+        getCursor: ({ isHovering }: { isHovering: boolean }) => (edit.dragging ? "grabbing" : edit.hover ? "move" : isHovering ? "pointer" : boxDraws() ? "crosshair" : "grab"),
       });
       raf = requestAnimationFrame(frame);
     };
@@ -124,6 +125,7 @@ export default function MapView() {
     if (!map) return;
     if (s.region && s.region !== prev.region && s.region.bbox !== prev.region?.bbox) {
       fleetRef.current?.setRegion(s.region);
+      if (edit.dragging) return; // reshaping by handle: keep the camera still
       const [a, b, c, d] = s.region.bbox;
       map.fitBounds([[a, b], [c, d]], { padding: panelPadding(), pitch: 55, bearing: map.getBearing(), duration: 1400, maxZoom: 16.5 });
       map.once("moveend", () => map.once("idle", () => fleetRef.current?.setRoads(extractRoads(map))));
@@ -165,38 +167,81 @@ export default function MapView() {
     return () => { unsub(); clearTimeout(t); };
   }, []);
 
-  // ── drawing tools ─────────────────────────────────────────────────────────
+  // ── drawing tools + editing the selected area by its handles ─────────────
+  // Between runs, pressing a handle of the selected area reshapes it whatever the tool; anywhere
+  // else the active tool draws, and the finished shape replaces the area. The tool stays on after.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
     const ll = (e: { lngLat: MapMouseEvent["lngLat"] }): LL => [e.lngLat.lng, e.lngLat.lat];
     const st = useStore.getState;
-    if (tool === "pan") { map.dragPan.enable(); map.doubleClickZoom.enable(); return; }
-    map.dragPan.disable();
-    map.doubleClickZoom.disable();
-    draft.current = {};
+    draft.current = {}; // any tool change (incl. cancel → pan) drops a half-drawn shape
+    // Dragging pans in every tool; a press that draws or grabs a handle calls preventDefault to hold the map still.
+    // Double-click closes a polygon instead of zooming.
+    if (tool === "polygon") map.doubleClickZoom.disable(); else map.doubleClickZoom.enable();
 
     // A live mission owns the region: drawing mid-run would desync the fleet from its findings.
     const busy = () => st().running;
+    let start: Region | null = null, handle: Handle | null = null;
+    let grabbed = false; // the current press landed on a handle, so its click must not draw too
+
+    // Nearest handle within reach of the pointer, in screen space (fingers get a bigger target).
+    // None while a polygon outline is half-drawn: its clicks belong to the new shape.
+    const hit = (e: MapMouseEvent | MapTouchEvent, reach: number): Handle | null => {
+      const r = st().region;
+      if (!r || busy() || draft.current.poly?.length) return null;
+      let best: Handle | null = null, bestD = reach;
+      for (const h of regionHandles(r)) {
+        const d = map.project(h.pos).dist(e.point);
+        if (d < bestD || (d === bestD && isPrimary(h))) { best = h; bestD = d; }
+      }
+      return best;
+    };
+    const grab = (h: Handle) => {
+      const [r, g] = grabHandle(st().region!, h);
+      start = st().region; handle = g; edit.dragging = true;
+      if (r !== start) st().set({ region: r });
+    };
+    const drag = (to: LL) => {
+      const cur = st().region;
+      if (!handle || !cur) return;
+      const r = dragHandle(cur, handle, to);
+      st().set(r.radiusM ? { region: r, pinRadius: r.radiusM } : { region: r }); // keep the radius slider in step
+    };
+    const release = () => {
+      if (!handle) return;
+      // A box or polygon squashed flat isn't an area: put the original back.
+      const cur = st().region;
+      if (cur && regionAreaKm2(cur) < 1e-4) st().set({ region: start });
+      handle = null; start = null; edit.dragging = false;
+      fleetRef.current?.setRoads(extractRoads(map));
+    };
+
     const down = (e: MapMouseEvent) => {
-      if (busy()) return;
-      if (tool === "box") draft.current = { box: [ll(e), ll(e)] };
+      if (busy() || e.originalEvent.button !== 0) return;
+      const h = hit(e, 10);
+      grabbed = !!h;
+      if (h) { e.preventDefault(); grab(h); return; }
+      if (boxDraws()) { e.preventDefault(); draft.current = { box: [ll(e), ll(e)] }; }
     };
     const move = (e: MapMouseEvent) => {
+      if (handle) return drag(ll(e));
+      edit.hover = !!hit(e, 10);
       if (tool === "box" && draft.current.box) draft.current.box[1] = ll(e);
       draft.current.cursor = ll(e);
     };
     const up = () => {
+      if (handle) return release();
       if (tool !== "box" || !draft.current.box) return;
       if (busy()) { draft.current = {}; return; }
       const [p, q] = draft.current.box;
       draft.current = {};
       if (Math.abs(p[0] - q[0]) < 1e-4 || Math.abs(p[1] - q[1]) < 1e-4) return;
-      st().set({ region: regionFromBox(p, q), tool: "pan" });
+      st().set({ region: regionFromBox(p, q) });
     };
     const click = (e: MapMouseEvent) => {
-      if (busy()) return;
-      if (tool === "pin") { st().set({ region: regionFromPin(ll(e), st().pinRadius), tool: "pan" }); return; }
+      if (busy() || grabbed) return;
+      if (tool === "pin") { st().set({ region: regionFromPin(ll(e), st().pinRadius) }); return; }
       if (tool !== "polygon") return;
       const pts = (draft.current.poly ??= []);
       const px = map.project(e.lngLat);
@@ -210,35 +255,57 @@ export default function MapView() {
       if (busy()) return;
       if (!pts || pts.length < 3) return;
       const poly = turf.polygon([[...pts, pts[0]]]) as Feature<Polygon | MultiPolygon>;
-      st().set({ region: regionFromPolygon(poly, "polygon"), tool: "pan" });
+      st().set({ region: regionFromPolygon(poly, "polygon") });
     };
     const dbl = (e: MapMouseEvent) => { if (tool === "polygon") { e.preventDefault(); finishPoly(); } };
-    const key = (e: KeyboardEvent) => { if (e.key === "Escape") { draft.current = {}; st().set({ tool: "pan" }); } if (e.key === "Enter" && tool === "polygon") finishPoly(); };
+    const key = (e: KeyboardEvent) => { if (e.key === "Enter" && tool === "polygon") finishPoly(); };
 
-    // Touch: one-finger drag draws the box (taps already arrive as clicks for pin/polygon).
+    // Touch: one-finger drag on a handle reshapes, elsewhere draws the box (taps arrive as clicks for pin/polygon).
     const tdown = (e: MapTouchEvent) => {
-      if (tool !== "box" || e.points.length !== 1 || busy()) return;
+      if (e.points.length !== 1 || busy()) return;
+      const h = hit(e, 22);
+      grabbed = !!h;
+      if (h) { e.preventDefault(); grab(h); return; }
+      if (!boxDraws()) return;
       e.preventDefault();
       draft.current = { box: [ll(e), ll(e)] };
     };
     const tmove = (e: MapTouchEvent) => {
+      if (handle) { if (e.points.length !== 1) return release(); e.preventDefault(); return drag(ll(e)); }
       if (tool !== "box" || !draft.current.box) return;
       if (e.points.length !== 1) { draft.current = {}; return; } // pinch → cancel draft
       e.preventDefault();
       draft.current.box[1] = ll(e);
     };
 
-    map.on("mousedown", down); map.on("mousemove", move); map.on("mouseup", up); map.on("click", click); map.on("dblclick", dbl);
+    // mouseup on window: a drag may end over a panel rather than the map.
+    map.on("mousedown", down); map.on("mousemove", move); window.addEventListener("mouseup", up); map.on("click", click); map.on("dblclick", dbl);
     map.on("touchstart", tdown); map.on("touchmove", tmove); map.on("touchend", up);
     window.addEventListener("keydown", key);
     window.addEventListener("gs:finish-polygon", finishPoly);
     return () => {
-      map.off("mousedown", down); map.off("mousemove", move); map.off("mouseup", up); map.off("click", click); map.off("dblclick", dbl);
+      release(); edit.hover = false;
+      map.off("mousedown", down); map.off("mousemove", move); window.removeEventListener("mouseup", up); map.off("click", click); map.off("dblclick", dbl);
       map.off("touchstart", tdown); map.off("touchmove", tmove); map.off("touchend", up);
       window.removeEventListener("keydown", key);
       window.removeEventListener("gs:finish-polygon", finishPoly);
     };
   }, [tool]);
+
+  // Esc steps back: drop a half-drawn shape, then clear the selected area, then put the draw tool down.
+  // Skipped while typing, mid-run, or when Esc belongs to the inspector card or the agents page.
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (e.key !== "Escape" || tag === "INPUT" || tag === "TEXTAREA") return;
+      const s = useStore.getState();
+      if (draft.current.box || draft.current.poly?.length) draft.current = {};
+      else if (s.region && !s.running && !s.selectedFinding && !window.location.pathname.startsWith("/agents")) s.set({ region: null });
+      else if (s.tool !== "pan") s.set({ tool: "pan" });
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, []);
 
   return (
     <div className="absolute inset-0">
@@ -272,6 +339,10 @@ function uiFont() {
 }
 
 let cinematic = true;
+/** With the Box tool, a drag draws until there's an area; after that it pans (clear the area to draw anew). */
+const boxDraws = () => { const s = useStore.getState(); return s.tool === "box" && !s.region && !s.running; };
+/** Handle-drag state shared by the edit listeners, the cursor and the camera subscription. */
+const edit = { dragging: false, hover: false };
 export const setCinematic = (v: boolean) => { cinematic = v; };
 
 // ── layers ─────────────────────────────────────────────────────────────────
@@ -317,6 +388,17 @@ function buildLayers(now: number, fleet: Fleet, draft: { box?: [LL, LL]; poly?: 
       const chord = chordAt(region.polygon, y, a, c);
       if (chord) layers.push(new PathLayer({ ...FLAT, id: "sweep", data: [chord], getPath: (p: LL[]) => p, getColor: [...ACCENT, 90], getWidth: 1, widthUnits: "pixels" }));
     }
+  }
+
+  // Edit handles on the selected area (between runs, and not while a new outline is half-drawn)
+  if (region && !s.running && !draft.poly?.length) {
+    const hs = regionHandles(region);
+    if (hs.length) layers.push(new ScatterplotLayer({
+      ...FLAT, id: "region-handles", data: hs, getPosition: (h: Handle) => h.pos,
+      getRadius: (h: Handle) => (isPrimary(h) ? 5 : 3.5), radiusUnits: "pixels",
+      getFillColor: (h: Handle) => (isPrimary(h) ? [255, 255, 255, 255] : [...ACCENT, 255]),
+      getLineColor: [...ACCENT, 255], stroked: true, lineWidthMinPixels: 1.5,
+    }));
   }
 
   // Drawing preview

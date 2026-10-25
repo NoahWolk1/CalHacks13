@@ -10,12 +10,19 @@ import { APP_NAME } from "@/lib/brand";
 import PlaceSearch from "./PlaceSearch";
 import { startTour } from "./Tour";
 
-export const TOOLS: { id: Tool; label: string; icon: typeof Hand; hint: string; touchHint: string }[] = [
+export const TOOLS: { id: Tool; label: string; icon: typeof Hand; hint: string; touchHint: string; editHint?: string }[] = [
   { id: "pan", label: "Pan", icon: Hand, hint: "Drag to orbit. Scroll to zoom.", touchHint: "Drag to pan · pinch to zoom" },
-  { id: "box", label: "Box", icon: BoxSelect, hint: "Drag to draw a box", touchHint: "Drag a finger to draw a box" },
-  { id: "polygon", label: "Polygon", icon: Pentagon, hint: "Click points, click first point or press Enter to close", touchHint: "Tap corners to outline" },
-  { id: "pin", label: "Pin", icon: MapPin, hint: "Click to drop a pin", touchHint: "Tap to drop a pin" },
+  { id: "box", label: "Box", icon: BoxSelect, hint: "Drag to draw a box", touchHint: "Drag a finger to draw a box", editHint: "Drag the handles to adjust · Esc to clear and redraw" },
+  { id: "polygon", label: "Polygon", icon: Pentagon, hint: "Click points, click first point or press Enter to close", touchHint: "Tap corners to outline", editHint: "Drag the handles to adjust · click to outline a new area" },
+  { id: "pin", label: "Pin", icon: MapPin, hint: "Click to drop a pin", touchHint: "Tap to drop a pin", editHint: "Drag the handles to adjust · click to move the pin" },
 ];
+
+/** Switch drawing tools. A different tool drops the selected area; picking the active draw tool again puts it down. */
+export function pickTool(id: Tool) {
+  const { tool, set } = useStore.getState();
+  if (id === tool && id === "pan") return;
+  set({ tool: id === tool ? "pan" : id, region: null });
+}
 
 /** Static three-dot "swarm" mark; one dot in the accent. */
 export function SwarmMark({ size = 20 }: { size?: number }) {
@@ -47,7 +54,7 @@ function PanelToggle() {
 }
 
 function DesktopTopBar() {
-  const { tool, pinRadius, running, llm, agents, set } = useStore();
+  const { tool, pinRadius, running, llm, agents, region, set } = useStore();
   const current = TOOLS.find((t) => t.id === tool);
   const inspecting = useStore((s) => s.selectedFinding != null); // the inspector card takes that corner
   const [searchOpen, setSearchOpen] = useState(false);
@@ -81,7 +88,7 @@ function DesktopTopBar() {
           {TOOLS.map(({ id, label, icon: Icon }) => {
             const on = tool === id;
             return (
-              <button key={id} onClick={() => set({ tool: id })} disabled={running} title={label} aria-label={label} aria-pressed={on} data-tour={`tool-${id}`}
+              <button key={id} onClick={() => pickTool(id)} disabled={running} title={label} aria-label={label} aria-pressed={on} data-tour={`tool-${id}`}
                 className={`flex h-full items-center gap-1.5 rounded-[4px] px-2.5 text-[12.5px] transition-colors disabled:cursor-not-allowed @max-[600px]:px-2 ${on ? "bg-active text-fg1 shadow-[inset_0_0_0_1px_var(--line-strong)]" : "text-fg2 hover:text-fg1"}`}>
                 <Icon size={14} strokeWidth={1.5} />
                 <span className="@max-[600px]:hidden">{label}</span>
@@ -100,8 +107,14 @@ function DesktopTopBar() {
           )}
         </div>
         {(running || current) && !inspecting && (
-          <div className="pointer-events-none absolute top-full mt-[19px] max-w-[calc(100cqw-16px)] truncate whitespace-nowrap rounded-[4px] bg-bg/85 px-2 py-0.5 text-[12px] text-fg3 @max-[600px]:hidden">
-            {running ? "Recall agents to draw a new area" : current!.hint}
+          <div className="pointer-events-none absolute top-full mt-[19px] flex max-w-[calc(100cqw-16px)] items-center gap-2 whitespace-nowrap rounded-[4px] bg-bg/85 px-2 py-0.5 text-[12px] text-fg3 @max-[600px]:hidden">
+            <span className="truncate">{running ? "Recall agents to draw a new area" : region && current!.editHint ? current!.editHint : current!.hint}</span>
+            {!running && tool !== "pan" && (
+              <button onClick={() => pickTool("pan")} title="Cancel selection (Esc)"
+                className="pointer-events-auto shrink-0 text-fg2 underline-offset-2 transition-colors hover:text-fg1 hover:underline">
+                Cancel <kbd className="num text-[11px] text-fg4">Esc</kbd>
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -143,7 +156,7 @@ function DesktopTopBar() {
 
 /** Phones/tablets: logo mark, expandable search, Agent Hub; drawing tools live in a floating rail. */
 function MobileTopBar() {
-  const { tool, running, llm, agents, set } = useStore();
+  const { tool, running, llm, agents } = useStore();
   const [searching, setSearching] = useState(false);
   const btn = "glass pointer-events-auto grid h-11 w-11 shrink-0 place-items-center rounded-lg text-fg2 transition-colors active:bg-raised";
 
@@ -175,7 +188,7 @@ function MobileTopBar() {
           {TOOLS.map(({ id, label, icon: Icon }) => {
             const on = tool === id;
             return (
-              <button key={id} onClick={() => set({ tool: id })} aria-label={label} aria-pressed={on}
+              <button key={id} onClick={() => pickTool(id)} aria-label={label} aria-pressed={on}
                 className={`grid h-10 w-10 place-items-center rounded-md transition-colors ${on ? "bg-active text-fg1 shadow-[inset_0_0_0_1px_var(--line-strong)]" : "text-fg3"}`}>
                 <Icon size={17} strokeWidth={1.5} />
               </button>
