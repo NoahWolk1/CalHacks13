@@ -2,12 +2,13 @@ import { allWorkers, registry, toConfig } from "@/lib/agents/registry";
 import { SavedAgentSchema } from "@/lib/agents/library";
 import { PROFILES } from "@/lib/orchestrator/profiles";
 import { llm } from "@/lib/llm";
+import { liveClientConfig } from "@/lib/server/liveRun";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export function GET() {
-  return Response.json({ agents: allWorkers().map(toConfig), profiles: PROFILES, llm: !!llm() });
+  return Response.json({ agents: allWorkers().map(toConfig), profiles: PROFILES, llm: !!llm(), live: liveClientConfig() });
 }
 
 // Save an agent config (from the Hub's create flow) to the library.

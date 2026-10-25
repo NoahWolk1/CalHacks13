@@ -2,7 +2,7 @@
 // (profile site-risk) over every demo spot in src/lib/client/demoSpots.ts, one at a time.
 // Usage: npm run warm            (dev server on :3005)
 //        BASE_URL=http://localhost:3000 npm run warm
-//        BASE_URL=https://<app>.vercel.app CONVEX_URL=https://<name>.convex.cloud npm run warm   (prod)
+//        BASE_URL=https://<app>.vercel.app npm run warm   (prod; SpacetimeDB host/db come from /api/agents)
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { ConvexHttpClient } from "convex/browser";
@@ -58,6 +58,20 @@ async function* convexEvents(runId) {
   }
 }
 
+/** Polls SpacetimeDB's SQL endpoint (public `events` table) for a run's events until run_done/error. */
+async function* spacetimeEvents(runId) {
+  const { live } = await (await fetch(`${BASE}/api/agents`)).json();
+  if (!live?.spacetime) throw new Error("got a SpacetimeDB runId but /api/agents reports no spacetime host/db");
+  const url = `${live.spacetime.host}/v1/database/${live.spacetime.db}/sql`;
+  let after = -1;
+  for (;;) {
+    const res = await fetch(url, { method: "POST", body: `SELECT seq, event_json FROM events WHERE run_id = '${runId}'` });
+    const rows = (await res.json())[0].rows.filter(([seq]) => seq > after).sort((a, b) => a[0] - b[0]);
+    for (const [seq, json] of rows) { if (seq !== after + 1) break; after = seq; yield JSON.parse(json); }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+}
+
 function readEnvLocal(name) {
   try {
     const txt = readFileSync(fileURLToPath(new URL("../.env.local", import.meta.url)), "utf8");
@@ -73,9 +87,11 @@ async function warm(spot) {
   const res = await fetch(`${BASE}/api/run`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctl.signal });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   const sse = (res.headers.get("content-type") ?? "").includes("text/event-stream");
-  const events = sse ? sseEvents(res) : convexEvents((await res.json()).runId);
+  const started = sse ? null : await res.json();
+  const backend = sse ? "sse" : started.backend ?? "convex";
+  const events = sse ? sseEvents(res) : backend === "spacetime" ? spacetimeEvents(started.runId) : convexEvents(started.runId);
 
-  const out = { mode: sse ? "sse" : "convex", findings: 0, insights: [], agents: {}, error: undefined };
+  const out = { mode: backend, findings: 0, insights: [], agents: {}, error: undefined };
   const deadline = Date.now() + RUN_TIMEOUT_MS;
   try {
     for await (const e of events) {

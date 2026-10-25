@@ -1,0 +1,12 @@
+{
+  "name": "geoswarm-spacetime",
+  "private": true,
+  "version": "1.0.0",
+  "description": "GeoSwarm SpacetimeDB module (live shared mission state)",
+  "dependencies": {
+    "spacetimedb": "2.13.0"
+  },
+  "devDependencies": {
+    "typescript": "^5"
+  }
+}

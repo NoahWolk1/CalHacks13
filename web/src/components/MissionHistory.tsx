@@ -1,6 +1,7 @@
 "use client";
-// Mission bar (Convex mode only): share the live mission link and reopen recent missions.
-// Anyone opening a shared link watches the same mission stream in real time.
+// Mission bar (live-backend mode): share the live mission link and reopen recent missions.
+// Anyone opening a shared link watches the same mission stream in real time. Backend-agnostic:
+// <SpacetimeMissionHistory> / <ConvexMissionHistory> supply the recent-runs list.
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "convex/react";
 import { History, Check, ChevronDown } from "lucide-react";
@@ -16,14 +17,21 @@ function ago(t: number) {
   return `${Math.round(s / 86400)}d ago`;
 }
 
-export default function MissionHistory() {
+/** One history row, normalized across backends. */
+export type RecentRun = { id: string; label?: string; status: string; startedAt: number; profileId: string; mode: string; question?: string; findingCount?: number };
+
+export function ConvexMissionHistory() {
+  const recent = useQuery(api.runs.recent, { limit: 10 });
+  return <MissionHistory backend="Convex" recent={recent?.map((r) => ({ ...r, id: r._id }))} />;
+}
+
+export default function MissionHistory({ recent, backend }: { recent: RecentRun[] | undefined; backend: string }) {
   const runId = useStore((s) => s.runId);
   const running = useStore((s) => s.running);
   const profiles = useStore((s) => s.profiles);
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
-  const recent = useQuery(api.runs.recent, { limit: 10 });
-  const live = recent?.find((r) => r._id === runId)?.status === "running";
+  const live = recent?.find((r) => r.id === runId)?.status === "running";
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -66,15 +74,15 @@ export default function MissionHistory() {
 
       {open && (
         <div className="glass absolute right-0 top-full mt-2 w-[320px] overflow-hidden rounded-lg p-1 max-lg:right-0 max-lg:w-[calc(100vw-32px)]">
-          <div className="px-2 pb-1.5 pt-1.5 text-[12px] text-fg3">Recent missions, synced via Convex</div>
+          <div className="px-2 pb-1.5 pt-1.5 text-[12px] text-fg3">Recent missions, synced live via {backend}</div>
           {recent === undefined && <div className="px-2 py-2 text-[12.5px] text-fg3">Loading…</div>}
           {recent?.length === 0 && <div className="px-2 py-2 text-[12.5px] text-fg3">No missions yet. Deploy one.</div>}
           <div className="scroll-thin max-h-[320px] overflow-y-auto">
             {recent?.map((r) => {
-              const on = r._id === runId;
+              const on = r.id === runId;
               const profile = profiles.find((p) => p.id === r.profileId);
               return (
-                <button key={r._id} onClick={() => { openRun(r._id); setOpen(false); }}
+                <button key={r.id} onClick={() => { openRun(r.id); setOpen(false); }}
                   className={`w-full rounded-[4px] px-2 py-1.5 text-left transition-colors ${on ? "bg-active" : "hover:bg-raised"}`}>
                   <div className="flex items-center gap-2">
                     <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${r.status === "running" ? "bg-accent" : r.status === "error" ? "bg-risk" : "bg-fg4"}`} />

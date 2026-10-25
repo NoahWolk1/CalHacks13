@@ -7,7 +7,8 @@
 
 | Track | Status | Blocking gap |
 |---|---|---|
-| Convex ($5k, one winner) | **Ready** | None. Polish the share-link moment. |
+| Spacetime ($2,048 / $1,024 / $512) | **Ready** | Set the SpacetimeDB env vars on Vercel and redeploy; show the share-link moment. |
+| Convex | **Not claimed** | We switched to SpacetimeDB (one of Convex/Spacetime per team). Convex code stays as a fallback only. |
 | Anthropic | **Blocked on a decision** | Name the community + a firsthand problem |
 | Bright Data / Apify | **Not qualified yet** | Neither is integrated. A README mention alone disqualifies for Bright Data. |
 | Best Planet-First Hack | Ready (no stated criteria) | Frame the climate angle in Devpost |
@@ -18,23 +19,23 @@ Note: the general prize is called **"Most Technically Complex Hack"** on the pri
 
 ---
 
-## Convex ($5,000, one team)
+## Spacetime ($2,048 / $1,024 / $512)
 
-**Requirement (shortlist):** Convex as the reactive backend (database, functions, sync). We picked Convex over Spacetime, so it must be core, not a side add-on.
+**Requirement (shortlist):** SpacetimeDB as the *core* real-time backend, not a side add-on. They call out AI agent coordination, live dashboards, and "AI systems coordinating in a persistent world state."
 
 **How we qualify**
-- [x] Convex is the source of truth for missions: `runs`, an append-only `events` log (ordered `seq`, index `by_run_seq`), and denormalized `findings` indexed by run / worker / category (`web/convex/schema.ts`).
-- [x] Browsers subscribe with `useQuery(api.events.since)`. The share link `/?run=<id>` streams a mission live on any device, and finished missions replay.
-- [x] Mission history (**Missions ▾**), Share, and Stop/recall all run through Convex functions.
-- [x] Server batches event writes every ~100 ms.
+- [x] SpacetimeDB is the source of truth for missions: `runs`, an append-only `events` log (one row per RunEvent, contiguous `seq` enforced by the `append_events` reducer), and denormalized `findings` (`web/spacetime/src/index.ts`). Published to maincloud as `geoswarm`.
+- [x] The orchestrator and ~10 worker agents coordinate through it: every plan, dispatch, status change, finding and insight is a reducer-committed row. Browsers subscribe (`SELECT * FROM events WHERE run_id = …`) so the map, agent panel and status bar are a live dashboard on every screen; `/?run=<id>` streams the mission on any device and finished missions replay.
+- [x] Mission history (**Missions ▾**, a subscription on `runs`), Share, and Stop/recall (`request_stop` → `stop_requested`, polled by the orchestrator across serverless instances) all go through SpacetimeDB.
+- [x] Claude rate limits are a reducer too (`reserve_llm`: atomic per-IP + global hourly caps in the private `llm_usage` table).
+- [x] Auth: only the server's allowlisted identity can call write reducers; browsers are anonymous read-only subscribers.
 
-**What to say:** "Convex is our shared world state. Every agent writes into one ordered event log, and every screen watching that mission, including your phone, updates reactively. Share links, history and replay all come from that one data model."
+**What to say:** "SpacetimeDB is our agents' shared world. Ten agents write into one ordered event log through reducers, and every screen watching that mission, including your phone, is subscribed to it, so the map is a live dashboard of the swarm. Share links, history, replay, stop and even our Claude rate limits all live in the same database."
 
 **Still missing**
-- [ ] Put the phone share-link moment in the live pitch (it's in [pitch.md](pitch.md)).
-- [ ] Cloud deployment (`npx convex login` + `npx convex dev --configure`) so a judge's phone works off the venue LAN. Optional, but it makes the demo stronger.
-- [ ] Optional depth: a Convex query the UI uses directly, e.g. `findings.countsByAgent` or `findings.byRun` filtered by category, so the judges see more than the event log.
-- [ ] Say "Convex" in the Devpost "How we built it" (done in the draft) and add a screenshot of the phone mirroring the laptop.
+- [ ] Set `SPACETIME_HOST`, `SPACETIME_DB`, `SPACETIME_TOKEN` on Vercel and redeploy (see [web/README.md](../../web/README.md#deploy-to-vercel)).
+- [ ] Put the phone share-link moment in the live pitch (it's in [pitch.md](pitch.md)); say "SpacetimeDB" there instead of Convex.
+- [ ] Devpost "How we built it": replace Convex with SpacetimeDB; screenshot of the phone mirroring the laptop and/or the SpacetimeDB dashboard (https://spacetimedb.com/geoswarm).
 
 ## Anthropic
 
@@ -95,7 +96,7 @@ Recommendation: **A or B** matches the strongest demo result (flood × permits) 
 **How we qualify**
 - [x] Multi-agent orchestrator: LLM planning → parallel dispatch of up to 13 workers → targeted re-dispatch → deterministic spatial joins (Turf) → cited insights → streamed answer. Includes a heuristic fallback path.
 - [x] 10+ heterogeneous live sources (ArcGIS feature services, Socrata SoQL `within_polygon`, vector-tile decoding of OSM, RSS, REST), each with its own error handling.
-- [x] Real-time shared state in Convex (ordered event log, live + replay through the same dispatcher), with an SSE fallback.
+- [x] Real-time shared state in SpacetimeDB (ordered event log, live + replay through the same dispatcher), with Convex and SSE fallbacks.
 - [x] deck.gl fleet simulation where vehicles travel to the actual finding coordinates, plus insight arcs between cited findings.
 - [x] Agents spawning agents with guardrails: planner gaps and a post-sweep coverage check spawn generated agents that run on a bounded Claude tool-use loop (`lib/agents/factory.ts`, `runtime.ts`), capped by `SPAWN_LIMITS`, with Keep/Discard after the run.
 
@@ -110,7 +111,7 @@ Recommendation: **A or B** matches the strongest demo result (flood × permits) 
 **How we qualify**
 - [x] End-to-end functionality on live data.
 - [x] Responsible design: source link + `observed_at` + confidence on every finding, citation validation, conflict flagging instead of silently picking a source, spawn guardrails (fixed primitives, depth/per-run caps, temporary by default), graceful degradation.
-- [x] Path to production: deployed at https://geoswarm.vercel.app (Vercel + Convex prod), Convex persistence and history, per-agent timeouts and failure isolation, Claude rate limits with heuristic fallback.
+- [x] Path to production: deployed at https://geoswarm.vercel.app (Vercel + SpacetimeDB Maincloud, Convex as fallback), persistent mission history, per-agent timeouts and failure isolation, Claude rate limits with heuristic fallback.
 - [ ] **Customer understanding:** same blocker as Anthropic (the named community).
 - [ ] **Measurable usefulness:** no metric stated yet.
 

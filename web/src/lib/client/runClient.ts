@@ -2,11 +2,15 @@
 import type { AgentConfig, RunEvent } from "@/lib/types";
 import { useStore } from "./store";
 
-/** Convex is the shared mission state when configured; otherwise runs stream over SSE. */
-export const convexEnabled = !!process.env.NEXT_PUBLIC_CONVEX_URL;
+/**
+ * Which live backend holds the shared mission state (SpacetimeDB primary, Convex fallback, or SSE
+ * with no shared state). The server decides (LIVE_BACKEND, see src/lib/server/liveRun.ts) and
+ * reports it via /api/agents, so the browser always subscribes to the backend the server writes to.
+ */
+export type LiveConfig = { backend: "spacetime" | "convex" | "sse"; spacetime?: { host: string; db: string } };
 
 let current: AbortController | null = null;
-/** Convex run this browser launched (only the launcher may recall agents). */
+/** Live-backend run this browser launched (only the launcher may recall agents). */
 let ownRunId: string | null = null;
 /** The run just launched here: its state is already on screen, so the feed skips hydrating from the run row. */
 let freshRunId: string | null = null;
@@ -15,7 +19,7 @@ const listeners = new Set<(e: RunEvent) => void>();
 /** Subscribe to raw run events (the map's fleet simulation listens here). */
 export function onRunEvent(fn: (e: RunEvent) => void) { listeners.add(fn); return () => { listeners.delete(fn); }; }
 
-/** The single path every RunEvent takes into the UI (SSE stream or Convex subscription). */
+/** The single path every RunEvent takes into the UI (SSE stream or live-backend subscription). */
 export function dispatchRunEvent(ev: RunEvent) {
   // A recalled (or failed) mission ends with agents still queued/scanning: settle them so the
   // panel stops spinning and the map parks their vehicles, for the launcher and every viewer.
@@ -33,7 +37,7 @@ export function dispatchRunEvent(ev: RunEvent) {
 export const isOwnRun = (runId: string | null) => !!runId && runId === ownRunId;
 export const isFreshRun = (runId: string | null) => !!runId && runId === freshRunId;
 
-/** Watch / replay any mission by id (shared link or history). Its region + events load from Convex. */
+/** Watch / replay any mission by id (shared link or history). Its region + events load from the live backend. */
 export function openRun(runId: string) {
   current?.abort();
   current = null;
@@ -51,7 +55,7 @@ export function setRunUrl(runId: string | null) {
 
 export async function loadCatalog() {
   const r = await fetch("/api/agents").then((r) => r.json());
-  useStore.getState().set({ agents: r.agents, profiles: r.profiles, llm: r.llm });
+  useStore.getState().set({ agents: r.agents, profiles: r.profiles, llm: r.llm, live: (r.live as LiveConfig | undefined) ?? { backend: "sse" } });
 }
 
 async function call<T>(url: string, init?: RequestInit): Promise<T> {
@@ -120,7 +124,7 @@ export async function startRun() {
       signal: ctl.signal,
     });
 
-    // Convex mode: the server answers with the run id; <ConvexRunSync> streams the events in.
+    // Live mode: the server answers with the run id; <SpacetimeRunSync>/<ConvexRunSync> streams the events in.
     if (res.headers.get("content-type")?.includes("application/json")) {
       const { runId } = (await res.json()) as { runId: string };
       ownRunId = freshRunId = runId;

@@ -19,6 +19,9 @@ const eslintConfig = [
       "build/**",
       "next-env.d.ts",
       "convex/_generated/**",
+      "src/spacetime_bindings/**",
+      "spacetime/node_modules/**",
+      "spacetime/dist/**",
     ],
   },
 ];

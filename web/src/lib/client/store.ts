@@ -1,5 +1,6 @@
 "use client";
 import { create } from "zustand";
+import type { LiveConfig } from "./runClient";
 import type { AgentConfig, AgentStatus, Finding, Insight, OrchestratorProfile, PlanStep, Region, RunEvent, RunMode } from "@/lib/types";
 
 export type Tool = "box" | "polygon" | "pin" | "pan";
@@ -23,6 +24,8 @@ interface State {
   agents: AgentConfig[];
   profiles: OrchestratorProfile[];
   llm: boolean;
+  /** Live backend reported by /api/agents (null until the catalog loads). */
+  live: LiveConfig | null;
   // inputs
   tool: Tool;
   pinRadius: number;
@@ -31,7 +34,7 @@ interface State {
   mode: RunMode;
   question: string;
   // run
-  /** Convex run id of the mission on screen (null in SSE mode). */
+  /** Shared run id of the mission on screen (SpacetimeDB or Convex; null in SSE mode). */
   runId: string | null;
   running: boolean;
   runStartedAt: number | null;
@@ -64,7 +67,7 @@ const emptyRun = {
 };
 
 export const useStore = create<State>((set, get) => ({
-  agents: [], profiles: [], llm: false,
+  agents: [], profiles: [], llm: false, live: null,
   runId: null, tool: "box", pinRadius: 450, region: null, profileId: "site-risk", mode: "insights", question: "",
   ...emptyRun,
   rightTab: "agents", hubOpen: false,

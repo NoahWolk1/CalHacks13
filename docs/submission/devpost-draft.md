@@ -31,7 +31,7 @@ Questions about a place, like "is it risky to build here?" or "is this a good bl
    - **flags conflicts**, such as FEMA showing minimal hazard where residents keep reporting flooding,
    - writes **insights that cite the finding ids they rest on**, then answers the question.
 6. **Missing an agent? It makes one.** Describe a data source in the Agent Hub and Claude drafts a new worker you can edit and save. In Ask mode the orchestrator does this itself when its planner finds a gap: the new agent runs immediately, is marked "created by" its parent, and after the run you keep it or discard it.
-7. **Share it live.** Every mission is stored in Convex. A `/?run=<id>` link streams the same mission live on any device and replays finished ones.
+7. **Share it live.** Every mission is stored in SpacetimeDB. A `/?run=<id>` link streams the same mission live on any device and replays finished ones.
 
 **Real result (Mission District, Site Risk Analyst, Insights):** about 124 findings in about 10 seconds, including:
 - "6 permitted projects inside a mapped flood zone (SFPUC 100-year storm), ≈$3.1M of permitted work"
@@ -62,16 +62,16 @@ Questions about a place, like "is it risky to build here?" or "is this a good bl
 - **Claude (Anthropic SDK)** handles the three reasoning steps: the plan (which agents, why, and with what focus), the insights, and the streamed answer. Plan and insights use structured outputs validated with zod. Any insight citation that doesn't match a real finding id is dropped. If there's no API key, or a call fails, a deterministic fallback takes over (keyword planner, rule-based insights, templated answer), so the demo never depends on one API call.
 - **Spatial cross-referencing** (`crossref.ts`) is deterministic: Turf point-in-polygon and distance joins produce candidate connections (permits in flood zones, permits on fill, 311 reports corroborating hazard maps, FEMA vs. ground-truth conflicts, civic facilities in flood zones, incoming housing units). Claude gets these joins as grounded candidates rather than inventing the connections itself.
 - **Shared finding schema:** every worker emits `{claim, geometry (GeoJSON), source_url, source_type, observed_at, confidence, worker_id}`, so the map renders any agent's output and the orchestrator reasons over all of it the same way.
-- **Convex** is the live shared mission state. The server writes each run, its append-only ordered event log (batched every ~100 ms), and denormalized findings indexed by run, worker and category. Browsers subscribe reactively, which powers share links, mission history and replay. Without Convex the app falls back to server-sent events.
+- **SpacetimeDB** is the live shared mission state: the agents' persistent world. A TypeScript module defines the runs table, an append-only event log whose reducer enforces strict sequence order, denormalized findings, and the Claude rate-limit counters. The server writes through reducers (batched every ~100 ms) as the only allowlisted identity; every browser subscribes anonymously over WebSocket, which powers share links, live viewing on a second device, mission history, replay and stop. Without it the app falls back to Convex or server-sent events.
 - **Agents creating agents:** generated agents are configs, not code. One structured-output Claude call either reuses a library agent or drafts a new config (name, brief, tools, data sources, coverage). A shared runtime runs it as a bounded Claude tool-use loop (6 turns, 45 s, 15 findings) with only its allowed tools: web search, web fetch, an `http_get` that blocks private and loopback hosts, and an `emit_findings` tool that enforces the finding schema. Addresses are geocoded and findings far outside the region are dropped. The orchestrator spawns agents for planner gaps and once after the first sweep if a coverage check finds one, capped at depth 2 and 4 per run. Spawned agents are temporary until the user keeps them.
-- **Hosting:** Vercel plus Convex cloud. Claude runs are rate-limited per IP and globally, and over the cap a run falls back to heuristic mode.
+- **Hosting:** Vercel plus SpacetimeDB Maincloud. Claude runs are rate-limited per IP and globally, and over the cap a run falls back to heuristic mode.
 
 ## Challenges we ran into
 
 - **FEMA doesn't map inland San Francisco.** Our first flood agent found nothing in the Mission because FEMA's flood map only covers SF's shoreline. Adding the SFPUC 100-year storm map (and its historical creeks and water bodies layers) is what made "permits inside a flood zone" show up where flooding actually happens.
 - **Making the orchestrator more than a summarizer.** Handing an LLM 120+ findings and asking for insights produced plausible text with weak grounding. Running the spatial joins deterministically first, then having Claude rank, explain and cite them, gave insights you can trace back to specific pins.
 - **Heterogeneous public APIs.** These include ArcGIS feature services, Socrata (SoQL `within_polygon`), RSS, vector tiles, and REST APIs with different timeouts and failure modes. Each worker handles its own errors, so one slow or failing source marks that agent as errored and the rest of the mission continues.
-- **Live sharing without a second code path.** Streaming over SSE to one browser was easy. Making the same mission stream to a judge's phone meant moving the event log into Convex with strictly ordered sequence numbers, and replaying both live and finished runs through the same dispatcher.
+- **Live sharing without a second code path.** Streaming over SSE to one browser was easy. Making the same mission stream to a judge's phone meant moving the event log into SpacetimeDB with strictly ordered sequence numbers, and replaying both live and finished runs through the same dispatcher.
 - **Animation that carries information.** The vehicles had to arrive at the actual finding location before the pin drops, so the animation shows which agent found what.
 
 ## Accomplishments that we're proud of
@@ -93,7 +93,7 @@ Questions about a place, like "is it risky to build here?" or "is this a good bl
 
 ## What's next for GeoSwarm
 
-- **A shared agent library:** move saved agents into Convex so the agents users and orchestrators create are shared across everyone, with usage counts.
+- **A shared agent library:** move saved agents into SpacetimeDB so the agents users and orchestrators create are shared across everyone, with usage counts.
 - **Beyond San Francisco:** about half the workers are already national or global (FEMA, USGS, NWS, Census, OSM, elevation, news). Adding a city means adding its permits, 311 and local flood-map agents. Socrata and ArcGIS cover a lot of US cities.
 - **Parcel reports** a user can export or hand to a buyer, lender or community group, with every claim linked to its source.
 - **Watch mode:** re-run a saved area on a schedule and alert when a new permit, flood report or hazard alert appears.
@@ -102,7 +102,7 @@ Questions about a place, like "is it risky to build here?" or "is this a good bl
 ## Built with
 
 ```
-next.js, react, typescript, tailwindcss, maplibre-gl, deck.gl, turf.js, zustand, convex,
+next.js, react, typescript, tailwindcss, maplibre-gl, deck.gl, turf.js, zustand, spacetimedb,
 anthropic-claude, anthropic-sdk, zod, openfreemap, openstreetmap,
 fema-nfhl, sfpuc-flood-map, datasf (dbi-permits, sf-311), open-meteo, nws-api, usgs-earthquake-api,
 us-census-api, google-news-rss, nominatim, arcgis-rest, socrata,
