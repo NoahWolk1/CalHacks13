@@ -24,6 +24,7 @@ type Step = {
 
 /** The research mode before the tour switched it, so leaving the tour early can put it back. */
 let modeBefore: RunMode | null = null;
+let runStartedDuringTour = false;
 const setMode = (mode: RunMode) => {
   const s = useStore.getState();
   modeBefore ??= s.mode;
@@ -53,12 +54,19 @@ const CARD_W = 320;
 const GAP = 12;
 const EDGE = 12;
 
-function finish() {
+/** End a tour without marking it seen (also used when desktop UI unmounts). */
+function cancel() {
   const s = useStore.getState();
-  // Leaving before the run step: put back the mode the tour switched away from.
-  if (modeBefore && s.tour != null && s.tour <= TOUR.findIndex((t) => t.waitFor === "run") && !s.running) s.set({ mode: modeBefore });
+  // A run keeps its mode even after it completes or fails.
+  const mode = modeBefore != null && s.tour != null && s.tour <= TOUR.findIndex((t) => t.waitFor === "run") && !runStartedDuringTour && !s.running
+    ? modeBefore : s.mode;
   modeBefore = null;
-  s.set({ tour: null });
+  runStartedDuringTour = false;
+  s.set({ tour: null, mode });
+}
+
+function finish() {
+  cancel();
   try { localStorage.setItem(DONE_KEY, "1"); } catch { /* private mode */ }
 }
 
@@ -133,9 +141,9 @@ export default function Tour() {
   useEffect(() => {
     let seen = false;
     try { seen = localStorage.getItem(DONE_KEY) === "1"; } catch { /* private mode: show it */ }
-    if (seen || new URL(window.location.href).searchParams.has("run")) return () => useStore.getState().set({ tour: null });
+    if (seen || new URL(window.location.href).searchParams.has("run")) return cancel;
     const t = setTimeout(() => { if (useStore.getState().tour == null) go(0); }, START_DELAY);
-    return () => { clearTimeout(t); useStore.getState().set({ tour: null }); };
+    return () => { clearTimeout(t); cancel(); };
   }, []);
 
   // Escape closes the tour (unless typing in a field).
@@ -151,6 +159,7 @@ export default function Tour() {
 
   // Steps that wait on the user move on by themselves.
   useEffect(() => useStore.subscribe((s, prev) => {
+    if (s.tour != null && s.running && !prev.running) runStartedDuringTour = true;
     const w = s.tour != null ? TOUR[s.tour].waitFor : undefined;
     if ((w === "region" && s.region && s.region !== prev.region) || (w === "run" && s.running && !prev.running)) go(s.tour! + 1);
   }), []);
