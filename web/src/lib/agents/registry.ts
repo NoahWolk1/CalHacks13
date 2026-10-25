@@ -31,6 +31,7 @@ import { seaLevelWorker } from "./workers/seaLevel";
 import { wildfireWorker } from "./workers/wildfire";
 import { weatherWorker } from "./workers/weather";
 import { landmarksWorker } from "./workers/landmarks";
+import { settlementsWorker } from "./workers/settlements";
 import { rentalsWorker } from "./workers/rentals";
 import { schoolsWorker } from "./workers/schools";
 import { envBurdenWorker } from "./workers/envBurden";
@@ -47,6 +48,8 @@ export const BUILTIN_WORKERS: Worker[] = [
   crimeWorker, evictionsWorker, businessWorker, crashesWorker, zoningWorker, propertyWorker, fireEmsWorker, streetWorkWorker, transitWorker, treesWorker,
   // Hazard / environment / context agents (no key): CGS zones, sea-level rise, CAL FIRE, weather, Wikipedia, Airbnb, schools, CalEnviroScreen, FEMA history.
   groundHazardsWorker, seaLevelWorker, wildfireWorker, weatherWorker, landmarksWorker, rentalsWorker, schoolsWorker, envBurdenWorker, disastersWorker,
+  // Global populated places (cities/towns/villages/hamlets) from OpenFreeMap tiles.
+  settlementsWorker,
 ];
 
 // Generated agents come in two kinds:

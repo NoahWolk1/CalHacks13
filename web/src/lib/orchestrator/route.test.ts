@@ -12,7 +12,10 @@ describe("routeByKeywords", () => {
     ["Is it risky to build here?", "site-risk"],
     ["Which new developments are most exposed to flooding?", "site-risk"],
     ["What hazards should a homebuyer know about?", "site-risk"],
-    ["Tell me about this place", "site-risk"], // no keywords → default
+    ["How many villages are located here?", "general"],
+    ["What animals live here?", "general"],
+    ["Tell me about this place", "general"], // no keywords → general
+    ["Is it risky to build near this village?", "site-risk"], // tie → specialist
   ])("%s → %s", (q, profileId) => {
     expect(routeByKeywords(q).profileId).toBe(profileId);
   });

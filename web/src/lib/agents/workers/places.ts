@@ -1,21 +1,9 @@
 import type { Worker } from "@/lib/types";
-import { getBuffer, getJson } from "@/lib/http";
 import { inRegion } from "@/lib/geo";
-import { VectorTile } from "@mapbox/vector-tile";
-import { PbfReader } from "pbf";
+import { planTiles, readTileLayers } from "./tiles";
 
 // Businesses & amenities from OpenStreetMap, read straight out of OpenFreeMap vector tiles
 // (no key, no Overpass rate limits).
-// The bare /planet/{z}/{x}/{y} path answers 200 with an empty body; real tiles live under a dated
-// build path that the TileJSON names, so resolve the template first.
-const TILEJSON = "https://tiles.openfreemap.org/planet";
-const Z = 14;
-const tileTemplate = async (signal: AbortSignal) =>
-  (await getJson<{ tiles: string[] }>(TILEJSON, { signal, timeoutMs: 8000 })).tiles[0];
-
-const lng2x = (lng: number) => Math.floor(((lng + 180) / 360) * 2 ** Z);
-const lat2y = (lat: number) => { const r = (lat * Math.PI) / 180; return Math.floor(((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * 2 ** Z); };
-
 const GROUPS: Record<string, string> = {
   cafe: "food", restaurant: "food", fast_food: "food", bar: "food", bakery: "food", ice_cream: "food", beer: "food",
   grocery: "retail", shop: "retail", clothing_store: "retail", convenience: "retail", supermarket: "retail", alcohol_shop: "retail",
@@ -35,48 +23,45 @@ export const placesWorker: Worker = {
   coverage: "Global",
   builtin: true,
   async run({ task, emit, log, signal }) {
-    const [a, b, c, d] = task.region.bbox;
-    const xs = [lng2x(a), lng2x(c)], ys = [lat2y(d), lat2y(b)];
-    const tiles: [number, number][] = [];
-    for (let x = xs[0]; x <= xs[1]; x++) for (let y = ys[0]; y <= ys[1]; y++) tiles.push([x, y]);
-    if (tiles.length > 16) {
-      log(`Area spans ${tiles.length} tiles; sampling the central 16.`);
-      const [cx, cy] = [lng2x(task.region.center[0]), lat2y(task.region.center[1])];
-      tiles.sort((p, q) => Math.hypot(p[0] - cx, p[1] - cy) - Math.hypot(q[0] - cx, q[1] - cy)).splice(16);
-    }
-    const template = await tileTemplate(signal);
-    log(`Reading ${tiles.length} map tiles…`);
+    // POIs only exist at z14: big areas get a spread sample (tiles.ts), and the claim says so.
+    const plan = planTiles(task.region.bbox, task.region.center, { maxZ: 14, maxTiles: 16 });
+    if (plan.sampled) log(`Area spans ${plan.total} tiles; sampling ${plan.tiles.length}.`);
+    const sampled = plan.sampled ? ` (sampled ${plan.tiles.length} of ${plan.total} map tiles, so a partial count)` : "";
+    log(`Reading ${plan.tiles.length} map tiles…`);
+    const { features } = await readTileLayers(plan, ["poi"], signal);
     const counts: Record<string, number> = {};
     const seen = new Set<string>();
     const named: { name: string; cls: string; sub: string; lng: number; lat: number }[] = [];
-    await Promise.all(tiles.map(async ([x, y]) => {
-      const buf = await getBuffer(template.replace("{z}", String(Z)).replace("{x}", String(x)).replace("{y}", String(y)), { signal }).catch(() => null);
-      if (!buf?.byteLength) return;
-      const layer = new VectorTile(new PbfReader(new Uint8Array(buf))).layers["poi"];
-      if (!layer) return;
-      for (let i = 0; i < layer.length; i++) {
-        const f = layer.feature(i).toGeoJSON(x, y, Z);
-        if (f.geometry.type !== "Point") continue;
-        const [lng, lat] = f.geometry.coordinates as [number, number];
-        if (!inRegion(task.region, lng, lat)) continue;
-        const props = f.properties ?? {};
-        const cls = String(props.class ?? "other"), sub = String(props.subclass ?? cls);
-        // Unnamed POIs are mostly street furniture (bike racks, bollards, bins): skip them in the tally.
-        if (!props.name) continue;
-        // Tiles carry a buffer past their edges, so the same POI shows up in neighbouring tiles.
-        const key = `${props.name}@${lng.toFixed(4)},${lat.toFixed(4)}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        counts[sub] = (counts[sub] ?? 0) + 1;
-        named.push({ name: String(props.name), cls, sub, lng, lat });
-      }
-    }));
+    for (const f of features.poi) {
+      if (f.geometry.type !== "Point") continue;
+      const [lng, lat] = f.geometry.coordinates as [number, number];
+      if (!inRegion(task.region, lng, lat)) continue;
+      const props = f.properties ?? {};
+      const cls = String(props.class ?? "other"), sub = String(props.subclass ?? cls);
+      // Unnamed POIs are mostly street furniture (bike racks, bollards, bins): skip them in the tally.
+      if (!props.name) continue;
+      // Tiles carry a buffer past their edges, so the same POI shows up in neighbouring tiles.
+      const key = `${props.name}@${lng.toFixed(4)},${lat.toFixed(4)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      counts[sub] = (counts[sub] ?? 0) + 1;
+      named.push({ name: String(props.name), cls, sub, lng, lat });
+    }
     const total = Object.values(counts).reduce((s, n) => s + n, 0);
     log(`${total} points of interest found`);
-    if (!total) return;
+    if (!total) {
+      // Say so: "nothing mapped" is an answer (and on a sampled area, a partial one).
+      emit({
+        claim: `No named businesses or amenities mapped in OpenStreetMap here${sampled}. OSM coverage of shops is thin in many rural areas.`,
+        geometry: { type: "Point", coordinates: task.region.center },
+        source_url: "https://www.openstreetmap.org", source_type: "osm_poi_aggregate", confidence: plan.sampled ? 0.4 : 0.6, category: "places",
+        severity: 0.1, props: { areaLevel: true, counts, sampledTiles: plan.tiles.length, totalTiles: plan.total },
+      });
+      return;
+    }
     const top = Object.entries(counts).sort((p, q) => q[1] - p[1]).slice(0, 8);
     emit({
-      claim: `${total} named businesses/amenities. Most common: ${top.map(([k, n]) => `${k.replace(/_/g, " ")} (${n})`).join(", ")}`,
+      claim: `${total} named businesses/amenities${sampled}. Most common: ${top.map(([k, n]) => `${k.replace(/_/g, " ")} (${n})`).join(", ")}`,
       geometry: { type: "Point", coordinates: task.region.center },
       source_url: "https://www.openstreetmap.org", source_type: "osm_poi_aggregate", confidence: 0.75, category: "places",
       severity: 0.3, props: { areaLevel: true, counts },

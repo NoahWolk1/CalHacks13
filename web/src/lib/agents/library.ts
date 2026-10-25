@@ -17,7 +17,7 @@ export const SavedAgentSchema = z.object({
   vehicle: z.enum(VEHICLES),
   color: z.string().regex(HEX_COLOR),
   // Only primitives the runtime implements (geocode/llm are always on; listed for the Hub card).
-  tools: z.array(z.enum(["http_get", "scrape", "search", "llm", "geocode"])),
+  tools: z.array(z.enum(["http_get", "scrape", "search", "llm", "geocode", "osm"])),
   dataSources: z.array(z.string()),
   coverage: z.string(),
   builtin: z.literal(false),

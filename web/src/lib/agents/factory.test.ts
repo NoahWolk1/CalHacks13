@@ -72,7 +72,7 @@ describe("draftAgent advanced", () => {
     const out = await draftAgent({ ...spec, advanced }, { registry, generate: async () => created() });
     if (out?.kind !== "new") throw new Error("expected new");
     expect(out.config).toMatchObject({ name: "Permit Hawk", coverage: "Oakland", vehicle: "drone", color: "#123456" });
-    expect(out.config.tools).toEqual(["scrape", "geocode", "llm"]);
+    expect(out.config.tools).toEqual(["scrape", "osm", "geocode", "llm"]);
     expect(out.config.dataSources[0]).toBe("https://data.oaklandca.gov/permits");
   });
 

@@ -11,6 +11,7 @@ import { assertPublicUrl } from "./urlGuard";
 import { placeFinding, type Geocode } from "./placement";
 import { geocode as nominatim } from "./geocode";
 import { brightDataMissing, unlock } from "@/lib/sponsors/brightdata";
+import { OSM_TOOL, osmFeatures, parseOsmInput } from "./osm";
 
 type MessageParam = Anthropic.Beta.Messages.BetaMessageParam;
 type ToolResult = Anthropic.Beta.Messages.BetaToolResultBlockParam;
@@ -97,6 +98,7 @@ function toolsFor(cfg: AgentConfig, brightData: boolean): Anthropic.Beta.Message
   if (cfg.tools.includes("search")) tools.push({ type: "web_search_20260209", name: "web_search", max_uses: 4 });
   if (cfg.tools.includes("scrape")) tools.push(brightData ? FETCH_PAGE : { type: "web_fetch_20260209", name: "web_fetch", max_uses: 4, max_content_tokens: 20_000 });
   if (cfg.tools.includes("http_get")) tools.push(HTTP_GET);
+  if (cfg.tools.includes("osm")) tools.push(OSM_TOOL);
   tools.push(EMIT_FINDINGS);
   return tools;
 }
@@ -110,6 +112,7 @@ const SYSTEM = (cfg: AgentConfig) =>
   `- Up to ${RUNTIME_LIMITS.maxFindings} findings, most notable first. You have only ${RUNTIME_LIMITS.maxTurns} turns, so be direct: one or two searches, then fetch, then report.\n` +
   `- Findings must be readable by a person: resolve ids, keys and codes (taxon/species keys, parcel or station codes) into names with a follow-up call before reporting ` +
   `(e.g. GBIF: https://api.gbif.org/v1/species/{key}, or query with facet=speciesKey and look up the top keys; iNaturalist species_counts already includes taxon names). Never report a bare database key as the answer.\n` +
+  `- Public Overpass API endpoints (overpass-api.de etc.) are often overloaded or unreachable: for OpenStreetMap features use osm_features if you have it; if you must use Overpass, keep the query tiny with [timeout:20] and move on after one failure.\n` +
   `- When the question asks what/which, report concrete named items (e.g. the top 5-10 with counts), not just totals.\n` +
   `- If results are incomplete (ids unresolved, empty or too broad a query), use your remaining turns to fix that before reporting.\n` +
   `- After reporting, stop with one sentence summarizing what you found.`;
@@ -169,6 +172,13 @@ export function buildGeneratedWorker(cfg: AgentConfig, deps: RuntimeDeps = defau
           const url = assertPublicUrl(String((input as { url?: unknown })?.url ?? "")).toString();
           ctx.log(`GET ${short(url)}`);
           return clip(await deps.fetchText(url, { signal, timeoutMs: 12_000 }));
+        }
+        if (name === "osm_features" && cfg.tools.includes("osm")) {
+          const q = parseOsmInput(input);
+          ctx.log(`Reading OpenStreetMap ${q.layer}${q.filter?.class?.length ? ` (${q.filter.class.join(", ")})` : ""}`);
+          const out = await osmFeatures(ctx.task.region, q, signal);
+          ctx.log(`OSM ${q.layer}: ${out.total} found at z${out.zoom} from ${out.tilesRead} tiles${out.sampled ? " (sampled)" : ""}`);
+          return clip(JSON.stringify(out));
         }
         if (name === "fetch_page" && unlockPage && cfg.tools.includes("scrape")) {
           const url = assertPublicUrl(String((input as { url?: unknown })?.url ?? "")).toString();

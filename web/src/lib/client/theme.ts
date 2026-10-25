@@ -72,6 +72,7 @@ export const AGENT_COLORS: Record<string, string> = {
   "ca-schools": "#b0e0d0", // pale aqua: schools + childcare
   "env-burden": "#b6bf7a", // olive: CalEnviroScreen + PM2.5
   "fema-disasters": "#b9a6a0", // taupe: disaster declaration history
+  "osm-settlements": "#e0b26a", // ochre: cities, towns, villages
 };
 export const AGENT_FALLBACK = "#a7a399";
 export const agentColor = (id: string, fallback?: string) => AGENT_COLORS[id] ?? fallback ?? AGENT_FALLBACK;

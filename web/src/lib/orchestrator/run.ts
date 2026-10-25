@@ -21,6 +21,8 @@ import { regionAreaKm2, touchesSF, touchesUS } from "@/lib/geo";
 
 const ORCH = "orchestrator";
 const WORKER_TIMEOUT_MS = 30_000;
+// Only start a late replacement agent if the run is younger than this (a replacement takes up to ~50s).
+const RETRY_BEFORE_MS = 120_000;
 // Generated agents run their own bounded Claude loop (runtime.ts); give it room to finish.
 const GENERATED_TIMEOUT_MS = RUNTIME_LIMITS.timeMs + 5_000;
 
@@ -51,7 +53,9 @@ export async function runOrchestrator(input: RunRequest, emitRaw: (e: RunEvent) 
   if (opts.quotaLimited) think(QUOTA_NOTE);
 
   // ── 0. Where are we? ──────────────────────────────────────────────────────
-  region.label = await reverseGeocode(region.center, regionAreaKm2(region)).catch(() => undefined);
+  // The client's own label (from the picker / search) backs up the server lookup, which can come back empty in rural areas.
+  const clientLabel = region.label?.trim() || undefined;
+  region.label = await reverseGeocode(region.center, regionAreaKm2(region), clientLabel).catch(() => clientLabel);
   if (signal.aborted) return;
   if (region.label) emit({ type: "region_labeled", label: region.label });
   think(`Area: ${region.label ?? "unnamed area"} · ${regionAreaKm2(region).toFixed(2)} km²${touchesSF(region) ? " · SF city feeds available" : ""}`);
@@ -108,7 +112,9 @@ export async function runOrchestrator(input: RunRequest, emitRaw: (e: RunEvent) 
   think(rationale);
 
   // ── 2. Dispatch ───────────────────────────────────────────────────────────
-  const dispatch = async (w: Worker, task: WorkerTask, delayMs = 0) => {
+  /** How a dispatch ended; failed generated agents feed the coverage check / one replacement spawn. */
+  type Outcome = { w: Worker; ok: boolean; n: number; detail: string; logs: string[] };
+  const dispatch = async (w: Worker, task: WorkerTask, delayMs = 0): Promise<Outcome | undefined> => {
     const dispatchId = `${w.id}#${Math.random().toString(36).slice(2, 7)}`;
     emit({ type: "agent_status", agentId: w.id, status: "queued", dispatchId, focus: task.focus, targets: task.targets });
     await sleep(delayMs);
@@ -117,6 +123,7 @@ export async function runOrchestrator(input: RunRequest, emitRaw: (e: RunEvent) 
     if (signal.aborted) return;
     emit({ type: "agent_status", agentId: w.id, status: "scanning", dispatchId });
     let n = 0;
+    const logs: string[] = [];
     // Hard per-worker timeout: one hung API can't stall the mission. The worker's own signal is
     // aborted too so its in-flight fetches stop; late findings after the timeout are dropped.
     const wctl = new AbortController();
@@ -132,7 +139,7 @@ export async function runOrchestrator(input: RunRequest, emitRaw: (e: RunEvent) 
       await Promise.race([timeout, w.run({
         task,
         signal: wctl.signal,
-        log: (text) => emit({ type: "agent_log", agentId: w.id, text }),
+        log: (text) => { logs.push(text.slice(0, 200)); if (logs.length > 4) logs.shift(); emit({ type: "agent_log", agentId: w.id, text }); },
         emit: (f) => {
           if (timedOut) return;
           const finding: Finding = { ...f, id: `F${++fid}`, worker_id: w.id };
@@ -142,11 +149,13 @@ export async function runOrchestrator(input: RunRequest, emitRaw: (e: RunEvent) 
         },
       })]);
       emit({ type: "agent_status", agentId: w.id, status: "done", dispatchId, detail: `${n} finding${n === 1 ? "" : "s"}` });
+      return { w, ok: n > 0, n, detail: n ? "" : "returned 0 findings", logs };
     } catch (e) {
       if (signal.aborted) return;
       const detail = timedOut ? `timed out after ${limitMs / 1000}s${n ? ` (${n} finding${n === 1 ? "" : "s"} kept)` : ""}` : (e as Error).message.slice(0, 140);
       if (timedOut) think(`${w.name} timed out; continuing without it.`);
       emit({ type: "agent_status", agentId: w.id, status: "error", dispatchId, detail });
+      return { w, ok: false, n, detail, logs };
     } finally {
       clearTimeout(timer);
       signal.removeEventListener("abort", onAbort);
@@ -155,10 +164,12 @@ export async function runOrchestrator(input: RunRequest, emitRaw: (e: RunEvent) 
 
   // Capability gaps → the factory reuses a library agent or creates one (factory.ts), dispatched as soon as it exists.
   let spawned = 0;
-  const spawnFor = async (need: string): Promise<Worker | null> => {
+  const spawnFor = async (need: string, replacing?: Failure): Promise<Worker | null> => {
     emit({ type: "agent_gap", need, parentId: ORCH });
     spawned++; // reserve the slot up front: gaps are handled concurrently
-    const got = await requestSpawn({ prompt: need, createdBy: ORCH, depth: 1 }, spawned - 1).catch((e) => {
+    // A replacement must be a new agent told what didn't work, not the failed one reused.
+    const advanced = replacing ? { forceNew: true, notes: failureNote(replacing) } : undefined;
+    const got = await requestSpawn({ prompt: need, createdBy: ORCH, depth: 1, advanced }, spawned - 1).catch((e) => {
       think(`Couldn't create an agent for "${need}" (${(e as Error).message.slice(0, 80)})`);
       return null;
     });
@@ -171,17 +182,30 @@ export async function runOrchestrator(input: RunRequest, emitRaw: (e: RunEvent) 
     else emit({ type: "agent_spawned", agent: toConfig(got.worker), parentId: ORCH });
     return got.worker;
   };
-  const coverGap = async (need: string, task: WorkerTask) => {
-    const w = await spawnFor(need);
+  // Generated agents that errored, timed out or found nothing. Each gap gets at most one replacement.
+  type Failure = Outcome & { need: string; retried: boolean };
+  const failures: Failure[] = [];
+  const failureNote = (f: Failure) =>
+    `A previous agent for this need ("${f.w.name}", sources: ${f.w.dataSources.join("; ") || "unknown"}, tools: ${f.w.tools.join(", ")}) failed: ${f.detail}.` +
+    `${f.logs.length ? ` Its last log lines: ${f.logs.join(" | ")}.` : ""} Use a different data source or approach than the one that failed; keep requests small and fall back quickly.`;
+  const noteFailure = (o: Outcome | undefined, need: string) => {
+    if (o && !o.ok && !o.w.builtin) failures.push({ ...o, need, retried: false });
+  };
+  const coverGap = async (need: string, task: WorkerTask, replacing?: Failure) => {
+    if (replacing) replacing.retried = true;
+    const w = await spawnFor(need, replacing);
     if (!w || signal.aborted || steps.some((s) => s.agentId === w.id)) return; // already in this run
-    steps.push({ agentId: w.id, reason: `Covers a gap: ${need}` });
-    await dispatch(w, task);
+    steps.push({ agentId: w.id, reason: replacing ? `Replaces ${replacing.w.name}: ${need}` : `Covers a gap: ${need}` });
+    const o = await dispatch(w, task);
+    // A replacement that fails too is final (one retry per gap).
+    if (!replacing) noteFailure(o, need);
+    else if (o && !o.ok) think(`${w.name} couldn't get the data either; answering from what the other agents found.`);
   };
 
   const baseTask: WorkerTask = { region, question: req.question };
   const td = Date.now();
   await Promise.all([
-    ...steps.map((s, i) => dispatch(getWorker(s.agentId)!, { ...baseTask, focus: s.focus }, i * 250)),
+    ...steps.map((s, i) => dispatch(getWorker(s.agentId)!, { ...baseTask, focus: s.focus }, i * 250).then((o) => noteFailure(o, s.focus || s.reason))),
     ...gaps.map((need) => coverGap(need, { ...baseTask, focus: need })),
   ]);
   if (signal.aborted) return;
@@ -203,20 +227,32 @@ export async function runOrchestrator(input: RunRequest, emitRaw: (e: RunEvent) 
     think("Checking whether the findings fully cover the question…");
     const used = steps.map((s) => getWorker(s.agentId)).filter((w): w is Worker => !!w);
     const tc = Date.now();
-    const check = await llmGapCheck(req, findings, used, workers).catch((e) => {
+    const firstFailures = failures.filter((f) => !f.retried);
+    const check = await llmGapCheck(req, findings, used, workers, firstFailures).catch((e) => {
       console.warn(`[coverage] check failed: ${(e as Error).message.slice(0, 120)}`);
-      return { gap: "", followups: [] };
+      return { gap: "", replaces: "", followups: [] };
     });
     lap("coverage", tc);
     if (signal.aborted) return;
     const need = spawned < SPAWN_LIMITS.maxPerRun ? check.gap.trim() : "";
-    const followups = pickFollowups(check.followups, used.map((w) => w.id), MAX_FOLLOWUPS);
+    const replacing = need ? firstFailures.find((f) => f.w.id === check.replaces?.trim()) : undefined;
+    if (replacing) think(`${replacing.w.name} ${replacing.detail}; sending a replacement that tries a different source.`);
+    // Don't re-send a failed agent as a follow-up: a replacement (above) is the retry.
+    const followups = pickFollowups(check.followups.filter((f) => !firstFailures.some((x) => x.w.id === f.agentId)), used.map((w) => w.id), MAX_FOLLOWUPS);
     for (const f of followups) think(`Re-dispatching ${getWorker(f.agentId)!.name}: ${f.instruction}`);
+    const before = failures.length;
     await Promise.all([
-      need ? coverGap(need, { ...baseTask, focus: need }) : null,
-      ...followups.map((f) => dispatch(getWorker(f.agentId)!, { ...baseTask, focus: f.instruction })),
+      need ? coverGap(need, { ...baseTask, focus: need }, replacing) : null,
+      ...followups.map((f) => dispatch(getWorker(f.agentId)!, { ...baseTask, focus: f.instruction }).then((o) => noteFailure(o, f.instruction))),
     ]);
     if (signal.aborted) return;
+    // A gap agent or follow-up from this round failed: one replacement, if the spawn and time budgets allow.
+    const late = failures.slice(before).find((f) => !f.retried);
+    if (late && spawned < SPAWN_LIMITS.maxPerRun && Date.now() - t0 < RETRY_BEFORE_MS) {
+      think(`${late.w.name} ${late.detail}; sending one replacement that tries a different source.`);
+      await coverGap(late.need, { ...baseTask, focus: late.need }, late);
+      if (signal.aborted) return;
+    }
   }
 
   // ── 4 + 5. Cross-reference → insights, and (Ask mode) the answer, in parallel ──
@@ -262,14 +298,19 @@ export async function runOrchestrator(input: RunRequest, emitRaw: (e: RunEvent) 
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
-async function reverseGeocode([lng, lat]: [number, number], areaKm2: number) {
-  // A whole-city selection shouldn't be named after the block at its centroid.
-  const zoom = areaKm2 > 40 ? 10 : areaKm2 > 8 ? 13 : 16;
-  const r = await getJson<{ address?: Record<string, string> }>(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&zoom=${zoom}`, { timeoutMs: 6000 });
+async function reverseGeocode([lng, lat]: [number, number], areaKm2: number, clientLabel?: string) {
+  // A whole-city selection shouldn't be named after the block at its centroid; a rural district-sized box gets a region name.
+  const zoom = areaKm2 > 1000 ? 8 : areaKm2 > 40 ? 10 : areaKm2 > 8 ? 13 : 16;
+  const r = await getJson<{ address?: Record<string, string> }>(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&zoom=${zoom}&accept-language=en`, { timeoutMs: 6000 });
   const a = r.address ?? {};
   const local = a.neighbourhood ?? a.suburb ?? a.quarter ?? a.city_district ?? a.road;
   const city = a.city ?? a.town ?? a.village ?? a.county;
-  return [local, city].filter(Boolean).join(", ") || undefined;
+  const named = [local, city].filter(Boolean).join(", ");
+  if (named) return named;
+  // Rural areas often resolve only to a province/state: pair it with the client's local name, else the country.
+  const region = a.state_district ?? a.state ?? a.region ?? a.province;
+  if (clientLabel) return region && !clientLabel.includes(region) ? `${clientLabel}, ${region}` : clientLabel;
+  return [region, a.country].filter(Boolean).join(", ") || undefined;
 }
 
 // Leading \b so "know" doesn't match /now/, "current" doesn't match /rent/, "follow" doesn't match /low/.
@@ -312,6 +353,7 @@ const KEYWORDS: Record<string, RegExp> = {
   "short-term-rentals": /\b(airbnb|short.?term rental|str\b|vacation rental|touris|hotel|investor|gentrif|displace)/i,
   "ca-schools": /\b(schools?|kids?\b|child|famil|daycare|childcare|preschool|education|students?|sensitive (site|receptor)|liquor|cannabis|dispensar)/i,
   "env-burden": /\b(pollut|air quality|pm2\.?5|diesel|asthma|toxic|environmental (justice|burden)|disadvantaged|contaminat|health)/i,
+  "osm-settlements": /\b(villages?|towns?\b|settlements?|hamlets?|city\b|cities|populated|how many places|communit|inhabit)/i,
   "fema-disasters": /\b(disasters?|declaration|fema|past (events|disasters)|how often|track record)/i,
 };
 
@@ -373,7 +415,7 @@ async function llmPlan(req: RunRequest, workers: Worker[]) {
   const roster = workers.map((w) => `- ${w.id} | ${w.name} | ${w.coverage} | ${brief(w.description)}`).join("\n");
   const profiles = PROFILES.map((p) => `- ${p.id} | ${p.name} | for ${p.persona.toLowerCase()} | "${p.tagline}" | ${p.domainPrompt.split(". ")[0]}.`).join("\n");
   const intro = auto
-    ? `You are the dispatcher of a geospatial multi-agent system with three specialist orchestrators:\n${profiles}\n\nFirst route the user's question: set "profileId" to the specialist whose users would ask it (live/current situations → disaster; opening or running a business → storefront; building, buying, hazards and long-term risk → site-risk) and "routeReason" to why, in at most 12 words. Then plan as that specialist would.`
+    ? `You are the dispatcher of a geospatial multi-agent system with ${PROFILES.length} orchestrators:\n${profiles}\n\nFirst route the user's question: set "profileId" to the orchestrator whose users would ask it (live/current situations → disaster; opening or running a business → storefront; building, buying, hazards and long-term risk → site-risk; anything else, e.g. settlements, people, wildlife, history, environment or general curiosity → general) and "routeReason" to why, in at most 12 words. Only pick a specialist when the question is clearly about its domain. Then plan as that orchestrator would.`
     : `You are the "${profile.name}" orchestrator of a geospatial multi-agent system. ${profile.domainPrompt}`;
   const res = await llm()!.beta.messages.parse({
     model: MODEL,
@@ -396,12 +438,15 @@ async function llmPlan(req: RunRequest, workers: Worker[]) {
 
 const GapSchema = z.object({
   gap: z.string(),
+  /** Id of a FAILED agent that "gap" replaces (empty if the gap is new). */
+  replaces: z.string(),
   followups: z.array(z.object({ agentId: z.string(), instruction: z.string() })),
 });
 
 /** After the first sweep: the one missing data need (as a spec for a new agent, or "" if covered),
  *  plus follow-up tasks for agents that already ran but left the answer incomplete. */
-async function llmGapCheck(req: RunRequest, findings: Finding[], used: Worker[], library: Worker[]) {
+type FailedAgent = { w: Worker; detail: string; logs: string[]; need: string };
+async function llmGapCheck(req: RunRequest, findings: Finding[], used: Worker[], library: Worker[], failed: FailedAgent[] = []) {
   const profile = getProfile(req.profileId);
   const roster = (ws: Worker[]) => ws.map((w) => `- ${w.id} | ${w.name} | ${brief(w.description)}`).join("\n") || "(none)";
   const dispatched = used.map((w) => `- ${w.id} | ${w.name} | ${w.builtin ? "built-in, fixed queries (follows a focus only loosely)" : "generated, follows free-text instructions"} | ${brief(w.description)}`).join("\n") || "(none)";
@@ -410,13 +455,13 @@ async function llmGapCheck(req: RunRequest, findings: Finding[], used: Worker[],
     max_tokens: 2000,
     output_config: { effort: "low", format: betaZodOutputFormat(GapSchema) },
     ...FALLBACK,
-    system: `You are the "${profile.name}" orchestrator. ${profile.domainPrompt}\n\nYour agents have finished a first sweep. Decide whether ONE specific kind of data is still missing that would materially change the answer to the user's question and that none of the agents (dispatched or in the library) can provide. If so, put a one-line spec for a new agent in "gap" (e.g. "SF restaurant health inspection scores near the area"); otherwise an empty string.\n\nAlso decide whether a DISPATCHED agent should be sent back out with a narrower task (at most ${MAX_FOLLOWUPS}; usually none, since each costs the user ~20s). ONLY do this when the findings central to the answer are unusable as they stand: raw database ids/keys/codes instead of human-readable names (e.g. GBIF species keys, taxon ids), or only a total/count when the question asks what/which and no named items came back. NOT for fresher data, more items, wider coverage or extra detail. Each follow-up: "agentId" (exact id from DISPATCHED AGENTS, prefer generated ones) and "instruction": one self-contained sentence that repeats the exact ids/values to resolve and says what to report, e.g. "Resolve GBIF species keys 5217335, 2435099 to scientific and common names via https://api.gbif.org/v1/species/{key} and report the top 10 animal species with record counts." Do not use a follow-up to re-run the same query. Return an empty list if nothing needs following up.`,
+    system: `You are the "${profile.name}" orchestrator. ${profile.domainPrompt}\n\nYour agents have finished a first sweep. Decide whether ONE specific kind of data is still missing that would materially change the answer to the user's question and that none of the agents (dispatched or in the library) can provide. If so, put a one-line spec for a new agent in "gap" (e.g. "SF restaurant health inspection scores near the area"); otherwise an empty string.\n\nAlso decide whether a DISPATCHED agent should be sent back out with a narrower task (at most ${MAX_FOLLOWUPS}; usually none, since each costs the user ~20s). ONLY do this when the findings central to the answer are unusable as they stand: raw database ids/keys/codes instead of human-readable names (e.g. GBIF species keys, taxon ids), or only a total/count when the question asks what/which and no named items came back. NOT for fresher data, more items, wider coverage or extra detail. Each follow-up: "agentId" (exact id from DISPATCHED AGENTS, prefer generated ones) and "instruction": one self-contained sentence that repeats the exact ids/values to resolve and says what to report, e.g. "Resolve GBIF species keys 5217335, 2435099 to scientific and common names via https://api.gbif.org/v1/species/{key} and report the top 10 animal species with record counts." Do not use a follow-up to re-run the same query. Return an empty list if nothing needs following up.\n\nFAILED AGENTS (if any) errored, timed out or found nothing. If one of them was central to the question, you may use "gap" for ONE replacement: a one-line spec that names a DIFFERENT source or approach than the failed one (its tools/log show what didn't work), and put the failed agent's id in "replaces". Otherwise "replaces" is an empty string.`,
     messages: [{
       role: "user",
-      content: `Area: ${req.region.label ?? "unknown"}\nQuestion: ${req.question}\n\nDISPATCHED AGENTS\n${dispatched}\n\nOTHER LIBRARY AGENTS\n${roster(library.filter((w) => !used.includes(w)))}\n\nFINDINGS SO FAR\n${compactFindings(findings, 60)}`,
+      content: `Area: ${req.region.label ?? "unknown"}\nQuestion: ${req.question}\n\nDISPATCHED AGENTS\n${dispatched}\n\nFAILED AGENTS\n${failed.map((f) => `- ${f.w.id} | ${f.w.name} | task: ${f.need.slice(0, 160)} | sources: ${f.w.dataSources.join("; ").slice(0, 160) || "?"} | ${f.detail}${f.logs.length ? ` | last log: ${f.logs.join(" | ").slice(0, 300)}` : ""}`).join("\n") || "(none)"}\n\nOTHER LIBRARY AGENTS\n${roster(library.filter((w) => !used.includes(w)))}\n\nFINDINGS SO FAR\n${compactFindings(findings, 60)}`,
     }],
   });
-  return res.parsed_output ?? { gap: "", followups: [] };
+  return res.parsed_output ?? { gap: "", replaces: "", followups: [] };
 }
 
 function compactFindings(findings: Finding[], max = 140) {
@@ -486,7 +531,7 @@ async function llmAnswer(req: RunRequest, findings: Finding[], links: Link[], on
     max_tokens: 6000,
     output_config: { effort: "low" },
     ...FALLBACK,
-    system: `You are the "${profile.name}" orchestrator. ${profile.domainPrompt}\n\nAnswer the user's question about the selected area in ≤180 words of markdown: lead with a direct verdict, then 2–4 short bullets of evidence. Cite findings inline as [F12]. Be honest about gaps and data limits (e.g. coverage, data age). Name concrete items (species, places, businesses) as the findings give them. If some findings still carry unresolved database ids/keys, say so in one short clause; never tell the user to look them up as the main next step. No preamble.`,
+    system: `You are the "${profile.name}" orchestrator. ${profile.domainPrompt}\n\nAnswer the user's question about the selected area in ≤180 words of markdown: lead with a direct verdict, then 2–4 short bullets of evidence. Cite findings inline as [F12]. Be honest about gaps and data limits (e.g. coverage, data age). When evidence is thin or partial, still give the best answer the findings support (e.g. "at least N", "the mapped data shows…") and name what's missing in one clause; never answer only "can't tell" when partial evidence exists. Leave out findings that don't bear on the question. Name concrete items (species, places, businesses) as the findings give them. If some findings still carry unresolved database ids/keys, say so in one short clause; never tell the user to look them up as the main next step. No preamble.`,
     messages: [{
       role: "user",
       content: `Area: ${req.region.label ?? "unknown"}\nQuestion: ${req.question}\n\nFINDINGS\n${compactFindings(findings)}\n\nCANDIDATE CONNECTIONS (spatial joins between agents' findings)\n${links.map((l) => `- ${l.title}: ${l.body} [${l.findingIds.join(", ")}]`).join("\n") || "(none)"}`,

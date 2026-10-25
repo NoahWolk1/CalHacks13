@@ -99,6 +99,8 @@ const llmGenerate: Generate = async (request, roster) => {
       '- "create": nothing fits. Leave reuse_id empty and design a new worker:\n' +
       "  name: 2-3 words, evocative (e.g. \"Inspection Scout\"). description: one line saying what data it gathers; the orchestrator reads it to decide relevance.\n" +
       "  tools: the subset it needs of search (web search), scrape (read a web page), http_get (call a public JSON API).\n" +
+      "  Every agent also gets osm_features (OpenStreetMap features in the area from vector tiles: places/villages, POIs like schools or hospitals, " +
+      "buildings, roads, rivers, parks, land use). For counting or locating mapped features, tell the agent to use osm_features first (never public Overpass, which is unreliable).\n" +
       "  data_sources: the specific public sources it should use (e.g. \"DataSF Restaurant Scores (Socrata API)\"). Prefer official open-data APIs that are free and need no key.\n" +
       "  coverage: where it works (\"San Francisco\", \"US\", \"Global\"). vehicle: drone, car, rover, satellite or boat (purely visual). color: a hex like #e879f9.\n" +
       "  prompt: the agent's brief, 3-6 sentences: what to find, which sources/endpoints to try first, how to filter to the area, and what makes a finding notable.",
@@ -133,7 +135,7 @@ export async function draftAgent(spec: AgentSpec, deps: FactoryDeps = defaultDep
 
   const name = (adv.name?.trim() || g.name.trim()).slice(0, LIMITS.name) || "Custom Agent";
   const picked = adv.tools?.length ? adv.tools : g.tools;
-  const tools: ToolPrimitive[] = [...new Set<ToolPrimitive>([...picked, "geocode", "llm"])];
+  const tools: ToolPrimitive[] = [...new Set<ToolPrimitive>([...picked, "osm", "geocode", "llm"])];
   const userSources = (adv.dataSources ?? []).map((d) => d.trim()).filter(Boolean);
   const color = adv.color ?? g.color;
   return {

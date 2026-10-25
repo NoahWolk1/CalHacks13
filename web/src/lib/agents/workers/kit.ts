@@ -1,12 +1,11 @@
 // Small shared helpers for the hazard/environment/context workers: ArcGIS FeatureServer queries,
 // clipping polygons to the selection, and reading OpenStreetMap layers out of OpenFreeMap tiles.
 
-import { getBuffer, getJson } from "@/lib/http";
+import { planTiles, readTileLayers } from "./tiles";
+import { getJson } from "@/lib/http";
 import type { Region } from "@/lib/types";
 import * as turf from "@turf/turf";
 import type { Feature, FeatureCollection, Geometry, MultiPolygon, Polygon } from "geojson";
-import { VectorTile } from "@mapbox/vector-tile";
-import { PbfReader } from "pbf";
 
 type BBox = [number, number, number, number];
 
@@ -77,28 +76,7 @@ export const areaM2 = (g: Polygon | MultiPolygon | null) => (g ? turf.area(g) : 
 
 // ─── OpenStreetMap layers from OpenFreeMap vector tiles (same source as the places worker) ─────────
 
-const Z = 14;
-const lng2x = (lng: number) => Math.floor(((lng + 180) / 360) * 2 ** Z);
-const lat2y = (lat: number) => { const r = (lat * Math.PI) / 180; return Math.floor(((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * 2 ** Z); };
-
-/** Reads the given OpenMapTiles layers (e.g. "water", "building", "poi") for the region's z14 tiles. */
+/** Reads the given OpenMapTiles layers (e.g. "water", "building", "poi") for the region's z14 tiles (sampled for big areas; see tiles.ts). */
 export async function osmTileLayers(region: Region, layers: string[], signal: AbortSignal, maxTiles = 16): Promise<Record<string, Feature[]>> {
-  const [a, b, c, d] = region.bbox;
-  const tiles: [number, number][] = [];
-  for (let x = lng2x(a); x <= lng2x(c); x++) for (let y = lat2y(d); y <= lat2y(b); y++) tiles.push([x, y]);
-  const [cx, cy] = [lng2x(region.center[0]), lat2y(region.center[1])];
-  tiles.sort((p, q) => Math.hypot(p[0] - cx, p[1] - cy) - Math.hypot(q[0] - cx, q[1] - cy)).splice(maxTiles);
-  const template = (await getJson<{ tiles: string[] }>("https://tiles.openfreemap.org/planet", { signal, timeoutMs: 8000 })).tiles[0];
-  const out: Record<string, Feature[]> = Object.fromEntries(layers.map((l) => [l, []]));
-  await Promise.all(tiles.map(async ([x, y]) => {
-    const buf = await getBuffer(template.replace("{z}", String(Z)).replace("{x}", String(x)).replace("{y}", String(y)), { signal }).catch(() => null);
-    if (!buf?.byteLength) return;
-    const vt = new VectorTile(new PbfReader(new Uint8Array(buf)));
-    for (const name of layers) {
-      const layer = vt.layers[name];
-      if (!layer) continue;
-      for (let i = 0; i < layer.length; i++) out[name].push(layer.feature(i).toGeoJSON(x, y, Z) as Feature);
-    }
-  }));
-  return out;
+  return (await readTileLayers(planTiles(region.bbox, region.center, { maxZ: 14, maxTiles }), layers, signal)).features;
 }
