@@ -1,6 +1,6 @@
 # Track checklists: how we qualify, what to say, what's missing
 
-> **Source:** [tracks/shortlist.md](../tracks/shortlist.md) requirements, [sources/hive-prizes.md](../sources/hive-prizes.md), codebase as of Sat 2026-10-24.  
+> **Source:** [tracks/shortlist.md](../tracks/shortlist.md) requirements, [sources/hive-prizes.md](../sources/hive-prizes.md), codebase as of Sun 2026-10-25.  
 > **Summary:** For each track we're considering: evidence we qualify, the one-line pitch for that sponsor's judges, and the gaps to close before Sun 9:00 AM. **Biggest gap: Anthropic (and Microsoft) need a named community, and the team has to pick one.** The final track list is still open in [decisions.md](../project/decisions.md).
 
 ## Summary
@@ -28,7 +28,7 @@ Note: the general prize is called **"Most Technically Complex Hack"** on the pri
 - [x] Mission history (**Missions ▾**), Share, and Stop/recall all run through Convex functions.
 - [x] Server batches event writes every ~100 ms.
 
-**What to say:** "Convex is our shared world state. Ten agents write into one ordered event log, and every screen watching that mission, including your phone, updates reactively. Share links, history and replay all come from that one data model."
+**What to say:** "Convex is our shared world state. Every agent writes into one ordered event log, and every screen watching that mission, including your phone, updates reactively. Share links, history and replay all come from that one data model."
 
 **Still missing**
 - [ ] Put the phone share-link moment in the live pitch (it's in [pitch.md](pitch.md)).
@@ -69,7 +69,7 @@ Recommendation: **A or B** matches the strongest demo result (flood × permits) 
 - [ ] **Neither SDK is used anywhere in the code.** As things stand we do not qualify for either.
 
 **Realistic paths (pick at most one, only if there are spare hours after the demo is solid)**
-- [ ] **Apify actor as the "scrape a URL" primitive** for agent creation (teammate's work), e.g. "scrape the listings at <url> and pin each address". Building one custom actor also enters Best Actor.
+- [ ] **Apify actor as the "scrape a URL" primitive** for agent creation (the `scrape` tool in `web/src/lib/agents/runtime.ts`, currently Claude's `web_fetch`), e.g. "scrape the listings at <url> and pin each address". Building one custom actor also enters Best Actor.
 - [ ] **Bright Data** behind the News Uplink worker or a new listings/news-site scraper (Web Unlocker / SERP API), replacing Google News RSS for richer article data. It must appear in the live demo, not just the README.
 
 **What to say (if added):** "Agents that scrape the web use [Apify actor / Bright Data] so they get through blocks and slow sites. Remove it and the [listings/news] agent goes blank."
@@ -93,15 +93,15 @@ Recommendation: **A or B** matches the strongest demo result (flood × permits) 
 **Requirement:** none published beyond the title.
 
 **How we qualify**
-- [x] Multi-agent orchestrator: LLM planning → parallel dispatch of 10 workers → targeted re-dispatch → deterministic spatial joins (Turf) → cited insights → streamed answer. Includes a heuristic fallback path.
+- [x] Multi-agent orchestrator: LLM planning → parallel dispatch of up to 13 workers → targeted re-dispatch → deterministic spatial joins (Turf) → cited insights → streamed answer. Includes a heuristic fallback path.
 - [x] 10+ heterogeneous live sources (ArcGIS feature services, Socrata SoQL `within_polygon`, vector-tile decoding of OSM, RSS, REST), each with its own error handling.
 - [x] Real-time shared state in Convex (ordered event log, live + replay through the same dispatcher), with an SSE fallback.
 - [x] deck.gl fleet simulation where vehicles travel to the actual finding coordinates, plus insight arcs between cited findings.
-- [~] Agents spawning agents with guardrails. The scaffolding is wired (planner gaps, `agent_spawned` events, UI labels, `SPAWN_LIMITS`), and creation is in progress.
+- [x] Agents spawning agents with guardrails: planner gaps and a post-sweep coverage check spawn generated agents that run on a bounded Claude tool-use loop (`lib/agents/factory.ts`, `runtime.ts`), capped by `SPAWN_LIMITS`, with Keep/Discard after the run.
 
 **What to say:** walk through the pipeline in one breath, then point at the re-dispatch and the insight arcs.
 
-**Still missing:** [ ] if agent creation lands, show one spawn live, since it's the most technically impressive beat · [ ] an architecture diagram image for Devpost (the ASCII diagram in `web/README.md` is the starting point).
+**Still missing:** [ ] rehearse one spawn live (Storefront Scout, "good spot for a café?"), since it's the most technically impressive beat · [ ] an architecture diagram image for Devpost (the ASCII diagram in `web/README.md` is the starting point).
 
 ## Microsoft: Built for the Real World (+ Customer Impact Award)
 
@@ -110,7 +110,7 @@ Recommendation: **A or B** matches the strongest demo result (flood × permits) 
 **How we qualify**
 - [x] End-to-end functionality on live data.
 - [x] Responsible design: source link + `observed_at` + confidence on every finding, citation validation, conflict flagging instead of silently picking a source, spawn guardrails (fixed primitives, depth/per-run caps, temporary by default), graceful degradation.
-- [~] Path to production: Convex persistence, history, per-agent failure isolation, LLM fallback. Not deployed publicly yet.
+- [x] Path to production: deployed at https://geoswarm.vercel.app (Vercel + Convex prod), Convex persistence and history, per-agent timeouts and failure isolation, Claude rate limits with heuristic fallback.
 - [ ] **Customer understanding:** same blocker as Anthropic (the named community).
 - [ ] **Measurable usefulness:** no metric stated yet.
 

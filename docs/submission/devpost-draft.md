@@ -1,9 +1,9 @@
 # Devpost draft: GeoSwarm (working title)
 
-> **Source:** codebase (`web/`), project docs, team test runs, Sat 2026-10-24.  
+> **Source:** codebase (`web/`), project docs, team test runs, Sat 2026-10-24; agent creation and worker list updated Sun 2026-10-25.  
 > **Summary:** Paste-ready text for each Devpost section. Numbers come from a real Mission District test run. Fill every `[BRACKETED]` placeholder before submitting (deadline Sun 9:00 AM PDT, aim for 8:45). Project name is still open in [decisions.md](../project/decisions.md); find/replace "GeoSwarm" if it changes.
 
-**Placeholders to fill:** [TEAM NAMES] · [DEMO VIDEO LINK] · [REPO LINK] · [LIVE DEMO LINK, if deployed] · [SCREENSHOTS] · [TAGLINE, if renamed] · [NAMED COMMUNITY, see tracks.md]
+**Placeholders to fill:** [TEAM NAMES] · [DEMO VIDEO LINK] · [REPO LINK] · [SCREENSHOTS] · [TAGLINE, if renamed] · [NAMED COMMUNITY, see tracks.md]
 
 ---
 
@@ -22,7 +22,7 @@ Questions about a place, like "is it risky to build here?" or "is this a good bl
 1. **Pick an area.** Draw a box or polygon, or drop a pin, on a 3D dark map of San Francisco.
 2. **Pick an orchestrator.** Site Risk Analyst ("is it safe and smart to build here?"), Storefront Scout ("where should I open my shop?"), or Disaster Response ("what's happening on the ground right now?"). Each one encodes a different user's priorities and uses the same pool of worker agents.
 3. **Pick a mode.** **Ask** a question, and the orchestrator sends only the agents that question needs. Or run **Insights**, where a broader survey looks for findings that combine into something notable.
-4. **Watch the agents work.** 10 worker agents appear as drones, cars, rovers and satellites. Each one flies to its finding before the pin drops, so you can see which agent found what. Every pin links to its source record.
+4. **Watch the agents work.** Up to 13 built-in worker agents appear as drones, cars, rovers and satellites. Each one flies to its finding before the pin drops, so you can see which agent found what. Every pin links to its source record.
 5. **The orchestrator reasons across agents.** It:
    - **plans** which workers to send,
    - **dispatches** them in parallel,
@@ -30,7 +30,8 @@ Questions about a place, like "is it risky to build here?" or "is this a good bl
    - **cross-references** findings spatially (permits × flood zones × filled-in former water × 311 flooding reports × low elevation),
    - **flags conflicts**, such as FEMA showing minimal hazard where residents keep reporting flooding,
    - writes **insights that cite the finding ids they rest on**, then answers the question.
-6. **Share it live.** Every mission is stored in Convex. A `/?run=<id>` link streams the same mission live on any device and replays finished ones.
+6. **Missing an agent? It makes one.** Describe a data source in the Agent Hub and Claude drafts a new worker you can edit and save. In Ask mode the orchestrator does this itself when its planner finds a gap: the new agent runs immediately, is marked "created by" its parent, and after the run you keep it or discard it.
+7. **Share it live.** Every mission is stored in Convex. A `/?run=<id>` link streams the same mission live on any device and replays finished ones.
 
 **Real result (Mission District, Site Risk Analyst, Insights):** about 124 findings in about 10 seconds, including:
 - "6 permitted projects inside a mapped flood zone (SFPUC 100-year storm), ≈$3.1M of permitted work"
@@ -50,6 +51,9 @@ Questions about a place, like "is it risky to build here?" or "is this a good bl
 | Street Scout | OpenStreetMap via OpenFreeMap vector tiles |
 | News Uplink | Google News RSS |
 | Census Rover | US Census Geocoder + ACS 5-year |
+| Sentinel Eye | ESA Copernicus Sentinel-2 L2A (Element84 Earth Search) + USGS Landsat Collection 2 |
+| Orbit Planner | CelesTrak element sets, propagated with SGP4 (satellite.js) |
+| Earth Events | NASA EONET v3 |
 
 ## How we built it
 
@@ -59,7 +63,8 @@ Questions about a place, like "is it risky to build here?" or "is this a good bl
 - **Spatial cross-referencing** (`crossref.ts`) is deterministic: Turf point-in-polygon and distance joins produce candidate connections (permits in flood zones, permits on fill, 311 reports corroborating hazard maps, FEMA vs. ground-truth conflicts, civic facilities in flood zones, incoming housing units). Claude gets these joins as grounded candidates rather than inventing the connections itself.
 - **Shared finding schema:** every worker emits `{claim, geometry (GeoJSON), source_url, source_type, observed_at, confidence, worker_id}`, so the map renders any agent's output and the orchestrator reasons over all of it the same way.
 - **Convex** is the live shared mission state. The server writes each run, its append-only ordered event log (batched every ~100 ms), and denormalized findings indexed by run, worker and category. Browsers subscribe reactively, which powers share links, mission history and replay. Without Convex the app falls back to server-sent events.
-- **Agent creation** (in progress): a teammate is building prompt-to-create agents in the Agent Hub, plus a path for the orchestrator to spawn an agent mid-run when its planner finds a gap. The planner already reports gaps, the UI already labels spawned agents "created by <parent>", and the guardrails are defined: a fixed set of tool primitives, depth ≤ 2, ≤ 4 spawns per run.
+- **Agents creating agents:** generated agents are configs, not code. One structured-output Claude call either reuses a library agent or drafts a new config (name, brief, tools, data sources, coverage). A shared runtime runs it as a bounded Claude tool-use loop (6 turns, 45 s, 15 findings) with only its allowed tools: web search, web fetch, an `http_get` that blocks private and loopback hosts, and an `emit_findings` tool that enforces the finding schema. Addresses are geocoded and findings far outside the region are dropped. The orchestrator spawns agents for planner gaps and once after the first sweep if a coverage check finds one, capped at depth 2 and 4 per run. Spawned agents are temporary until the user keeps them.
+- **Hosting:** Vercel plus Convex cloud. Claude runs are rate-limited per IP and globally, and over the cap a run falls back to heuristic mode.
 
 ## Challenges we ran into
 
@@ -71,7 +76,7 @@ Questions about a place, like "is it risky to build here?" or "is this a good bl
 
 ## Accomplishments that we're proud of
 
-- 10 agents on 10+ live public sources, with no mocked or hardcoded data in the demo path.
+- 13 built-in agents on 15+ live public sources, with no mocked or hardcoded data in the demo path.
 - A real cross-source finding in the Mission: 6 permitted projects (≈$3.1M of work) inside the SFPUC 100-year storm flood zone, and 6 projects on filled-in former water. FEMA's map alone doesn't show either.
 - About 124 findings in about 10 seconds, all streamed onto the map with sources.
 - The orchestrator re-dispatches an agent to specific parcels, which is a follow-up step rather than a single fan-out.
@@ -88,7 +93,7 @@ Questions about a place, like "is it risky to build here?" or "is this a good bl
 
 ## What's next for GeoSwarm
 
-- **Ship agent creation:** prompt-to-create in the Agent Hub, plus agents spawning agents mid-run under the guardrails above, with keep/discard after a run.
+- **A shared agent library:** move saved agents into Convex so the agents users and orchestrators create are shared across everyone, with usage counts.
 - **Beyond San Francisco:** about half the workers are already national or global (FEMA, USGS, NWS, Census, OSM, elevation, news). Adding a city means adding its permits, 311 and local flood-map agents. Socrata and ArcGIS cover a lot of US cities.
 - **Parcel reports** a user can export or hand to a buyer, lender or community group, with every claim linked to its source.
 - **Watch mode:** re-run a saved area on a schedule and alert when a new permit, flood report or hazard alert appears.
@@ -100,13 +105,15 @@ Questions about a place, like "is it risky to build here?" or "is this a good bl
 next.js, react, typescript, tailwindcss, maplibre-gl, deck.gl, turf.js, zustand, convex,
 anthropic-claude, anthropic-sdk, zod, openfreemap, openstreetmap,
 fema-nfhl, sfpuc-flood-map, datasf (dbi-permits, sf-311), open-meteo, nws-api, usgs-earthquake-api,
-us-census-api, google-news-rss, nominatim, arcgis-rest, socrata
+us-census-api, google-news-rss, nominatim, arcgis-rest, socrata,
+sentinel-2, landsat, celestrak, satellite.js, nasa-eonet, vercel
 ```
 
 [ADD: bright-data / apify only if a worker actually uses them by submission time]
 
 ## Links
 
+- Live demo: https://geoswarm.vercel.app
 - Demo video: [DEMO VIDEO LINK]
 - Repo: [REPO LINK]
 - Team: [TEAM NAMES]

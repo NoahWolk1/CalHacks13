@@ -1,11 +1,11 @@
 # Pitch: 2-minute script, demo click path, fallback, judge Q&A
 
-> **Source:** codebase (`web/`), project docs, team test runs, Sat 2026-10-24.  
+> **Source:** codebase (`web/`), project docs, team test runs, Sat 2026-10-24; agent lineup updated Sun 2026-10-25.  
 > **Summary:** What to say and click at the judging table (Sun 10:30 AM–12:30 PM, whole team at the table). The presenter and demo driver are still open in [decisions.md](../project/decisions.md). Rehearse with a timer at least twice.
 
 ## Before judging (checklist)
 
-- [ ] App running locally, with `npx convex dev` and `npm run dev` both up. Hard-refresh once.
+- [ ] App open at https://geoswarm.vercel.app (or locally, with `npx convex dev` and `npm run dev` both up). Hard-refresh once. Run `npm run warm` against the deployed site beforehand (see `web/README.md`).
 - [ ] `ANTHROPIC_API_KEY` set (the LLM badge shows on). The heuristic fallback still works without it.
 - [ ] **Run the demo mission once that morning** in the exact Mission District box. Save its `/?run=<id>` link and open it in a second tab. That's the fallback.
 - [ ] A phone open to a past run's share link on the same Wi-Fi (`http://<laptop-ip>:<port>/?run=<id>`), or a cloud Convex deployment if off-LAN.
@@ -23,14 +23,14 @@
 | **0:00–0:15** | "If you're about to buy, build on, or insure a lot in San Francisco, the answer to 'is this a bad idea?' is spread across a dozen public datasets nobody reads together. FEMA's flood map doesn't even cover the Mission." | Map already on screen, Mission in view. |
 | **0:15–0:25** | "GeoSwarm: you draw an area, pick who you are, and a team of AI agents goes and gets the live data." | **Draw the box** over the Mission demo spot. |
 | **0:25–0:35** | "I'm a Site Risk Analyst, and I'll ask for Insights, so no question needed. Claude plans which agents to send." | Confirm **Site Risk Analyst** + **Insights**, hit the run/launch button. Point at the **plan** in the right panel. |
-| **0:35–0:55** | "Ten agents, each one a live public source: FEMA, the city's storm flood map, building permits, 311, elevation, USGS, weather alerts, OpenStreetMap, news, Census. Each one flies to what it found before the pin drops. Every pin links to its source record." | Point at **drones/cars/rovers fanning out**. Click **one permit pin** to show the DBI source link. |
+| **0:35–0:55** | "Nine agents, each one a live public source: FEMA, the city's storm flood map, building permits, 311, elevation, USGS, weather alerts, news, and Sentinel-2 satellite imagery. Each one flies to what it found before the pin drops. Every pin links to its source record." | Point at **drones/cars/rovers fanning out**. Click **one permit pin** to show the DBI source link. |
 | **0:55–1:10** | "This is the orchestrator doing more than summarizing. It saw permits that looked risky and sent the terrain drone back to measure the ground at those specific parcels." | Point at the **terrain drone re-dispatch** (thought line: "Re-dispatching Terrain Scanner…"). |
 | **1:10–1:35** | "Then it cross-references. Six permitted projects, about $3.1 million of work, sit inside the city's 100-year storm flood zone, and six are built on filled-in former creek and lagoon. FEMA's map alone shows neither." | **When the insight arcs appear**, point along an arc from the **permit pin to the flood polygon**. Click the top insight so its **cited findings highlight**. |
 | **1:35–1:45** | "Every insight cites the finding ids it's built on. If Claude cites something that doesn't exist, we drop it." | Point at the **finding ids** in the insight card. |
 | **1:45–1:55** | "Missions live in Convex, so this link streams the same mission live on any device." | Hand the judge the **phone**, or click **Share** and open the link in a new tab. |
-| **1:55–2:00** | "Same agents, different orchestrators: Storefront Scout and Disaster Response. Next, agents that create agents. Built for [NAMED COMMUNITY]." | Point at the orchestrator picker. Stop. |
+| **1:55–2:00** | "Same agents, different orchestrators: Storefront Scout and Disaster Response. And when no agent fits, the orchestrator creates one. Built for [NAMED COMMUNITY]." | Point at the orchestrator picker. Stop. |
 
-If there's time left (judges asking for more), run an **Ask** question with Site Risk Analyst: *"Which new developments are most exposed to flooding?"* and show the streamed answer with citations.
+If there's time left (judges asking for more), run an **Ask** question with Site Risk Analyst: *"Which new developments are most exposed to flooding?"* and show the streamed answer with citations. Or show **agents creating agents**: switch to Storefront Scout, ask *"Is this a good spot for a café?"*, point at the new agent marked "created by" (it pulls SF restaurant health-inspection scores), then click **Keep in library**. Fallback: create the same agent from the Agent Hub.
 
 ## 30-second fallback (Wi-Fi or an API down)
 
@@ -53,7 +53,7 @@ Say: "The venue Wi-Fi is struggling, so here's the mission we ran this morning. 
    Three ways. (1) The connections come from Turf spatial joins on real geometry, and Claude gets them as grounded candidates. (2) Insights use structured output and must cite finding ids. Ids that don't exist in this run are filtered out. (3) Every finding links to its source record, so any claim can be checked in one click. With no LLM, the joins become the insights directly.
 
 4. **Agents creating agents sounds dangerous. What are the guardrails?**
-   It's in progress. Spawned agents get the same fixed tool primitives as user-created ones (HTTP GET, scrape, search, transcribe, LLM), with no extra access. The limits are depth ≤ 2 and ≤ 4 spawns per run, plus a time/token budget. The orchestrator checks the library before creating anything. Spawned agents are shown with their parent ("created by …") and are temporary unless the user keeps them.
+   Spawned agents get the same fixed tool primitives as user-created ones (web search, web fetch, and an HTTP GET that blocks private and loopback addresses), with no extra access, and every result has to pass the finding schema. The limits are depth ≤ 2 and ≤ 4 spawns per run, and each agent gets at most 6 turns, 45 seconds and 15 findings. The orchestrator checks the library before creating anything. Spawned agents are shown with their parent ("created by …") and are temporary unless the user keeps them.
 
 5. **Does this work outside San Francisco?**
    Partly today. FEMA, USGS, NWS, Census, OpenStreetMap, elevation and news work across the US (several globally). SF-only agents (permits, 311, SFPUC) are dropped automatically outside SF. Adding a city means adding its permits, 311 and flood-map agents. Many US cities publish these on Socrata or ArcGIS, the same platforms we already query.

@@ -15,17 +15,31 @@
 - **2026-10-24: LLM is Claude** via the Anthropic SDK for planning, insights and answers; falls back to heuristics when no API key is set. Built-in workers don't call an LLM.
 - **2026-10-24: Hosting = Vercel (Root Directory `web`) + Convex cloud prod.** The build runs `npx convex deploy --cmd 'npm run build'` when `CONVEX_DEPLOY_KEY` is set (`web/vercel.json`, `npm run build:vercel`). Background orchestrator work runs in `after()`, stop goes through a Convex `stopRequested` flag so it works across instances, and the disk cache lives in `/tmp` on Vercel. Runs are capped at 300 s on Hobby. Steps: [web/README.md](../../web/README.md#deploy-to-vercel).
 - **2026-10-24: Visual direction "Night survey sheet".** The chrome is warm graphite with docked solid panels and hairline borders, with no glass, glow or gradients. Colour is reserved for data: the agents (`web/src/lib/client/theme.ts`) and the insight kinds. One sodium-orange accent marks the drawn area, live state and the command post. Geist in sentence case, with mono only for numbers and IDs. Collapsed panels leave a 36px activity rail.
-
 - **2026-10-24: Deployed** to https://geoswarm.vercel.app (Vercel project `geoswarm`, CLI deploys from `web/`) with Convex prod `hip-puffin-315` (project `geoswarm`, team noah-wolk). Claude runs are rate-limited (20/h per IP, 150/h global, via Convex `llmUsage`); over the cap runs fall back to heuristic mode.
+- **2026-10-24: Agent creation + library design** (agent-creation owner):
+  - **"Marketplace" = one shared library**, no accounts/publishing; marketplace flavor only (creator, usage counts on cards).
+  - **One `createAgent()` path** for both Hub prompt-to-create and mid-run spawns. A single structured-output Claude call (Opus) returns either `{reuse: <id>}` (library checked first) or a new config `{name, description, tools, dataSources, coverage, vehicle, color, prompt}` with id `custom-<slug>`.
+  - **Generated agents run on a generic tool-use loop**: Claude Sonnet 5.5 with the agent's prompt as system prompt, only its allowed tools plus `emit_findings` (enforces the finding schema). Caps: ~6 turns, ~45s, ~15 findings; one `agent_log` line per tool call.
+  - **v1 tool primitives**: Claude server-side `web_search` + `web_fetch`, our `http_get` (via `lib/http.ts`, http(s) only, private/loopback/link-local hosts blocked), and `geocode` (Nominatim, bounded to region bbox; fallback to region center at lower confidence; findings far outside the region dropped). As built, `geocode` is applied automatically to reported addresses rather than exposed as a model tool. No transcription. Keep `scrape` swappable for Bright Data.
+  - **Spawn triggers**: planner gaps (already wired) + one post-sweep gap check in **Ask mode only** (max 1 per run). No worker-spawns-worker.
+  - **No approval gate**: spawned agents run immediately, are temporary (server-side temp map, invisible to other runs' planners), and get **Keep / Discard** in the run panel after `run_done`. Kept agents join the library and the Ask planner's roster, not Insights `defaultAgents`.
+  - **Library persistence**: JSON file (`web/data/agents.json`); migrate if a backend is chosen.
+  - **Hub**: prompt → preview using `AgentCard` (name + prompt editable) → Save; Delete for custom agents.
+  - **No API key**: spawning disabled, gaps shown as notes, Hub create disabled with "needs ANTHROPIC_API_KEY". No mocked agents.
+  - **Rendering**: generated findings use `category = "custom"`, colored by the agent's color.
+  - **Usage counts on cards** show how many orchestrator profiles include the agent in their Insights team (not per-run usage).
+  - **Demo spawn**: Storefront Scout "good spot for a café?" → gap → spawned agent pulls SF restaurant health inspection scores (DataSF). Rehearse until reliable.
+  - **Timebox**: (1) createAgent + runtime from a script with real pins, (2) planner-gap spawn live in UI **by ~2 AM Sun**, (3) Keep/Discard + `agents.json`, (4) Hub create, (5) post-sweep spawn. If (2) slips, do (4) before (3) and demo the Hub path. Feature freeze ~6 AM.
+  - **Status (Sat evening):** steps (1)–(5) are all in the code with 53 passing unit tests (`npm test`). Still to do: rehearse the café → health-inspection spawn live.
+- **2026-10-25: SpacetimeDB backend superseded by Convex.** A local decision on 2026-10-24 picked SpacetimeDB for the Spacetime track, but it was never started in code, while Convex was built and deployed. Convex stays; the Spacetime track is out. The agent library is still a JSON file, not in Convex: on Vercel it lives in per-instance `/tmp` (`web/src/lib/agents/library.ts`), so saved agents can vanish between requests, and a Keep request can land on a different instance from the run that spawned the agent. Rehearse the spawn beat on the deployed site, or run it locally.
 
 ## Open
 
 - [ ] **Named community for the pitch** (needed for Anthropic/Microsoft). Candidates in [submission/tracks.md](../submission/tracks.md).
-- [ ] Which tool primitives generated agents get, and which transcription service.
-- [ ] Limits for agents creating agents (depth, per-run cap) and whether spawning needs user approval. Owned by the agent-creation teammate; placeholder defaults are `maxDepth: 2, maxPerRun: 4` in `web/src/lib/agents/factory.ts`.
-- [ ] Which sponsor tracks we're targeting. Options and requirements: [tracks/shortlist.md](../tracks/shortlist.md). Notable findings:
-  - Bright Data and Apify both reward our scraping workers; Bright Data **disqualifies mocked data in the demo**.
+- [x] ~~Tool primitives / spawn limits / approval~~: decided 2026-10-24 (see "Agent creation + library design" above). Transcription deferred. Existing caps `maxDepth: 2, maxPerRun: 4` kept.
+- [ ] Which sponsor tracks we're targeting. Options and requirements: [tracks/shortlist.md](../tracks/shortlist.md); current claims in [submission/tracks.md](../submission/tracks.md). Notable findings:
+  - Bright Data and Apify both reward our scraping workers; Bright Data **disqualifies mocked data in the demo**. Neither is in the code yet (scraping uses Claude's `web_fetch`).
   - Fetch.ai requires the primary workflow to run in ASI:One chat with **no custom frontend**, which conflicts with the map UI.
   - Figma is a process track: only worth it if we start a stage log now.
-- [ ] Project name.
+- [ ] Project name. The UI and deploy use the placeholder **GeoSwarm** (`web/src/lib/brand.ts`, geoswarm.vercel.app).
 - [ ] Who presents the 2-minute pitch, who runs the live demo.
