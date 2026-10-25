@@ -10,7 +10,7 @@
 | Spacetime ($2,048 / $1,024 / $512) | **Ready** | Set the SpacetimeDB env vars on Vercel and redeploy; show the share-link moment. |
 | Convex | **Not claimed** | We switched to SpacetimeDB (one of Convex/Spacetime per team). Convex code stays as a fallback only. |
 | Anthropic | **Blocked on a decision** | Name the community + a firsthand problem |
-| Bright Data / Apify | **Built, waiting on keys** | Code is in (4 workers + generated-agent fetch + custom Actor). Needs the API keys set locally and on Vercel, the Actor pushed, and one demo beat that shows their pins live. |
+| Bright Data / Apify | **Apify live; Bright Data waiting on keys** | Apify: Review Radar returns real Google Maps places (~$0.12/run) and our Actor [`rocketlaunchers/sf-planning-notices`](https://apify.com/rocketlaunchers/sf-planning-notices) is public on the Apify Store (Best Actor entry) and powers Hearing Watch. Bright Data: Rent Scout, Local Pulse and the generated-agent fetch are built but need `BRIGHTDATA_*` keys. Still needs one demo beat that shows Apify pins live. |
 | Best Planet-First Hack | Ready (no stated criteria) | Frame the climate angle in Devpost |
 | Most Technically Complex Hack | Ready (no stated criteria) | None |
 | Microsoft: Built for the Real World | Medium | Same named community + production/measurement story |
