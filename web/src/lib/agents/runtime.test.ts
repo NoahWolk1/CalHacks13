@@ -111,6 +111,31 @@ describe("generated worker runtime", () => {
     expect(logs.join("\n")).toMatch(/Reading.*data\.sfgov\.org/);
   });
 
+  it("with Bright Data configured, scrape becomes a client-side fetch_page through Web Unlocker (URL guard still applies)", async () => {
+    const unlock = vi.fn(async () => "# Page as markdown");
+    const { client, requests } = fakeClient([reply("tool_use", [
+      toolUse("t1", "fetch_page", { url: "https://www.yelp.com/search?find_desc=cafe" }),
+      toolUse("t2", "fetch_page", { url: "http://localhost:3005/api/agents" }),
+    ])]);
+    await buildGeneratedWorker(cfg, { ...deps(client), unlockPage: () => unlock }).run(ctx().c);
+    const names = requests[0].tools.map((t) => t.name);
+    expect(names).toContain("fetch_page");
+    expect(names).not.toContain("web_fetch");
+    expect(unlock).toHaveBeenCalledTimes(1);
+    expect(unlock).toHaveBeenCalledWith("https://www.yelp.com/search?find_desc=cafe", expect.anything());
+    const results = requests[1].messages.at(-1)!.content as unknown as Block[];
+    expect(results[0]).toMatchObject({ tool_use_id: "t1", content: "# Page as markdown" });
+    expect(results[1]).toMatchObject({ tool_use_id: "t2", is_error: true });
+  });
+
+  it("falls back to a direct fetch when Bright Data errors", async () => {
+    const fetchText = vi.fn(async () => "<html>direct</html>");
+    const { client, requests } = fakeClient([reply("tool_use", [toolUse("t1", "fetch_page", { url: "https://example.com" })])]);
+    await buildGeneratedWorker(cfg, { ...deps(client, fetchText), unlockPage: () => async () => { throw new Error("502 from api.brightdata.com"); } }).run(ctx().c);
+    expect(fetchText).toHaveBeenCalledWith("https://example.com/", expect.anything());
+    expect((requests[1].messages.at(-1)!.content as unknown as Block[])[0]).toMatchObject({ content: "<html>direct</html>" });
+  });
+
   it("resumes a paused server-tool turn without adding a user message", async () => {
     const paused = [{ type: "server_tool_use", id: "s1", name: "web_search", input: { query: "q" } }];
     const { client, requests } = fakeClient([reply("pause_turn", paused), reply("end_turn", [{ type: "text", text: "ok" }])]);

@@ -76,7 +76,7 @@ export default function MapView() {
       // Never fight an in-flight camera animation (fitBounds on a reopened /?run= mission, fly-to-insight).
       if (s.running && cinematic && !map.isEasing()) map.setBearing(map.getBearing() + 0.035);
       overlay.setProps({
-        layers: deckHidden(map) ? [] : buildLayers(now, fleet, draft.current),
+        layers: deckHidden(map) ? [] : buildLayers(now, fleet, draft.current, (p) => map.project(p)),
         onHover: (info: PickingInfo) => {
           const f = pickedFinding(info);
           setHover(f && "claim" in f ? { x: info.x, y: info.y, f } : null);
@@ -275,7 +275,29 @@ let cinematic = true;
 export const setCinematic = (v: boolean) => { cinematic = v; };
 
 // ── layers ─────────────────────────────────────────────────────────────────
-function buildLayers(now: number, fleet: Fleet, draft: { box?: [LL, LL]; poly?: LL[]; cursor?: LL }): Layer[] {
+// With a dozen agents in the air, names pile up at the launch point. Keep at most this many labels, never overlapping.
+const MAX_VEHICLE_LABELS = 8;
+
+/** Greedy screen-space declutter: vehicles on patrol first, then by name length (shorter fits more). */
+function labelledVehicles(vs: Vehicle[], project: (p: LL) => { x: number; y: number }, hq: LL): Vehicle[] {
+  const boxes: [number, number, number, number][] = [];
+  const hit = (b: [number, number, number, number]) => boxes.some((o) => b[0] < o[2] && b[2] > o[0] && b[1] < o[3] && b[3] > o[1]);
+  const c = project(hq);
+  boxes.push([c.x - 34, c.y + 6, c.x + 34, c.y + 26]); // the "Command" label
+  const out: Vehicle[] = [];
+  const ranked = [...vs].sort((a, b) => Number(b.mode === "patrol") - Number(a.mode === "patrol") || a.name.length - b.name.length);
+  for (const v of ranked) {
+    if (out.length >= MAX_VEHICLE_LABELS) break;
+    const p = project(v.pos), w = v.name.length * 6.5 + 8;
+    const box: [number, number, number, number] = [p.x - w / 2, p.y - 36, p.x + w / 2, p.y - 18];
+    if (hit(box)) continue;
+    boxes.push(box);
+    out.push(v);
+  }
+  return out;
+}
+
+function buildLayers(now: number, fleet: Fleet, draft: { box?: [LL, LL]; poly?: LL[]; cursor?: LL }, project?: (p: LL) => { x: number; y: number }): Layer[] {
   const s = useStore.getState();
   const ms = performance.now();
   const layers: Layer[] = [];
@@ -471,7 +493,8 @@ function buildLayers(now: number, fleet: Fleet, draft: { box?: [LL, LL]; poly?: 
       updateTriggers: { getPosition: [now], getAngle: [now], getColor: [now] },
     }),
     new TextLayer({
-      id: "vehicle-labels", data: vs.filter((v) => live(v) && v.mode !== "parked"), getPosition: pos3, getText: (v: Vehicle) => v.name,
+      id: "vehicle-labels", data: (() => { const ls = vs.filter((v) => live(v) && v.mode !== "parked"); return project ? labelledVehicles(ls, project, fleet.commandPost) : ls.slice(0, MAX_VEHICLE_LABELS); })(),
+      getPosition: pos3, getText: (v: Vehicle) => v.name,
       getSize: 11, getPixelOffset: [0, -26], getColor: [...MAP.label, 235],
       fontFamily: uiFont(), fontWeight: 500, characterSet: "auto",
       outlineWidth: 4, outlineColor: [...HALO, 235], fontSettings: { sdf: true },

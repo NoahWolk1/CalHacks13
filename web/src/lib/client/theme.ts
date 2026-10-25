@@ -32,6 +32,7 @@ export const UI = {
 /** Categorical agent colours, keyed by worker id. Tuned for a dark graphite map: similar
  *  lightness (OKLCH L ~0.72-0.82), moderate chroma, hues spread around the wheel and kept
  *  clear of the accent's orange. All pass >= 6:1 against UI.panel. */
+// With 36 agents, hues repeat; the ones that share an orchestrator's survey team are kept >= ~0.055 apart in OKLab.
 export const AGENT_COLORS: Record<string, string> = {
   "fema-flood": "#6f9de0", // cornflower: water hazard
   "sf-stormwater": "#62a89c", // sea green: drainage
@@ -43,9 +44,34 @@ export const AGENT_COLORS: Record<string, string> = {
   "sf-311": "#e48bb0", // rose: street complaints
   "local-news": "#a28be6", // violet: news
   "census-demographics": "#d4d0c4", // stone: population
-  "sentinel-imagery": "#6cc0dc", // aqua: satellite scenes
-  "nasa-eonet": "#d38fd0", // orchid: natural events
+  "sentinel-imagery": "#94a7e6", // periwinkle: satellite scenes
+  "nasa-eonet": "#cf9be6", // orchid: natural events
   "orbit-passes": "#aebccc", // silver: orbital passes
+  "apify-reviews": "#7fd1b9", // mint: Google Maps ratings (Apify)
+  "brightdata-rent": "#9aa8f0", // periwinkle: rental listings (Bright Data)
+  "brightdata-pulse": "#d6dc8a", // pale chartreuse: web + resident chatter (Bright Data SERP)
+  "apify-planning-notices": "#f0d48a", // pale gold: planning hearings (custom Apify Actor)
+  // DataSF city-data agents
+  "sf-crime": "#cf8a8a", // dusty red: SFPD incidents
+  "sf-evictions": "#c3a3d6", // lavender: eviction notices
+  "sf-business": "#b9cf9a", // sage: business openings/closures
+  "sf-crashes": "#e3b5c8", // blush: injury crashes
+  "sf-zoning": "#b7b0e0", // iris: zoning + height limits
+  "sf-property": "#cdb59a", // sand: assessor roll
+  "sf-fire-ems": "#e09486", // salmon: fire/EMS calls
+  "sf-street-work": "#b8ae86", // khaki: street-use permits
+  "sf-transit": "#7fb8d6", // steel blue: Muni/BART
+  "sf-trees": "#7fbf95", // fern: street trees
+  // Hazard / environment / context agents
+  "cgs-ground-hazards": "#a3b06a", // moss: liquefaction/landslide/tsunami zones
+  "sea-level-rise": "#4fb2c4", // lagoon teal: sea-level rise + tides
+  "calfire-fhsz": "#e39a7b", // apricot: wildfire hazard zones
+  "weather-outlook": "#d8c57c", // straw: forecast + heat history
+  "wiki-landmarks": "#d7a8e8", // lilac: Wikipedia landmarks
+  "short-term-rentals": "#e6b98f", // peach: Airbnb listings
+  "ca-schools": "#b0e0d0", // pale aqua: schools + childcare
+  "env-burden": "#b6bf7a", // olive: CalEnviroScreen + PM2.5
+  "fema-disasters": "#b9a6a0", // taupe: disaster declaration history
 };
 export const AGENT_FALLBACK = "#a7a399";
 export const agentColor = (id: string, fallback?: string) => AGENT_COLORS[id] ?? fallback ?? AGENT_FALLBACK;

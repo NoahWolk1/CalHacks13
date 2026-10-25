@@ -13,7 +13,7 @@ const convex = () => (client ??= new ConvexHttpClient(convexUrl()));
 export const convexStore: LiveStore = {
   name: "convex",
   create: (body, llm) =>
-    convex().mutation(api.runs.create, { mode: body.mode, profileId: body.profileId, question: body.question, region: body.region, llm }),
+    convex().mutation(api.runs.create, { mode: body.mode, profileId: body.profileId ?? "auto", question: body.question, region: body.region, llm }),
   append: async (runId, events) => { await convex().mutation(api.events.append, { runId: runId as Id<"runs">, events }); },
   stopRequested: (runId) => convex().query(api.runs.stopRequested, { runId: runId as Id<"runs"> }),
   requestStop: (runId) => convex().mutation(api.runs.requestStop, { runId }),

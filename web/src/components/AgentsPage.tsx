@@ -23,6 +23,9 @@ function AgentCard({ agent, usedBy, onDelete }: { agent: AgentConfig; usedBy: nu
       <div className="flex items-center gap-2.5">
         <VehicleGlyph kind={agent.vehicle} color={agent.color} size={18} />
         <span className="min-w-0 flex-1 truncate text-[13.5px] font-medium text-fg1">{agent.name}</span>
+        {agent.needsKeys?.length ? (
+          <span className="text-[12px] text-fg4" title={`Sits out of plans until ${agent.needsKeys.join(" + ")} is set`}>Needs key</span>
+        ) : null}
         <span className="text-[12px] text-fg3">{agent.builtin ? "Built-in" : "Custom"}</span>
       </div>
       <p className="text-[12.5px] leading-relaxed text-fg2">{agent.description}</p>
@@ -345,9 +348,13 @@ export default function AgentsPage() {
                   <div className="text-[13.5px] font-medium text-fg1">{p.name}</div>
                   <p className="mt-0.5 text-[12.5px] text-fg3">{p.tagline}</p>
                   <div className="mt-3 flex flex-wrap items-center gap-2.5">
-                    {team.map((a) => <span key={a.id} title={a.name}><VehicleGlyph kind={a.vehicle} color={a.color} size={15} /></span>)}
+                    {team.map((a) => (
+                      <span key={a.id} title={a.needsKeys?.length ? `${a.name} (needs key)` : a.name} className={a.needsKeys?.length ? "opacity-35" : undefined}>
+                        <VehicleGlyph kind={a.vehicle} color={a.color} size={15} />
+                      </span>
+                    ))}
                     {!team.length && <span className="text-[12px] text-fg4">No workers assigned</span>}
-                    <span className="num ml-auto text-[11.5px] text-fg3">{team.length}</span>
+                    <span className="num ml-auto text-[11.5px] text-fg3">{team.filter((a) => !a.needsKeys?.length).length}</span>
                   </div>
                 </div>
               );

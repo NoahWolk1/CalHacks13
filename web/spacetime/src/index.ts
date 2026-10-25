@@ -154,6 +154,9 @@ export const append_events = spacetimedb.reducer({ run_id: t.string(), events: t
       case "region_labeled":
         if (typeof ev.label === "string") run.label = ev.label;
         break;
+      case "routed": // an "auto" run row takes the profile the orchestrator routed to
+        if (typeof ev.profileId === "string") run.profile_id = ev.profileId;
+        break;
       case "finding": {
         const f = ev.finding ?? {};
         run.finding_count++;

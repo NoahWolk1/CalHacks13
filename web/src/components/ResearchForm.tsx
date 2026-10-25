@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { X } from "lucide-react";
-import { useStore, agentById } from "@/lib/client/store";
+import { useStore, agentById, pickProfile } from "@/lib/client/store";
 import { startRun } from "@/lib/client/runClient";
 import { regionAreaKm2 } from "@/lib/geo";
 import { reverseLabel } from "@/lib/client/geocode";
@@ -30,9 +30,15 @@ export const useCanRun = () => useStore((s) => !!s.region && (s.mode === "insigh
 
 /** Area, question and focus, then start. The first step of the research panel (desktop and mobile). */
 export function ResearchForm({ onBack }: { onBack?: () => void }) {
-  const { profiles, profileId, mode, question, region, running, set } = useStore();
-  const profile = profiles.find((p) => p.id === profileId);
+  const { profiles, profileId, mode, question, region, running, routed, set } = useStore();
+  // "auto" (default) lets the orchestrator route the question; a stale saved id also means auto.
+  const sel = profiles.some((p) => p.id === profileId) ? profileId : "auto";
+  const auto = sel === "auto";
+  const profile = profiles.find((p) => p.id === sel);
+  const autoPicked = routed?.auto ? profiles.find((p) => p.id === routed.profileId) : undefined;
   const canRun = useCanRun();
+  // Auto: one sample per specialist, so the chips show the range of questions it routes.
+  const samples = auto ? profiles.map((p) => p.sampleQuestions[0]).filter(Boolean) : profile?.sampleQuestions ?? [];
 
   return (
     <div className="space-y-5 p-4">
@@ -74,11 +80,11 @@ export function ResearchForm({ onBack }: { onBack?: () => void }) {
           <>
             <textarea value={question} onChange={(e) => set({ question: e.target.value })} rows={3}
               onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && canRun) { e.preventDefault(); startRun(); } }}
-              placeholder="What do you want to know about this area?"
+              placeholder={auto ? "What do you want to know about this area? It goes to the right specialist." : "What do you want to know about this area?"}
               className="w-full resize-none rounded-md border border-line bg-bg px-3 py-2 text-[13px] text-fg1 max-lg:text-base placeholder:text-fg4 focus:border-fg4 focus:outline-none focus-visible:outline-none" />
             {!question.trim() && (
               <div className="mt-1.5 flex flex-wrap gap-1">
-                {profile?.sampleQuestions.slice(0, 3).map((q) => (
+                {samples.slice(0, 4).map((q) => (
                   <button key={q} onClick={() => set({ question: q })}
                     className="rounded-[4px] border border-line px-2 py-0.5 text-left text-[12px] text-fg3 transition-colors hover:border-line-strong hover:text-fg1">{q}</button>
                 ))}
@@ -93,11 +99,15 @@ export function ResearchForm({ onBack }: { onBack?: () => void }) {
       {/* Lens */}
       <label className="block" data-tour="focus">
         <span className="mb-2 block text-[12px] text-fg3">Research focus</span>
-        <select value={profileId} onChange={(e) => set({ profileId: e.target.value })}
+        <select value={sel} onChange={(e) => pickProfile(e.target.value)} disabled={running}
           className="h-9 w-full rounded-md border border-line bg-bg px-2.5 text-[13px] text-fg1 focus:border-fg4 focus:outline-none">
-          {profiles.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          <option value="auto">Auto</option>
+          {profiles.map((p) => <option key={p.id} value={p.id}>{p.name}{p.id === autoPicked?.id ? " (auto-picked)" : ""}</option>)}
         </select>
-        {profile && <span className="mt-1.5 block text-[12px] leading-snug text-fg3">{profile.tagline}</span>}
+        <span className="mt-1.5 block text-[12px] leading-snug text-fg3">
+          {auto ? "Routes your question to the right specialist." : profile?.tagline}
+        </span>
+        {auto && autoPicked && <AutoPicked name={autoPicked.name} reason={routed!.reason} className="mt-1.5" />}
       </label>
 
       <button onClick={() => startRun()} disabled={running || !canRun} data-tour="run"
@@ -108,9 +118,21 @@ export function ResearchForm({ onBack }: { onBack?: () => void }) {
   );
 }
 
+/** Which specialist Auto routed the mission to (accent dot + "auto-picked"); the reason is the tooltip. */
+export function AutoPicked({ name, reason, className = "" }: { name: string; reason?: string; className?: string }) {
+  return (
+    <div className={`flex min-w-0 items-center gap-1.5 text-[12px] text-fg3 ${className}`} title={reason}>
+      <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent" aria-hidden />
+      <span className="truncate">Routed to <span className="text-fg1">{name}</span></span>
+      <span className="shrink-0 rounded-[3px] border border-line px-1 text-[11px] text-fg3">auto-picked</span>
+    </div>
+  );
+}
+
 /** Streaming orchestrator thoughts + dispatch plan. */
 export function OrchestratorLog({ className = "" }: { className?: string }) {
-  const { running, thoughts, plan } = useStore();
+  const { running, thoughts, plan, routed, profiles } = useStore();
+  const routedTo = routed?.auto ? profiles.find((p) => p.id === routed.profileId) : undefined;
   const logRef = useRef<HTMLDivElement>(null);
   useEffect(() => { logRef.current?.scrollTo({ top: 1e6, behavior: "smooth" }); }, [thoughts.length, plan.length]);
   const t0 = thoughts[0]?.at;
@@ -121,7 +143,13 @@ export function OrchestratorLog({ className = "" }: { className?: string }) {
           {plan.length > 0 && <span className="num ml-auto text-[11.5px]">{plan.length} dispatched</span>}
         </div>
         <div ref={logRef} className="scroll-thin min-h-0 flex-1 space-y-1 overflow-y-auto px-4 pb-4 text-[12.5px] leading-relaxed">
-          {!thoughts.length && <div className="text-fg4">Waiting for a mission.</div>}
+          {!thoughts.length && !routedTo && <div className="text-fg4">Waiting for a mission.</div>}
+          {routedTo && (
+            <div className="grid grid-cols-[38px_1fr] gap-2 text-fg2">
+              <span className="select-none pt-px text-[11px] text-fg4">auto</span>
+              <span><span className="text-fg1">Routed to {routedTo.name}:</span> {routed!.reason}</span>
+            </div>
+          )}
           {thoughts.map((t, i) => (
             <div key={i} className={`grid grid-cols-[38px_1fr] gap-2 ${t.kind === "gap" ? "text-[#d9a46b]" : "text-fg2"}`}>
               <span className="num select-none pt-px text-[11px] text-fg4">{t.at != null && t0 != null ? fmtT(t.at - t0) : String(i + 1).padStart(2, "0")}</span>

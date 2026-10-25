@@ -1,0 +1,61 @@
+{
+  "title": "SF Planning notices input",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "neighborhoods": {
+      "title": "Planning neighborhoods",
+      "type": "array",
+      "description": "Keep only notices in these Planning neighborhoods (e.g. \"Mission\", \"Castro Upper Market\"). Empty = all.",
+      "editor": "stringList",
+      "default": []
+    },
+    "bbox": {
+      "title": "Bounding box",
+      "type": "array",
+      "description": "Keep only notices inside [minLng, minLat, maxLng, maxLat]. Requires geocoding.",
+      "editor": "json"
+    },
+    "center": {
+      "title": "Center [lng, lat]",
+      "type": "array",
+      "description": "With radiusKm: keep only notices within that distance. Results are sorted nearest first.",
+      "editor": "json"
+    },
+    "radiusKm": {
+      "title": "Radius (km)",
+      "type": "integer",
+      "description": "Distance from center. Ignored without center.",
+      "minimum": 0,
+      "maximum": 20,
+      "default": 1
+    },
+    "noticeTypes": {
+      "title": "Notice type contains",
+      "type": "array",
+      "description": "Keep only notice types containing any of these words (e.g. \"Hearing\", \"Variance\", \"311\"). Empty = all.",
+      "editor": "stringList",
+      "default": []
+    },
+    "upcomingOnly": {
+      "title": "Upcoming hearings only",
+      "type": "boolean",
+      "description": "Drop notices whose hearing date (or expiration, if no hearing) has passed.",
+      "default": false
+    },
+    "geocode": {
+      "title": "Geocode addresses",
+      "type": "boolean",
+      "description": "Add lat/lng from DataSF's Enterprise Addressing System (the city's address registry). Needed for bbox/center filters.",
+      "default": true
+    },
+    "maxItems": {
+      "title": "Max notices",
+      "type": "integer",
+      "description": "Stop after this many notices.",
+      "minimum": 1,
+      "maximum": 500,
+      "default": 100
+    }
+  }
+}

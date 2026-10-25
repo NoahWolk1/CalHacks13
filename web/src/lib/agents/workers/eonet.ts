@@ -21,7 +21,7 @@ export const eonetWorker: Worker = {
   name: "Earth Events",
   description: "Scans NASA's Earth Observatory Natural Event Tracker (EONET) for wildfires, severe storms, floods, volcanoes and other satellite-tracked events within ~150 km over the past year.",
   vehicle: "satellite",
-  color: "#d38fd0",
+  color: "#cf9be6",
   tools: ["http_get"],
   dataSources: ["NASA EONET v3"],
   coverage: "Global",

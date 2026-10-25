@@ -10,7 +10,7 @@ import type { Finding, Insight } from "@/lib/types";
 import { useLayout, dragPanel, GUTTER } from "@/lib/client/layout";
 import { StatusPill, VehicleGlyph } from "./ui";
 import Sash from "./Sash";
-import { OrchestratorLog, ResearchForm } from "./ResearchForm";
+import { AutoPicked, OrchestratorLog, ResearchForm } from "./ResearchForm";
 import { fmt, useMissionStats } from "./StatusBar";
 
 const KIND: Record<Insight["kind"], { label: string; color: string }> = {
@@ -68,13 +68,15 @@ export function ResearchFlow({ className = "" }: { className?: string }) {
 
 /** Area + question being researched, atop the progress and results steps. */
 function Asked() {
-  const { mode, question, region } = useStore();
+  const { mode, question, region, routed, profiles } = useStore();
+  const routedTo = routed?.auto ? profiles.find((p) => p.id === routed.profileId) : undefined;
   return (
     <div>
       <div className="truncate text-[12px] text-fg3">{region?.label ?? "Selected area"}</div>
       <div className="mt-0.5 text-[14px] font-medium leading-snug tracking-[-0.005em] text-fg1">
         {mode === "ask" && question ? question : "What stands out in this area?"}
       </div>
+      {routedTo && <AutoPicked name={routedTo.name} reason={routed!.reason} className="mt-1.5" />}
     </div>
   );
 }

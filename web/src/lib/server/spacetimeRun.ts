@@ -56,7 +56,7 @@ export const spacetimeStore: LiveStore = {
   async create(body, llm) {
     const runId = randomBytes(9).toString("base64url"); // 12 url-safe chars; unguessable enough for share links
     const region = body.region as { label?: string } | undefined;
-    await callReducer("create_run", [runId, body.mode, body.profileId, body.question ?? "", JSON.stringify(body.region ?? null), region?.label ?? "", llm]);
+    await callReducer("create_run", [runId, body.mode, body.profileId ?? "auto", body.question ?? "", JSON.stringify(body.region ?? null), region?.label ?? "", llm]);
     return runId;
   },
   async append(runId, batch) {

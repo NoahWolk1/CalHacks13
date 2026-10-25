@@ -24,7 +24,7 @@ export const sentinelWorker: Worker = {
   name: "Sentinel Eye",
   description: "Finds the latest cloud-free Sentinel-2 (10 m) and Landsat 8/9 satellite scenes over the area from the public Earth Search STAC archive, with preview imagery, revisit cadence and scene land-cover mix (water / vegetation / built-up).",
   vehicle: "satellite",
-  color: "#6cc0dc",
+  color: "#94a7e6",
   tools: ["http_get"],
   dataSources: ["ESA Copernicus Sentinel-2 L2A (via Element84 Earth Search)", "USGS Landsat Collection 2 L2"],
   coverage: "Global",

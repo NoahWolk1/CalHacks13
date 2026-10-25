@@ -3,6 +3,7 @@ import type { RunEvent, RunRequest } from "@/lib/types";
 import { runOrchestrator } from "@/lib/orchestrator/run";
 import { liveStore, startLiveRun } from "@/lib/server/liveRun";
 import { decideLlm } from "@/lib/server/llmQuota";
+import { normalizeProfileId } from "@/lib/orchestrator/route";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,7 +14,9 @@ export const maxDuration = 300; // Vercel Hobby max (Fluid compute); Pro allows 
 //   to the backend and every client subscribes. See src/lib/server/liveRun.ts.
 // - Otherwise: text/event-stream of RunEvents (SSE fallback).
 export async function POST(req: Request) {
-  const body = (await req.json()) as RunRequest;
+  const raw = (await req.json()) as RunRequest;
+  // Unknown or omitted profile → "auto" (stored on the run row until the `routed` event updates it).
+  const body: RunRequest = { ...raw, profileId: normalizeProfileId(raw.profileId) };
   // Hourly Claude caps (per IP + global); over the cap the run proceeds in heuristic mode.
   const store = liveStore();
   const decision = await decideLlm(req, store);
