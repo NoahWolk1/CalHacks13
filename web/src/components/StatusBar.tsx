@@ -58,21 +58,27 @@ export default function StatusBar() {
   const [cinematic, toggleCine] = useCinematic();
 
   if (!region) return null;
+  // Before a research question is asked there's nothing to report: the bar is just the cinematic toggle.
+  const hasRun = running || done;
 
   // Narrow map strip: drop the secondary counters first (container queries on .gs-frame). Thresholds keep
   // the full bar clear of the attribution button in the strip's bottom-right corner.
   return (
     <div className="glass pointer-events-auto absolute bottom-3 left-3 z-20 flex h-[34px] w-max items-center whitespace-nowrap rounded-md max-lg:hidden">
-      <div className={`flex h-full items-center gap-2 px-3 text-[12px] font-medium ${running ? "text-accent" : done ? "text-fg2" : "text-fg3"}`}>
-        <span className={`h-1.5 w-1.5 rounded-full ${running ? "bg-accent" : done ? "bg-ok" : "bg-fg4"}`} />
-        {running ? "Live" : done ? "Complete" : "Idle"}
-      </div>
-      <Stat label="" value={fmt(elapsed)} />
-      <Stat label="findings" value={shown} total={total} />
-      <Stat label="sources" value={sources} className="@max-[720px]:hidden" />
-      <Stat label="insights" value={insights} className="@max-[630px]:hidden" />
+      {hasRun && (
+        <>
+          <div className={`flex h-full items-center gap-2 px-3 text-[12px] font-medium ${running ? "text-accent" : "text-fg2"}`}>
+            <span className={`h-1.5 w-1.5 rounded-full ${running ? "bg-accent" : "bg-ok"}`} />
+            {running ? "Live" : "Complete"}
+          </div>
+          <Stat label="" value={fmt(elapsed)} />
+          <Stat label="findings" value={shown} total={total} />
+          <Stat label="sources" value={sources} className="@max-[720px]:hidden" />
+          <Stat label="insights" value={insights} className="@max-[630px]:hidden" />
+        </>
+      )}
       <button onClick={toggleCine} title="Toggle cinematic camera" aria-pressed={cinematic}
-        className="flex h-full items-center gap-2 rounded-r-md border-l border-line px-3 text-[12px] text-fg3 transition-colors hover:text-fg1">
+        className={`flex h-full items-center gap-2 px-3 text-[12px] text-fg3 transition-colors hover:text-fg1 ${hasRun ? "rounded-r-md border-l border-line" : "rounded-md"}`}>
         <span className="@max-[530px]:hidden">Cinematic</span>
         <span className={`relative h-3.5 w-6 rounded-full transition-colors ${cinematic ? "bg-fg2" : "bg-line-strong"}`}>
           <span className={`absolute top-0.5 h-2.5 w-2.5 rounded-full bg-panel transition-[left] duration-150 ${cinematic ? "left-[12px]" : "left-0.5"}`} />
