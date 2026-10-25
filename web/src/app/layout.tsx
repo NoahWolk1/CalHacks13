@@ -6,7 +6,7 @@ const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "GeoSwarm: agents that scout any place",
+  title: "Coordinate: AI agents that research any place",
   description: "Draw a region, ask a question, and watch a swarm of AI agents explore it.",
 };
 

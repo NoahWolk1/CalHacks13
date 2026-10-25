@@ -51,6 +51,17 @@ export function parseCraigslist(html: string): Listing[] {
   return out;
 }
 
+/** Drop listings pinned far outside the search radius (Craigslist pads results with "nearby" areas)
+ *  and bait-priced posts (< 40% of the median, almost always scams). */
+export function cleanListings(listings: Listing[], center: [number, number], radiusMi: number) {
+  const maxM = radiusMi * 1609 * 1.5;
+  const near = listings.filter((l) => l.lng == null || l.lat == null || distanceM(center, [l.lng, l.lat]) <= maxM);
+  const prices = near.filter((l) => l.price && l.price >= 400 && l.price <= 30_000).map((l) => l.price!);
+  const floor = prices.length >= 5 ? median(prices) * 0.4 : 400;
+  const kept = near.filter((l) => !l.price || l.price >= floor);
+  return { kept, farDropped: listings.length - near.length, baitDropped: near.length - kept.length };
+}
+
 export function rentStats(listings: Listing[]) {
   const priced = listings.filter((l) => l.price && l.price >= 400 && l.price <= 30_000);
   const byBeds: Record<string, number> = {};
@@ -83,9 +94,10 @@ export const rentWorker: Worker = {
     const url = `https://${metro.site}.craigslist.org/search/apa?${new URLSearchParams({ lat: region.center[1].toFixed(5), lon: region.center[0].toFixed(5), search_distance: miles.toFixed(1) })}`;
     log(`Bright Data Web Unlocker → ${metro.site}.craigslist.org (${miles.toFixed(1)} mi radius)…`);
     const html = await unlock(url, { signal, as: "raw", country: "us", timeoutMs: 25_000 });
-    const listings = parseCraigslist(html);
+    const parsed = parseCraigslist(html);
+    const { kept: listings, farDropped, baitDropped } = cleanListings(parsed, region.center, miles);
     const s = rentStats(listings);
-    log(`${listings.length} listings parsed, ${s.n} with a usable price`);
+    log(`${parsed.length} listings parsed; dropped ${farDropped} outside the radius and ${baitDropped} bait-priced; ${s.n} with a usable price`);
     if (!s.n) { log("No priced listings in the results."); return; }
     const beds = Object.entries(s.byBeds).map(([k, v]) => `${k} $${Math.round(v).toLocaleString()}`).join(", ");
     const today = new Date().toISOString().slice(0, 10);

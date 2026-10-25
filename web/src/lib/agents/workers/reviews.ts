@@ -67,7 +67,7 @@ export const reviewsWorker: Worker = {
       maxReviews: 0,
       maxImages: 0,
       skipClosedPlaces: false,
-    }, { signal, timeoutSec: TIMEOUT_S, maxItems: MAX_PLACES, maxTotalChargeUsd: 0.25 });
+    }, { signal, timeoutSec: TIMEOUT_S, maxItems: MAX_PLACES, maxTotalChargeUsd: 0.5 });
     // customGeolocation is a search hint; keep only what is actually inside (with a small tolerance via the bbox).
     const places = items.filter((p) => p.location && p.title && inRegion(region, p.location.lng, p.location.lat)).slice(0, MAX_PLACES);
     log(`${items.length} places returned, ${places.length} inside the area`);

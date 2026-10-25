@@ -107,7 +107,11 @@ const SYSTEM = (cfg: AgentConfig) =>
   `Find real, sourced facts about the selected map area and report them with emit_findings.\n` +
   `- Only report facts from sources you actually retrieved this session. Never invent places, numbers or URLs.\n` +
   `- Prefer structured public data (open-data portals and APIs) over prose pages; filter queries to the area's bounding box when the API allows it.\n` +
-  `- Up to ${RUNTIME_LIMITS.maxFindings} findings, most notable first. You have only a few turns, so be direct: one or two searches, then fetch, then report.\n` +
+  `- Up to ${RUNTIME_LIMITS.maxFindings} findings, most notable first. You have only ${RUNTIME_LIMITS.maxTurns} turns, so be direct: one or two searches, then fetch, then report.\n` +
+  `- Findings must be readable by a person: resolve ids, keys and codes (taxon/species keys, parcel or station codes) into names with a follow-up call before reporting ` +
+  `(e.g. GBIF: https://api.gbif.org/v1/species/{key}, or query with facet=speciesKey and look up the top keys; iNaturalist species_counts already includes taxon names). Never report a bare database key as the answer.\n` +
+  `- When the question asks what/which, report concrete named items (e.g. the top 5-10 with counts), not just totals.\n` +
+  `- If results are incomplete (ids unresolved, empty or too broad a query), use your remaining turns to fix that before reporting.\n` +
   `- After reporting, stop with one sentence summarizing what you found.`;
 
 function brief(ctx: WorkerContext) {

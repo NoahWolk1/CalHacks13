@@ -27,7 +27,8 @@ export async function runActor<T>(actor: string, input: unknown, opts: ActorRunO
   const q = new URLSearchParams({ timeout: String(opts.timeoutSec), clean: "1", format: "json" });
   if (opts.memoryMb) q.set("memory", String(opts.memoryMb));
   if (opts.maxItems) q.set("maxItems", String(opts.maxItems));
-  if (opts.maxTotalChargeUsd) q.set("maxTotalChargeUsd", String(opts.maxTotalChargeUsd));
+  // Apify rejects caps below $0.50 per run (it is a ceiling, not the expected cost).
+  if (opts.maxTotalChargeUsd) q.set("maxTotalChargeUsd", String(Math.max(0.5, opts.maxTotalChargeUsd)));
   const items = await getJson<T[]>(`https://api.apify.com/v2/acts/${actorPath(actor)}/run-sync-get-dataset-items?${q}`, {
     signal: opts.signal,
     timeoutMs: (opts.timeoutSec + 8) * 1000,

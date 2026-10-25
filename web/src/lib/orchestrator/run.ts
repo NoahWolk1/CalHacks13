@@ -12,6 +12,7 @@ import { RUNTIME_LIMITS } from "@/lib/agents/runtime";
 import { getProfile, PROFILES } from "./profiles";
 import { AUTO, DEFAULT_PROFILE, isProfileId, normalizeProfileId, routeByKeywords } from "./route";
 import { crossReference, redispatchTargets, type Link } from "./crossref";
+import { MAX_FOLLOWUPS, pickFollowups } from "./followups";
 import { llm, MODEL, FALLBACK } from "@/lib/llm";
 
 const QUOTA_NOTE = "Claude quota reached for this hour — running in heuristic mode.";
@@ -196,12 +197,25 @@ export async function runOrchestrator(input: RunRequest, emitRaw: (e: RunEvent) 
     if (signal.aborted) return;
   }
 
-  // ── 3b. Coverage check (Ask mode): one more agent if the findings still leave a gap ──
-  if (client && req.mode === "ask" && req.question && spawned < SPAWN_LIMITS.maxPerRun && !signal.aborted) {
+  // ── 3b. Coverage check (Ask mode): one more agent for a missing capability, and/or (one round,
+  // ≤2) follow-ups that send agents already in this run back out with a narrower task ──
+  if (client && req.mode === "ask" && req.question && !signal.aborted) {
     think("Checking whether the findings fully cover the question…");
     const used = steps.map((s) => getWorker(s.agentId)).filter((w): w is Worker => !!w);
-    const need = await llmGapCheck(req, findings, used, workers).catch(() => "");
-    if (need) await coverGap(need, { ...baseTask, focus: need });
+    const tc = Date.now();
+    const check = await llmGapCheck(req, findings, used, workers).catch((e) => {
+      console.warn(`[coverage] check failed: ${(e as Error).message.slice(0, 120)}`);
+      return { gap: "", followups: [] };
+    });
+    lap("coverage", tc);
+    if (signal.aborted) return;
+    const need = spawned < SPAWN_LIMITS.maxPerRun ? check.gap.trim() : "";
+    const followups = pickFollowups(check.followups, used.map((w) => w.id), MAX_FOLLOWUPS);
+    for (const f of followups) think(`Re-dispatching ${getWorker(f.agentId)!.name}: ${f.instruction}`);
+    await Promise.all([
+      need ? coverGap(need, { ...baseTask, focus: need }) : null,
+      ...followups.map((f) => dispatch(getWorker(f.agentId)!, { ...baseTask, focus: f.instruction })),
+    ]);
     if (signal.aborted) return;
   }
 
@@ -380,24 +394,29 @@ async function llmPlan(req: RunRequest, workers: Worker[]) {
   };
 }
 
-const GapSchema = z.object({ gap: z.string() });
+const GapSchema = z.object({
+  gap: z.string(),
+  followups: z.array(z.object({ agentId: z.string(), instruction: z.string() })),
+});
 
-/** After the first sweep: the one missing data need (as a spec for a new agent), or "" if covered. */
+/** After the first sweep: the one missing data need (as a spec for a new agent, or "" if covered),
+ *  plus follow-up tasks for agents that already ran but left the answer incomplete. */
 async function llmGapCheck(req: RunRequest, findings: Finding[], used: Worker[], library: Worker[]) {
   const profile = getProfile(req.profileId);
   const roster = (ws: Worker[]) => ws.map((w) => `- ${w.id} | ${w.name} | ${brief(w.description)}`).join("\n") || "(none)";
+  const dispatched = used.map((w) => `- ${w.id} | ${w.name} | ${w.builtin ? "built-in, fixed queries (follows a focus only loosely)" : "generated, follows free-text instructions"} | ${brief(w.description)}`).join("\n") || "(none)";
   const res = await llm()!.beta.messages.parse({
     model: MODEL,
     max_tokens: 2000,
     output_config: { effort: "low", format: betaZodOutputFormat(GapSchema) },
     ...FALLBACK,
-    system: `You are the "${profile.name}" orchestrator. ${profile.domainPrompt}\n\nYour agents have finished a first sweep. Decide whether ONE specific kind of data is still missing that would materially change the answer to the user's question and that none of the agents (dispatched or in the library) can provide. If so, put a one-line spec for a new agent in "gap" (e.g. "SF restaurant health inspection scores near the area"). Usually nothing is missing: return an empty string.`,
+    system: `You are the "${profile.name}" orchestrator. ${profile.domainPrompt}\n\nYour agents have finished a first sweep. Decide whether ONE specific kind of data is still missing that would materially change the answer to the user's question and that none of the agents (dispatched or in the library) can provide. If so, put a one-line spec for a new agent in "gap" (e.g. "SF restaurant health inspection scores near the area"); otherwise an empty string.\n\nAlso decide whether a DISPATCHED agent should be sent back out with a narrower task (at most ${MAX_FOLLOWUPS}; usually none, since each costs the user ~20s). ONLY do this when the findings central to the answer are unusable as they stand: raw database ids/keys/codes instead of human-readable names (e.g. GBIF species keys, taxon ids), or only a total/count when the question asks what/which and no named items came back. NOT for fresher data, more items, wider coverage or extra detail. Each follow-up: "agentId" (exact id from DISPATCHED AGENTS, prefer generated ones) and "instruction": one self-contained sentence that repeats the exact ids/values to resolve and says what to report, e.g. "Resolve GBIF species keys 5217335, 2435099 to scientific and common names via https://api.gbif.org/v1/species/{key} and report the top 10 animal species with record counts." Do not use a follow-up to re-run the same query. Return an empty list if nothing needs following up.`,
     messages: [{
       role: "user",
-      content: `Area: ${req.region.label ?? "unknown"}\nQuestion: ${req.question}\n\nDISPATCHED AGENTS\n${roster(used)}\n\nOTHER LIBRARY AGENTS\n${roster(library.filter((w) => !used.includes(w)))}\n\nFINDINGS SO FAR\n${compactFindings(findings, 60)}`,
+      content: `Area: ${req.region.label ?? "unknown"}\nQuestion: ${req.question}\n\nDISPATCHED AGENTS\n${dispatched}\n\nOTHER LIBRARY AGENTS\n${roster(library.filter((w) => !used.includes(w)))}\n\nFINDINGS SO FAR\n${compactFindings(findings, 60)}`,
     }],
   });
-  return res.parsed_output?.gap.trim() ?? "";
+  return res.parsed_output ?? { gap: "", followups: [] };
 }
 
 function compactFindings(findings: Finding[], max = 140) {
@@ -467,7 +486,7 @@ async function llmAnswer(req: RunRequest, findings: Finding[], links: Link[], on
     max_tokens: 6000,
     output_config: { effort: "low" },
     ...FALLBACK,
-    system: `You are the "${profile.name}" orchestrator. ${profile.domainPrompt}\n\nAnswer the user's question about the selected area in ≤180 words of markdown: lead with a direct verdict, then 2–4 short bullets of evidence. Cite findings inline as [F12]. Be honest about gaps and data limits (e.g. coverage, data age). No preamble.`,
+    system: `You are the "${profile.name}" orchestrator. ${profile.domainPrompt}\n\nAnswer the user's question about the selected area in ≤180 words of markdown: lead with a direct verdict, then 2–4 short bullets of evidence. Cite findings inline as [F12]. Be honest about gaps and data limits (e.g. coverage, data age). Name concrete items (species, places, businesses) as the findings give them. If some findings still carry unresolved database ids/keys, say so in one short clause; never tell the user to look them up as the main next step. No preamble.`,
     messages: [{
       role: "user",
       content: `Area: ${req.region.label ?? "unknown"}\nQuestion: ${req.question}\n\nFINDINGS\n${compactFindings(findings)}\n\nCANDIDATE CONNECTIONS (spatial joins between agents' findings)\n${links.map((l) => `- ${l.title}: ${l.body} [${l.findingIds.join(", ")}]`).join("\n") || "(none)"}`,

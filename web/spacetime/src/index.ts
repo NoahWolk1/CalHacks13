@@ -1,4 +1,4 @@
-// GeoSwarm's live shared mission state on SpacetimeDB.
+// Coordinate's live shared mission state on SpacetimeDB.
 //
 // The orchestrator (our Next.js server) is the only writer: it creates a run, appends every
 // RunEvent in seq order, and finishes it. Browsers connect anonymously and only subscribe

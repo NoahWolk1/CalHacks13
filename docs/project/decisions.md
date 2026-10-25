@@ -18,7 +18,7 @@
 
 - **2026-10-25: Live backend switched from Convex to SpacetimeDB (Spacetime track); Convex kept as fallback.** Spacetime wants SpacetimeDB as the *core* real-time backend and calls out AI agent coordination + live dashboards, which is exactly the mission event log. The TypeScript module (`web/spacetime/src/index.ts`) holds `runs`, the ordered `events` log, `findings` and the private `llm_usage` rate-limit counters; reducers enforce seq order and do the LLM cap check atomically. Only the Next server's allowlisted identity (`writers` table, `SPACETIME_TOKEN`) can write; browsers subscribe anonymously and read. The server calls reducers over HTTP (serverless-friendly). Published to maincloud as database `geoswarm`. Backend is chosen by `LIVE_BACKEND` (default spacetime when configured, else convex, else SSE); the browser follows what `/api/agents` reports. We no longer claim the Convex track (one of Convex/Spacetime per team). Details: [web/README.md](../../web/README.md#spacetimedb-live-shared-mission-state-primary).
 
-- **2026-10-24: Deployed** to https://geoswarm.vercel.app (Vercel project `geoswarm`, CLI deploys from `web/`) with Convex prod `hip-puffin-315` (project `geoswarm`, team noah-wolk). Claude runs are rate-limited (20/h per IP, 150/h global, via Convex `llmUsage`); over the cap runs fall back to heuristic mode.
+- **2026-10-24: Deployed** to https://coordinate-agents.vercel.app (Vercel project `coordinate`, CLI deploys from `web/`) with Convex prod `hip-puffin-315` (project `coordinate`, team noah-wolk). Claude runs are rate-limited (20/h per IP, 150/h global, via Convex `llmUsage`); over the cap runs fall back to heuristic mode.
 - **2026-10-24: Agent creation + library design** (agent-creation owner):
   - **"Marketplace" = one shared library**, no accounts/publishing; marketplace flavor only (creator, usage counts on cards).
   - **One `createAgent()` path** for both Hub prompt-to-create and mid-run spawns. A single structured-output Claude call (Opus) returns either `{reuse: <id>}` (library checked first) or a new config `{name, description, tools, dataSources, coverage, vehicle, color, prompt}` with id `custom-<slug>`.
@@ -44,6 +44,10 @@
 
 - **2026-10-25: Failed hazard lookups remain unknown.** CGS reports unavailable layers explicitly (and errors if all fail); sea-level-rise summaries include only successfully checked scenarios and retain available polygons. Missing layers are never reported as zero exposure. Permit/flood insights group projects by their own lowest intersecting mapped scenario, so a project exposed at 2.5 ft is not counted at 1.6 ft. Regression tests cover outages, partial results and scenario ordering.
 
+- **2026-10-25: Coverage check can re-dispatch agents.** After the first sweep, the coverage check (`llmGapCheck` in `web/src/lib/orchestrator/run.ts`) returns a missing-capability gap (spawns a new agent, as before) and up to 2 follow-ups `{agentId, instruction}` for agents already in the run, one round only. Each follow-up re-dispatches that agent with the instruction as its focus ("Re-dispatched: …" in the UI). Follow-ups are only for unusable findings (unresolved ids/keys, or a count with no named items), not for fresher or extra data, since each adds ~20s. Generated agents are also told to resolve ids into names before reporting and to list concrete named items. Triggered by a "What animals are here" run that ended on a bare GBIF species key.
+
+- **2026-10-25: Name = Coordinate.** Live at https://coordinate-agents.vercel.app (coordinate.vercel.app belongs to another account; geoswarm.vercel.app kept as an alias). Internal ids (SpacetimeDB db `geoswarm`, Convex project, storage keys) keep the old name.
+
 ## Open
 
 - [ ] **Named community for the pitch** (needed for Anthropic/Microsoft). Candidates in [submission/tracks.md](../submission/tracks.md).
@@ -52,5 +56,5 @@
   - Bright Data and Apify both reward our scraping workers; Bright Data **disqualifies mocked data in the demo**. Both are now in the code (2026-10-25 entry above) and wait on API keys.
   - Fetch.ai requires the primary workflow to run in ASI:One chat with **no custom frontend**, which conflicts with the map UI.
   - Figma is a process track: only worth it if we start a stage log now.
-- [ ] Project name. The UI and deploy use the placeholder **GeoSwarm** (`web/src/lib/brand.ts`, geoswarm.vercel.app).
+- [x] Project name: **Coordinate** (2026-10-25; set in `web/src/lib/brand.ts`, live at coordinate-agents.vercel.app).
 - [ ] Who presents the 2-minute pitch, who runs the live demo.

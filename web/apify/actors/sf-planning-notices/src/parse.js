@@ -1,4 +1,4 @@
-// Pure parsing + filtering helpers (no Apify / network imports) so the GeoSwarm app can unit-test them.
+// Pure parsing + filtering helpers (no Apify / network imports) so the Coordinate app can unit-test them.
 
 export const NOTICES_URL = "https://sfplanning.org/page/public-notices-project-applications";
 export const EAS_URL = "https://data.sf.gov/resource/3mea-di5p.json"; // DataSF: Addresses (Enterprise Addressing System)

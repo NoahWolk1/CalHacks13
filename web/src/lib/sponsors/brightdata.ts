@@ -23,7 +23,7 @@ export const brightDataMissing = {
   serp: () => [!brightData.token() && "BRIGHTDATA_API_TOKEN", !brightData.serpZone() && "BRIGHTDATA_SERP_ZONE"].filter(Boolean) as string[],
 };
 
-type Opts = { signal?: AbortSignal; timeoutMs?: number };
+type Opts = { signal?: AbortSignal; timeoutMs?: number; retries?: number };
 
 async function request(body: Record<string, string>, opts: Opts): Promise<string> {
   const token = brightData.token();
@@ -31,7 +31,7 @@ async function request(body: Record<string, string>, opts: Opts): Promise<string
   return getText(ENDPOINT, {
     signal: opts.signal,
     timeoutMs: opts.timeoutMs ?? 25_000,
-    retries: 1, // Unlocker already retries upstream; one more try covers a dropped connection
+    retries: opts.retries ?? 1, // Unlocker already retries upstream; one more try covers a dropped connection
     init: { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify(body) },
   });
 }
@@ -54,7 +54,9 @@ export async function googleSearch(q: string, opts: Opts & { recency?: "d" | "w"
   if (!zone) throw new Error("needs BRIGHTDATA_SERP_ZONE");
   const params = new URLSearchParams({ q, hl: "en", gl: "us", num: String(opts.num ?? 10) });
   if (opts.recency) params.set("tbs", `qdr:${opts.recency}`);
-  const raw = await request({ zone, url: `https://www.google.com/search?${params}&brd_json=1`, format: "raw", data_format: "parsed_light" }, opts);
+  // SERP latency varies 4-15 s; a short timeout and no retry keep the agent inside its 30 s budget.
+  // country=us routes through US IPs so results are localized (otherwise a random country, e.g. Romania).
+  const raw = await request({ zone, url: `https://www.google.com/search?${params}&brd_json=1`, format: "raw", data_format: "parsed_light", country: "us" }, { timeoutMs: 20_000, retries: 0, ...opts });
   return parseSerp(raw);
 }
 

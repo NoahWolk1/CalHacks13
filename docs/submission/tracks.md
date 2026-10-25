@@ -10,7 +10,7 @@
 | Spacetime ($2,048 / $1,024 / $512) | **Ready** | Set the SpacetimeDB env vars on Vercel and redeploy; show the share-link moment. |
 | Convex | **Not claimed** | We switched to SpacetimeDB (one of Convex/Spacetime per team). Convex code stays as a fallback only. |
 | Anthropic | **Blocked on a decision** | Name the community + a firsthand problem |
-| Bright Data / Apify | **Built, waiting on keys** | Code is in (4 workers + generated-agent fetch + custom Actor). Needs the API keys set locally and on Vercel, the Actor pushed, and one demo beat that shows their pins live. |
+| Bright Data / Apify | **Apify live; Bright Data waiting on keys** | Apify: Review Radar returns real Google Maps places (~$0.12/run) and our Actor [`rocketlaunchers/sf-planning-notices`](https://apify.com/rocketlaunchers/sf-planning-notices) is public on the Apify Store (Best Actor entry) and powers Hearing Watch. Bright Data: Rent Scout, Local Pulse and the generated-agent fetch are built but need `BRIGHTDATA_*` keys. Still needs one demo beat that shows Apify pins live. |
 | Best Planet-First Hack | Ready (no stated criteria) | Frame the climate angle in Devpost |
 | Most Technically Complex Hack | Ready (no stated criteria) | None |
 | Microsoft: Built for the Real World | Medium | Same named community + production/measurement story |
@@ -57,7 +57,7 @@ Note: the general prize is called **"Most Technically Complex Hack"** on the pri
 
 Recommendation: **A or B** matches the strongest demo result (flood × permits) without changing the pitch. C matches the Storefront Scout orchestrator but makes the headline insight secondary. Whichever we pick, write it into: the Devpost tagline + Inspiration, the last line of the pitch, the Site Risk Analyst `persona` copy (optional), and [decisions.md](../project/decisions.md).
 
-**What to say:** "[Community] check a property using FEMA's map, which in San Francisco only covers the shoreline. GeoSwarm shows them the city's storm flood map, the buried creeks and the permit activity on their block, with every claim cited, in ten seconds."
+**What to say:** "[Community] check a property using FEMA's map, which in San Francisco only covers the shoreline. Coordinate shows them the city's storm flood map, the buried creeks and the permit activity on their block, with every claim cited, in ten seconds."
 
 **Still missing:** [ ] pick the community · [ ] one firsthand conversation + a quote · [ ] update Devpost/pitch placeholders · [ ] log the decision with the date.
 
@@ -81,7 +81,7 @@ Recommendation: **A or B** matches the strongest demo result (flood × permits) 
 - **Empty results:** an empty Google Maps result becomes a finding ("no direct competition"). Parsers return `[]` on layout changes instead of inventing data.
 - **Repeat runs:** results are cached for 6 h, so a repeated demo run doesn't re-bill.
 
-**What to say:** "Storefront owners need to know what's on the block *today*. GeoSwarm's agents pull it live: Apify scrapes Google Maps for every café in the polygon (ratings, review counts, closures), Bright Data's Web Unlocker pulls the current rent listings Craigslist blocks bots from, and the SERP API finds what residents are saying on Reddit. Take Bright Data out and Rent Scout and Local Pulse go blank. For Best Actor, we built `sf-planning-notices`: SF Planning publishes upcoming hearings as one HTML table with no API and no coordinates. Our Actor turns it into geocoded JSON you can filter by radius, and our Hearing Watch agent pins the hearings on the map."
+**What to say:** "Storefront owners need to know what's on the block *today*. Coordinate's agents pull it live: Apify scrapes Google Maps for every café in the polygon (ratings, review counts, closures), Bright Data's Web Unlocker pulls the current rent listings Craigslist blocks bots from, and the SERP API finds what residents are saying on Reddit. Take Bright Data out and Rent Scout and Local Pulse go blank. For Best Actor, we built `sf-planning-notices`: SF Planning publishes upcoming hearings as one HTML table with no API and no coordinates. Our Actor turns it into geocoded JSON you can filter by radius, and our Hearing Watch agent pins the hearings on the map."
 
 **Demo beat:** Storefront Scout, Mission District, "Is this a good spot for a café?" Show Review Radar's mint pins and its saturation line, Rent Scout's median rent, a Local Pulse Reddit thread, and a Hearing Watch pin with its PDF.
 
@@ -100,7 +100,7 @@ Recommendation: **A or B** matches the strongest demo result (flood × permits) 
 - [x] Climate adaptation: we surface stormwater flood risk, buried creeks and fill, low-lying ground exposed to sea-level rise ("projects on low-lying ground outside mapped flood zones" insight), and FEMA-vs-ground-truth conflicts.
 - [x] Disaster Response orchestrator: live NWS alerts, air quality, and critical facilities inside hazard zones.
 
-**What to say:** "Climate risk shows up block by block, and federal maps lag behind it. GeoSwarm helps people avoid building, buying or investing where the water is going to go."
+**What to say:** "Climate risk shows up block by block, and federal maps lag behind it. Coordinate helps people avoid building, buying or investing where the water is going to go."
 
 **Still missing:** [ ] one sentence in Devpost "Inspiration" or "What's next" that frames this as climate adaptation · [ ] optionally demo the low-elevation insight in a bayside area (Mission Bay / Embarcadero) for a sea-level-rise example.
 
@@ -126,7 +126,7 @@ Recommendation: **A or B** matches the strongest demo result (flood × permits) 
 **How we qualify**
 - [x] End-to-end functionality on live data.
 - [x] Responsible design: source link + `observed_at` + confidence on every finding, citation validation, conflict flagging instead of silently picking a source, spawn guardrails (fixed primitives, depth/per-run caps, temporary by default), graceful degradation.
-- [x] Path to production: deployed at https://geoswarm.vercel.app (Vercel + SpacetimeDB Maincloud, Convex as fallback), persistent mission history, per-agent timeouts and failure isolation, Claude rate limits with heuristic fallback.
+- [x] Path to production: deployed at https://coordinate-agents.vercel.app (Vercel + SpacetimeDB Maincloud, Convex as fallback), persistent mission history, per-agent timeouts and failure isolation, Claude rate limits with heuristic fallback.
 - [ ] **Customer understanding:** same blocker as Anthropic (the named community).
 - [ ] **Measurable usefulness:** no metric stated yet.
 

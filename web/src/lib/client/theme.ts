@@ -1,4 +1,4 @@
-// GeoSwarm visual tokens: "night survey sheet" direction (see design notes).
+// Coordinate visual tokens: "night survey sheet" direction (see design notes).
 // UI chrome is warm graphite and nearly monochrome; colour is reserved for data
 // (agents, insight kinds) plus one accent, sodium orange, that marks *your* area and live state.
 // Used by globals.css (mirrored tokens), mapStyle.ts, MapView layers, RightPanel kinds and the

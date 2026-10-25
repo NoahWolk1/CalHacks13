@@ -14,10 +14,28 @@
       "views": {
         "overview": {
           "title": "Overview",
-          "transformation": { "fields": ["address", "recordNumber", "recordType", "noticeType", "neighborhood", "hearingDate", "postedDate", "expirationDate", "noticeUrl", "plansUrl", "lat", "lng"] },
-          "display": { "component": "table" }
+          "transformation": {
+            "fields": [
+              "address",
+              "recordNumber",
+              "recordType",
+              "noticeType",
+              "neighborhood",
+              "hearingDate",
+              "postedDate",
+              "expirationDate",
+              "noticeUrl",
+              "plansUrl",
+              "lat",
+              "lng"
+            ]
+          },
+          "display": {
+            "component": "table"
+          }
         }
       }
     }
-  }
+  },
+  "output": "./output_schema.json"
 }

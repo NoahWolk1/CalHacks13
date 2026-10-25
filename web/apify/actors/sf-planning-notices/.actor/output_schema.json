@@ -1,0 +1,13 @@
+{
+  "actorOutputSchemaVersion": 1,
+  "title": "SF Planning notices and hearings",
+  "description": "One dataset item per public notice: address, record number and type, hearing date, notice/plans links, and geocoded lat/lng.",
+  "properties": {
+    "notices": {
+      "type": "string",
+      "title": "Notices",
+      "description": "Geocoded SF Planning notices and hearings matching the input filters.",
+      "template": "{{links.apiDefaultDatasetUrl}}/items"
+    }
+  }
+}
