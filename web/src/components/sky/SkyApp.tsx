@@ -4,6 +4,7 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { ArrowLeft, CircleDashed, Crosshair, ExternalLink, LoaderCircle, Telescope } from "lucide-react";
+import { Body, Equator, Observer } from "astronomy-engine";
 import { APP_NAME } from "@/lib/brand";
 import { formatDec, formatRa, parseCone } from "@/lib/sky/geom";
 import { SKY_MAX_RADIUS, type Cone, type SkyEvent, type SkyObject, type SkySourceReport, type SkySummary } from "@/lib/sky/types";
@@ -11,12 +12,18 @@ import { CATEGORY_STYLE, SURVEYS, type AtlasApi } from "./SkyAtlas";
 
 const SkyAtlas = dynamic(() => import("./SkyAtlas"), { ssr: false });
 
+/** Jupiter's J2000 RA/Dec right now (geocentric, astronomy-engine), so the sample never goes stale. */
+function jupiterNow(): Cone {
+  const e = Equator(Body.Jupiter, new Date(), new Observer(0, 0, 0), false, true);
+  return { ra: +(e.ra * 15).toFixed(3), dec: +e.dec.toFixed(3), radius: 2 };
+}
+
 export const SAMPLES: { name: string; note: string; cone: Cone }[] = [
   { name: "Orion Nebula", note: "M42 star nursery", cone: { ra: 83.822, dec: -5.391, radius: 0.5 } },
   { name: "Pleiades", note: "M45 open cluster", cone: { ra: 56.75, dec: 24.117, radius: 1.2 } },
   { name: "Andromeda", note: "M31 + satellites", cone: { ra: 10.685, dec: 41.269, radius: 1.5 } },
   { name: "TRAPPIST-1", note: "7 rocky planets", cone: { ra: 346.626, dec: -5.043, radius: 0.5 } },
-  { name: "Jupiter now", note: "Oct 2026 position", cone: { ra: 145.7, dec: 14.4, radius: 2 } },
+  { name: "Jupiter now", note: "Live position", cone: jupiterNow() },
 ];
 
 type Status = "idle" | "running" | "summarising" | "done" | "error";

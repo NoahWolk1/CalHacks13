@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Hand, BoxSelect, Pentagon, MapPin, Users, Search, PanelRightClose, PanelRightOpen, CircleHelp } from "lucide-react";
+import { Hand, BoxSelect, Pentagon, MapPin, Users, Search, PanelRightClose, PanelRightOpen, CircleHelp, Telescope } from "lucide-react";
 import { useLayout } from "@/lib/client/layout";
 import { useStore, type Tool } from "@/lib/client/store";
 import { useIsDesktop } from "@/lib/client/useMedia";
@@ -162,6 +162,7 @@ function MobileTopBar() {
             </div>
             <div className="flex-1" />
             <button onClick={() => setSearching(true)} className={btn} aria-label="Search a place"><Search size={17} strokeWidth={1.5} /></button>
+            <Link href="/sky" className={btn} aria-label="Sky research"><Telescope size={17} strokeWidth={1.5} /></Link>
             <Link href="/agents" className={`${btn} relative`} aria-label="Agents">
               <Users size={17} strokeWidth={1.5} />
               <span className="num absolute -right-1 -top-1 min-w-[18px] rounded-[4px] border border-line-strong bg-panel px-1 text-center text-[10px] leading-[16px] text-fg2">{agents.length}</span>
