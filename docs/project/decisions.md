@@ -44,6 +44,8 @@
 
 - **2026-10-25: Failed hazard lookups remain unknown.** CGS reports unavailable layers explicitly (and errors if all fail); sea-level-rise summaries include only successfully checked scenarios and retain available polygons. Missing layers are never reported as zero exposure. Permit/flood insights group projects by their own lowest intersecting mapped scenario, so a project exposed at 2.5 ft is not counted at 1.6 ft. Regression tests cover outages, partial results and scenario ordering.
 
+- **2026-10-25: Coverage check can re-dispatch agents.** After the first sweep, the coverage check (`llmGapCheck` in `web/src/lib/orchestrator/run.ts`) returns a missing-capability gap (spawns a new agent, as before) and up to 2 follow-ups `{agentId, instruction}` for agents already in the run, one round only. Each follow-up re-dispatches that agent with the instruction as its focus ("Re-dispatched: …" in the UI). Follow-ups are only for unusable findings (unresolved ids/keys, or a count with no named items), not for fresher or extra data, since each adds ~20s. Generated agents are also told to resolve ids into names before reporting and to list concrete named items. Triggered by a "What animals are here" run that ended on a bare GBIF species key.
+
 - **2026-10-25: Name = Coordinate.** Live at https://coordinate-agents.vercel.app (coordinate.vercel.app belongs to another account; geoswarm.vercel.app kept as an alias). Internal ids (SpacetimeDB db `geoswarm`, Convex project, storage keys) keep the old name.
 
 ## Open
