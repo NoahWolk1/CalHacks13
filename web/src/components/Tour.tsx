@@ -57,9 +57,9 @@ const EDGE = 12;
 /** End a tour without marking it seen (also used when desktop UI unmounts). */
 function cancel() {
   const s = useStore.getState();
-  // A run keeps its mode even after it completes or fails.
-  const mode = modeBefore != null && s.tour != null && s.tour <= TOUR.findIndex((t) => t.waitFor === "run") && !runStartedDuringTour && !s.running
-    ? modeBefore : s.mode;
+  // Leaving before the Run step puts the user's mode back; past it, the tour hands off in Ask mode (the default).
+  const early = s.tour != null && s.tour <= TOUR.findIndex((t) => t.waitFor === "run") && !runStartedDuringTour && !s.running;
+  const mode = modeBefore == null ? s.mode : early ? modeBefore : "ask";
   modeBefore = null;
   runStartedDuringTour = false;
   s.set({ tour: null, mode });
