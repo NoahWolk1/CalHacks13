@@ -5,10 +5,10 @@
 
 ## Before judging (checklist)
 
-- [ ] App running locally, with `npx convex dev` and `npm run dev` both up. Hard-refresh once.
+- [ ] App running locally, with `npm run dev` up and pointed at SpacetimeDB maincloud (`/api/agents` shows `live.backend: "spacetime"`). Hard-refresh once.
 - [ ] `ANTHROPIC_API_KEY` set (the LLM badge shows on). The heuristic fallback still works without it.
 - [ ] **Run the demo mission once that morning** in the exact Mission District box. Save its `/?run=<id>` link and open it in a second tab. That's the fallback.
-- [ ] A phone open to a past run's share link on the same Wi-Fi (`http://<laptop-ip>:<port>/?run=<id>`), or a cloud Convex deployment if off-LAN.
+- [ ] A phone open to a past run's share link on the same Wi-Fi (`http://<laptop-ip>:<port>/?run=<id>`), or the deployed app (SpacetimeDB maincloud) if off-LAN.
 - [ ] Map pre-zoomed to the Mission, with Site Risk Analyst + Insights already selected. Close the Agent Hub panel.
 - [ ] Know the numbers: **~124 findings, ~10 s, 6 permits in the SFPUC 100-year storm zone, ≈$3.1M, 6 on filled-in former water.** Re-check them against the morning run and use whatever it shows.
 
@@ -27,14 +27,14 @@
 | **0:55–1:10** | "This is the orchestrator doing more than summarizing. It saw permits that looked risky and sent the terrain drone back to measure the ground at those specific parcels." | Point at the **terrain drone re-dispatch** (thought line: "Re-dispatching Terrain Scanner…"). |
 | **1:10–1:35** | "Then it cross-references. Six permitted projects, about $3.1 million of work, sit inside the city's 100-year storm flood zone, and six are built on filled-in former creek and lagoon. FEMA's map alone shows neither." | **When the insight arcs appear**, point along an arc from the **permit pin to the flood polygon**. Click the top insight so its **cited findings highlight**. |
 | **1:35–1:45** | "Every insight cites the finding ids it's built on. If Claude cites something that doesn't exist, we drop it." | Point at the **finding ids** in the insight card. |
-| **1:45–1:55** | "Missions live in Convex, so this link streams the same mission live on any device." | Hand the judge the **phone**, or click **Share** and open the link in a new tab. |
+| **1:45–1:55** | "Missions live in SpacetimeDB, so this link streams the same mission live on any device." | Hand the judge the **phone**, or click **Share** and open the link in a new tab. |
 | **1:55–2:00** | "Same agents, different orchestrators: Storefront Scout and Disaster Response. Next, agents that create agents. Built for [NAMED COMMUNITY]." | Point at the orchestrator picker. Stop. |
 
 If there's time left (judges asking for more), run an **Ask** question with Site Risk Analyst: *"Which new developments are most exposed to flooding?"* and show the streamed answer with citations.
 
 ## 30-second fallback (Wi-Fi or an API down)
 
-Say: "The venue Wi-Fi is struggling, so here's the mission we ran this morning. It's stored in Convex, so it replays exactly what happened, event by event."
+Say: "The venue Wi-Fi is struggling, so here's the mission we ran this morning. It's stored in SpacetimeDB, so it replays exactly what happened, event by event."
 
 1. Open **Missions ▾** at the top of the map (or the saved `/?run=<id>` tab) and pick the morning Mission District run. The finished mission **replays with staggered events**, so the fleet still flies, pins drop and arcs draw.
 2. Give the same beats: re-dispatch, "6 permits in the storm flood zone, ≈$3.1M", "6 on filled-in water", cited finding ids.
@@ -64,8 +64,8 @@ Say: "The venue Wi-Fi is struggling, so here's the mission we ran this morning. 
 7. **What's actually the orchestrator vs. a prompt chain?**
    It plans (sends only relevant agents), re-dispatches (sends the terrain drone back to specific parcels after the first sweep), cross-references across agents, and reconciles conflicts (FEMA says minimal hazard, but 311 reports and low elevation disagree). A prompt chain would summarize each source on its own.
 
-8. **Why Convex?**
-   Missions are shared state. The server writes an ordered event log and indexed findings, and every browser subscribes reactively. That gives us share links, live viewing on a second device, mission history and replay from one data model, with no websocket code of our own.
+8. **Why SpacetimeDB?**
+   Missions are the agents' shared world state. The server writes an ordered event log and findings through reducers (seq order enforced in the database), and every browser subscribes to SQL queries over WebSocket. That gives us share links, live viewing on a second device, mission history, replay, stop and our Claude rate limits from one database, with no sync layer of our own. Only our server's identity can write; browsers are read-only subscribers.
 
 9. **How accurate is the flood result? Is SFPUC's map authoritative?**
    It's the SF Public Utilities Commission's own 100-year storm flood risk map [TEAM: verify before saying it, since we believe SF ties a flood-risk disclosure requirement for sales/leases to this map]. FEMA's map is the federal insurance map and is coastal-only in SF. We show both and flag when they disagree rather than picking one silently. This is a screening tool, not a survey or an engineering report.
@@ -74,4 +74,4 @@ Say: "The venue Wi-Fi is struggling, so here's the mission we ran this morning. 
     Discovering that FEMA had nothing inland, so our headline insight never fired in the Mission until we added the SFPUC storm map. Second hardest: getting insights grounded, which we fixed by running deterministic joins first and having Claude cite them.
 
 11. **(Bonus) What happens when an API is slow or down?**
-    Each agent has its own timeout and error state, so one failure doesn't stop the mission. If the Claude call fails, the heuristic fallback takes over. If Convex is unreachable at run start, the app streams over SSE instead.
+    Each agent has its own timeout and error state, so one failure doesn't stop the mission. If the Claude call fails, the heuristic fallback takes over. If SpacetimeDB is unreachable at run start, the app streams over SSE instead (Convex is also wired as a fallback backend).

@@ -16,82 +16,84 @@ npm run dev                  # http://localhost:3000 (or pass -p <port>)
 | `ANTHROPIC_API_KEY` | Claude plans which agents to send, writes cross-reference insights and streams the answer. Without it the app runs end-to-end in **heuristic mode** (keyword planner, rule-based insights, templated answer). |
 | `CLAUDE_MODEL` | Optional override. Default `claude-opus-5-5` (`lib/llm.ts`). |
 | `CENSUS_API_KEY` | Free from [api.census.gov/data/key_signup.html](https://api.census.gov/data/key_signup.html). Enables Census Rover's income/rent stats. |
-| `NEXT_PUBLIC_CONVEX_URL` | Written by `npx convex dev`. Turns on Convex mode (shared live missions, history, share links). Blank → SSE fallback. |
+| `LIVE_BACKEND` | `spacetime` \| `convex` \| `sse`. Default: `spacetime` if `SPACETIME_DB` + `SPACETIME_TOKEN` are set, else `convex` if `NEXT_PUBLIC_CONVEX_URL` is set, else `sse`. |
+| `SPACETIME_HOST` / `SPACETIME_DB` / `SPACETIME_TOKEN` | SpacetimeDB (primary live backend). Host defaults to `https://maincloud.spacetimedb.com`. The token is a **server-only secret** (see below). |
+| `NEXT_PUBLIC_SPACETIME_HOST` / `NEXT_PUBLIC_SPACETIME_DB` | Optional browser overrides. By default the browser uses the host/db the server reports from `/api/agents`. |
+| `NEXT_PUBLIC_CONVEX_URL` | Convex (fallback live backend). Written by `npx convex dev`. |
+| `LLM_PER_IP_HOURLY` / `LLM_GLOBAL_HOURLY` / `LLM_IP_SALT` / `LLM_RATE_LIMIT` | Hourly caps on Claude-powered runs (defaults 20 / 150; on in production). Over the cap a run goes heuristic. |
 
-## Convex: live shared mission state
+## SpacetimeDB: live shared mission state (primary)
 
-Convex is the source of truth for missions. With `NEXT_PUBLIC_CONVEX_URL` set:
+SpacetimeDB is the real-time backend: the orchestrator writes every mission into it and every browser watching a mission subscribes to it. The module lives in `web/spacetime/src/index.ts` (TypeScript, runs inside the database).
 
-1. `POST /api/run` creates a `runs` row and returns `{runId}` right away; the orchestrator keeps running in the background on the Node server.
-2. Every `RunEvent` is buffered and flushed to Convex every ~100 ms (`events.append`, batched, strictly increasing `seq`). Implemented in `src/lib/server/convexRun.ts`.
-3. The browser (`components/ConvexRunSync.tsx`) subscribes with `useQuery(api.events.since, {runId, afterSeq})` and pushes each new event through `dispatchRunEvent` (same path the SSE fallback uses: zustand store + map fleet sim).
-4. The URL becomes `/?run=<id>`. Opening it on another device (a judge's phone) loads the region/profile/question from the run row and streams the mission live; a finished mission replays with staggered events so the fleet animates. **Missions ▾** (top of the map) lists recent runs; **Share** copies the link.
-5. `POST /api/run/stop {runId}` recalls the agents: it sets `runs.stopRequested`, which the orchestrator polls, so it works across serverless instances. Only the launching browser shows the run as its own.
+1. `POST /api/run` calls the `create_run` reducer and returns `{runId}` right away; the orchestrator keeps running in the background (`after()` on Vercel).
+2. Every `RunEvent` is buffered and flushed every ~100 ms with the `append_events` reducer (batched, strictly increasing `seq`; a gap rejects the batch, an already-stored seq is skipped so retries are idempotent). The same transaction updates the run summary (label, counts, status) and inserts `findings` rows. Server side: `src/lib/server/spacetimeRun.ts` (HTTP reducer calls, no long-lived socket, so it suits serverless) behind the backend-agnostic `src/lib/server/liveRun.ts`.
+3. The browser (`components/SpacetimeLive.tsx` → `SpacetimeRunSync.tsx`) opens one anonymous WebSocket and subscribes to `SELECT * FROM runs WHERE run_id = …` and `SELECT * FROM events WHERE run_id = …` (`useTable`), then pushes each new event through `dispatchRunEvent` in seq order (`lib/client/useRunFeed.ts`, shared with Convex).
+4. The URL becomes `/?run=<id>`. Opening it on another device loads the region/profile/question from the run row and streams the mission live; a finished mission replays with staggered events. **Missions ▾** lists recent runs (subscription on `runs`); **Share link** copies the URL.
+5. `POST /api/run/stop {runId}` calls `request_stop`, which sets `stop_requested`; the orchestrator polls it over the SQL endpoint every 1.5 s, so a stop works across serverless instances.
+6. Claude rate limits: `reserve_llm` checks and records per-IP + global hourly caps in one transaction (rows in the private `llm_usage` table, salted IP hashes, old rows pruned on each call).
 
-| Table | Contents |
-|---|---|
-| `runs` | mode, profileId, question, region (GeoJSON), label, status `running/done/error`, startedAt, durationMs, llm, findingCount, insightCount |
-| `events` | runId, seq, type, event (the raw `RunEvent`); index `by_run_seq` |
-| `findings` | denormalized per finding: runId, findingId, workerId, category, claim, confidence, severity, source, geometry; indexes `by_run`, `by_run_worker`, `by_run_category` |
+| Table | Visibility | Contents |
+|---|---|---|
+| `runs` | public | run_id (PK), mode, profile_id, question, region_json, label, status `running/done/error`, started_at_ms, duration_ms, llm, finding_count, insight_count, error, stop_requested, next_seq |
+| `events` | public | run_id (btree), seq, type, event_json (the raw `RunEvent`) |
+| `findings` | public | run_id (btree), finding_id, worker_id, category, claim, confidence, severity, source_type, source_url, geometry_json |
+| `llm_usage` | private | ip_hash (btree), at_ms |
+| `writers` | private | identity_hex of identities allowed to write |
 
-Functions live in `web/convex/`: `runs.create/finish/get/recent/requestStop/stopRequested`, `events.append/since`, `findings.byRun({runId, workerId?, category?})`, `findings.countsByAgent`.
+**Who can write.** Browsers only read. Every write reducer (`create_run`, `append_events`, `finish_run`, `request_stop`, `reserve_llm`, `add_writer`, `remove_writer`) checks `ctx.sender` against the private `writers` table and throws `not authorized` otherwise. `init` seeds `writers` with the database owner (whoever ran `spacetime publish`). The Next server has its own identity: `npm run spacetime:writer -- --server <local|maincloud>` mints one (`POST /v1/identity`), allowlists it with `add_writer` as you, and saves `{identity, token}` to `~/.config/geoswarm/spacetime-<server>-<db>.json` (mode 600). Put that token in `SPACETIME_TOKEN`. Never commit it.
 
-**Running it (two terminals):**
+**Running it locally** (the `spacetime` CLI must be on PATH; it installs to `~/.local/bin`):
 
 ```bash
-cd web && npx convex dev          # terminal 1: keeps functions deployed + regenerates convex/_generated
-cd web && npm run dev -- -p 3005  # terminal 2: restart after .env.local changes
+cd web
+npm run spacetime:start                      # terminal 1: local server on 127.0.0.1:3000
+npm run spacetime:publish:local              # publish web/spacetime as database "geoswarm"
+npm run spacetime:writer -- --server local   # mint + allowlist the server identity, prints the token file
+# .env.local: SPACETIME_HOST=http://127.0.0.1:3000  SPACETIME_DB=geoswarm  SPACETIME_TOKEN=<token from the file>
+npm run dev -- -p 3005                       # terminal 2
 ```
 
-No account needed for a local backend: `CONVEX_AGENT_MODE=anonymous npx convex dev` runs one at `http://127.0.0.1:3210` and writes `.env.local`. The browser rewrites `127.0.0.1` to the page's host, so a phone on the same Wi-Fi can open `http://<laptop-ip>:3005/?run=<id>`. For a phone off the LAN, run `npx convex login` then `npx convex dev --configure` to get a cloud deployment.
+After changing the module: `npm run spacetime:publish:local` (or `:cloud`) and `npm run spacetime:generate` (rewrites `src/spacetime_bindings/`). Maincloud: `spacetime login`, `npm run spacetime:publish:cloud`, `npm run spacetime:writer -- --server maincloud`. The browser rewrites a `127.0.0.1` host to the page's host, so a phone on the same Wi-Fi can open `http://<laptop-ip>:3005/?run=<id>`.
 
-**Fallback:** no `NEXT_PUBLIC_CONVEX_URL` (or Convex unreachable when a run starts) → `/api/run` streams SSE exactly as before, and the mission bar is hidden.
+## Convex (fallback live backend)
+
+The Convex implementation (`web/convex/`, `src/lib/server/convexRun.ts`, `components/ConvexRunSync.tsx`) mirrors the same semantics and stays available: set `LIVE_BACKEND=convex` (or leave SpacetimeDB unconfigured with `NEXT_PUBLIC_CONVEX_URL` set). Functions: `runs.create/finish/get/recent/requestStop/stopRequested`, `events.append/since`, `findings.byRun`, `findings.countsByAgent`, `llm.reserve`. Local: `CONVEX_AGENT_MODE=anonymous npx convex dev` runs a backend at `http://127.0.0.1:3210` and writes `.env.local`.
+
+**SSE fallback:** with no live backend (or if it's unreachable when a run starts), `/api/run` streams SSE exactly as before and the mission bar is hidden. The browser always follows the backend the server reports in `/api/agents`.
 
 ## Deploy to Vercel
 
-Already handled in code: the Convex-mode orchestrator runs inside `after()` (Vercel `waitUntil`) so it survives the `{runId}` response; `/api/run` has `maxDuration = 300` (the Hobby max with Fluid compute, which is on by default; Pro allows 800); `/api/run/stop` sets `runs.stopRequested` in Convex, which the orchestrator polls every 1.5 s, so a stop works even when it lands on another serverless instance; the HTTP disk cache moves to `/tmp/geoswarm-cache` when `VERCEL` is set. `vercel.json` sets the build command to `npm run build:vercel`. That runs `npx convex deploy --cmd 'npm run build'` when `CONVEX_DEPLOY_KEY` is set (deploys functions and injects `NEXT_PUBLIC_CONVEX_URL` into the build), and a plain `npm run build` otherwise, which gives SSE mode.
+Already handled in code: the live-mode orchestrator runs inside `after()` (Vercel `waitUntil`) so it survives the `{runId}` response; `/api/run` has `maxDuration = 300` (the Hobby max with Fluid compute; Pro allows 800); `/api/run/stop` flags the run row in the live backend, which the orchestrator polls every 1.5 s, so a stop works even when it lands on another serverless instance; the HTTP disk cache moves to `/tmp/geoswarm-cache` when `VERCEL` is set. `vercel.json` sets the build command to `npm run build:vercel`, which runs `npx convex deploy --cmd 'npm run build'` when `CONVEX_DEPLOY_KEY` is set and a plain `npm run build` otherwise. The SpacetimeDB module is published separately (`npm run spacetime:publish:cloud`); Vercel only needs its env vars.
 
-**1. Convex production deployment** (one time):
-
-```bash
-cd web
-npx convex login                 # browser login
-npx convex dev --configure       # choose "create a new project" (cloud); writes .env.local with the dev URL
-npx convex deploy                # creates and pushes the *prod* deployment, prints https://<name>.convex.cloud
-```
-
-In the Convex dashboard, open the prod deployment, then Settings → General → **Generate Production Deploy Key**.
-
-**2. Vercel project:**
+**Vercel env (production):**
 
 ```bash
-cd web
-npx vercel login
-npx vercel link                  # create the project; if linking from the repo root, set Root Directory = web
-npx vercel env add CONVEX_DEPLOY_KEY production     # paste the prod deploy key
-npx vercel env add ANTHROPIC_API_KEY production     # optional: heuristic mode without it
-npx vercel env add CENSUS_API_KEY production        # optional
-npx vercel env add CLAUDE_MODEL production          # optional
-npx vercel env add NEXT_PUBLIC_CONVEX_URL production  # optional safety net: the https://<name>.convex.cloud URL
-npx vercel --prod
+npx vercel env add SPACETIME_HOST production     # https://maincloud.spacetimedb.com
+npx vercel env add SPACETIME_DB production       # geoswarm
+npx vercel env add SPACETIME_TOKEN production    # the server token (secret), from ~/.config/geoswarm/spacetime-maincloud-geoswarm.json
+npx vercel env add LIVE_BACKEND production       # spacetime (optional; it's the default when the two above are set)
+npx vercel env add ANTHROPIC_API_KEY production  # optional: heuristic mode without it
+npx vercel env add CENSUS_API_KEY production     # optional
+npx vercel env add CONVEX_DEPLOY_KEY production  # optional: keeps the Convex fallback deployed
 ```
 
-**Current setup:** the Vercel project `geoswarm` has Root Directory = `web` and is linked at the **repo root**, so run `npx vercel --prod` from the repo root (not from `web/`). Pushes to GitHub also build automatically (PRs → preview, `main` → production). Without `CONVEX_DEPLOY_KEY`, preview deploys build in SSE mode. Give them their own Convex preview deploy key if you want Convex there too. The browser's `127.0.0.1` → page-host rewrite only touches local URLs, so `*.convex.cloud` is used as-is.
+**Current setup:** the Vercel project `geoswarm` has Root Directory = `web` and is linked at the **repo root**, so run `npx vercel --prod` from the repo root (not from `web/`). Pushes to GitHub also build automatically (PRs → preview, `main` → production). Preview deploys without the SpacetimeDB vars fall back to Convex (if configured) or SSE.
 
-**3. Post-deploy checklist:**
+**Post-deploy checklist:**
 
-- `curl https://<app>.vercel.app/api/agents` returns the agent list, with `llm: true` if the key is set.
+- `curl https://<app>.vercel.app/api/agents` returns the agent list, `llm: true` if the key is set, and `live.backend: "spacetime"`.
 - Run a mission in the UI. The URL should become `/?run=<id>`. Open it on a phone over cellular to confirm it streams live. Press Stop mid-run and check that the agents recall.
-- Warm the prod instance (its `/tmp` cache is per-instance, so this mainly checks that every gov API answers from Vercel):
-  `BASE_URL=https://<app>.vercel.app CONVEX_URL=https://<name>.convex.cloud npm run warm`
-- Hobby plan: runs are capped at 300 s. Function time and Convex free-tier limits are far above demo usage.
+- `spacetime sql geoswarm "SELECT run_id, status, finding_count FROM runs"` shows the run; the SpacetimeDB dashboard is at https://spacetimedb.com/geoswarm.
+- Warm the prod instance: `BASE_URL=https://<app>.vercel.app npm run warm`.
+- Hobby plan: runs are capped at 300 s.
 
 ## Architecture
 
 ```text
  Browser (components/)                          Server (Next.js route handlers, Node runtime)
  ─────────────────────                          ─────────────────────────────────────────────
- MapView: MapLibre GL + deck.gl                 GET  /api/agents → worker configs + profiles + llm flag
+ MapView: MapLibre GL + deck.gl                 GET  /api/agents → worker configs + profiles + llm flag + live backend
    box / polygon / pin → Region (lib/geo.ts)
  CommandPanel: profile, mode, question   ──POST /api/run (RunRequest)──►  runOrchestrator (lib/orchestrator/run.ts)
  RightPanel: agents, insights, answer    ◄──── SSE stream of RunEvents ───   0. reverse-geocode region (Nominatim)
@@ -112,7 +114,7 @@ npx vercel --prod
 ```
 
 - **Orchestrator profiles** (`lib/orchestrator/profiles.ts`): Site Risk Analyst, Storefront Scout, Disaster Response. Each has a `domainPrompt` and the `defaultAgents` used in Insights mode. All share the same worker pool.
-- **Findings store**: in Convex mode every run, event and finding is persisted in Convex (see below). The orchestrator also keeps an in-memory array per run for cross-referencing.
+- **Findings store**: in live mode every run, event and finding is persisted in SpacetimeDB (or Convex as fallback; see above). The orchestrator also keeps an in-memory array per run for cross-referencing.
 - SF-only workers are dropped from the plan when the region doesn't touch San Francisco. Re-dispatch is skipped for Storefront Scout.
 - Claude calls use structured outputs (zod schemas) for the plan and insights; any LLM failure falls back to the heuristic path.
 
@@ -134,7 +136,7 @@ Registered in `BUILTIN_WORKERS` (`lib/agents/registry.ts`). All use only the `ht
 
 ## RunEvent protocol
 
-`POST /api/run` with a `RunRequest` (`mode`, `profileId`, `region`, optional `question`, optional `includeAgents`) returns `{runId}` in Convex mode (events land in the Convex `events` table), otherwise `text/event-stream`; each message is `data: <JSON RunEvent>\n\n`. Types live in `lib/types.ts`.
+`POST /api/run` with a `RunRequest` (`mode`, `profileId`, `region`, optional `question`, optional `includeAgents`) returns `{runId, backend}` in live mode (events land in the SpacetimeDB or Convex `events` table), otherwise `text/event-stream`; each message is `data: <JSON RunEvent>\n\n`. Types live in `lib/types.ts`.
 
 | Event | Meaning |
 |---|---|

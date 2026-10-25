@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic";
 import { useEffect } from "react";
 import { useStore } from "@/lib/client/store";
-import { convexEnabled, loadCatalog } from "@/lib/client/runClient";
+import { loadCatalog } from "@/lib/client/runClient";
 import CommandPanel, { useRegionLabel } from "./CommandPanel";
 import MobileSheet, { SHEET_PEEK } from "./MobileSheet";
 import { useIsDesktop } from "@/lib/client/useMedia";
@@ -15,15 +15,19 @@ import StatusBar from "./StatusBar";
 import AgentHub from "./AgentHub";
 import ConvexClientProvider from "./ConvexClientProvider";
 import ConvexRunSync from "./ConvexRunSync";
-import MissionHistory from "./MissionHistory";
+import { ConvexMissionHistory } from "./MissionHistory";
 import { DemoSpotChips } from "./PlaceSearch";
 
 const MapView = dynamic(() => import("./MapView"), { ssr: false });
+const SpacetimeLive = dynamic(() => import("./SpacetimeLive"), { ssr: false });
 
 export default function App() {
   const region = useStore((s) => s.region);
   const error = useStore((s) => s.error);
   const desktop = useIsDesktop();
+  const live = useStore((s) => s.live);
+  const stHost = process.env.NEXT_PUBLIC_SPACETIME_HOST || live?.spacetime?.host;
+  const stDb = process.env.NEXT_PUBLIC_SPACETIME_DB || live?.spacetime?.db;
   useEffect(() => { loadCatalog(); }, []);
   useRegionLabel();
   useLayoutSync();
@@ -49,7 +53,9 @@ export default function App() {
       )}
       </div>
       <AgentHub />
-      {convexEnabled && <><ConvexRunSync /><MissionHistory /></>}
+      {/* Live shared mission state: SpacetimeDB (primary) or Convex (fallback), as /api/agents reports. */}
+      {live?.backend === "spacetime" && stHost && stDb && <SpacetimeLive host={stHost} db={stDb} />}
+      {live?.backend === "convex" && process.env.NEXT_PUBLIC_CONVEX_URL && <><ConvexRunSync /><ConvexMissionHistory /></>}
     </main>
     </ConvexClientProvider>
   );
