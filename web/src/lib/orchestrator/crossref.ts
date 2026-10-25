@@ -232,9 +232,11 @@ function cityDataLinks(findings: Finding[]): Link[] {
   }
 
   // B. Investment × sea-level rise (≤2.5 ft scenario), flagging the ones that are also on liquefiable fill.
-  const inSlr = permits.map((p) => ({ p, z: inAny(p, slr) })).filter((x) => x.z);
-  if (inSlr.length) {
-    const lowest = Math.min(...inSlr.map((x) => Number(x.z!.props?.scenarioFt)));
+  // Each project belongs to its lowest intersecting scenario, regardless of finding order.
+  const byScenario = [...slr].sort((a, b) => Number(a.props?.scenarioCm) - Number(b.props?.scenarioCm));
+  const exposed = permits.map((p) => ({ p, z: inAny(p, byScenario) })).filter((x) => x.z);
+  for (const lowest of [...new Set(exposed.map((x) => Number(x.z!.props?.scenarioFt)))].sort((a, b) => a - b)) {
+    const inSlr = exposed.filter((x) => Number(x.z!.props?.scenarioFt) === lowest);
     const both = inSlr.filter((x) => onLiq.includes(x.p)).length;
     links.push({
       kind: "risk",

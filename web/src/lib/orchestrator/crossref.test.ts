@@ -84,6 +84,24 @@ describe("crossReference: city-data and hazard joins", () => {
     expect(titles([box("sea-level-rise", "slr", -122.40, 37.77, { scenarioCm: 150, scenarioFt: 4.9 }), permit]).some((t) => t.includes("sea-level rise"))).toBe(false);
   });
 
+  it.each([false, true])("groups permits by their lowest flood scenario regardless of zone order (reversed=%s)", (reverse) => {
+    const low = box("sea-level-rise", "slr", -122.40, 37.77, { scenarioCm: 50, scenarioFt: 1.6 });
+    const overlappingHigh = box("sea-level-rise", "slr", -122.40, 37.77, { scenarioCm: 75, scenarioFt: 2.5 });
+    const high = box("sea-level-rise", "slr", -122.39, 37.78, { scenarioCm: 75, scenarioFt: 2.5 });
+    const early = pt("sf-permits", "permit", -122.40, 37.77, {}, "1 Early St: new construction");
+    const later = pt("sf-permits", "permit", -122.39, 37.78, {}, "2 Later St: new construction");
+    const zones = [low, overlappingHigh, high];
+    const links = crossReference([...(reverse ? zones.reverse() : zones), early, later]).filter((l) => l.title.includes("sea-level rise"));
+    expect(links).toHaveLength(2);
+    const first = links.find((l) => l.title.includes("1.6 ft"));
+    const second = links.find((l) => l.title.includes("2.5 ft"));
+    expect(first?.title).toBe("1 permitted project floods with 1.6 ft of sea-level rise");
+    expect(first?.findingIds).toEqual([early.id, low.id]);
+    expect(first?.body).not.toContain("Later St");
+    expect(second?.findingIds).toEqual([later.id, high.id]);
+    expect(second?.body).not.toContain("Early St");
+  });
+
   it("joins severe/fatal crashes to schools within 150 m, ignoring minor crashes", () => {
     const school = pt("ca-schools", "school", -122.4100, 37.7600, { name: "Mission High" });
     const crash = pt("sf-crashes", "crash", -122.4102, 37.7602, { severity: "Fatal", mode: "Pedestrian" }); // ~30 m

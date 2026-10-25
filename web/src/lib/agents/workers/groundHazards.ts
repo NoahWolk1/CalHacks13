@@ -45,6 +45,8 @@ export const groundHazardsWorker: Worker = {
       });
       return { L, feats };
     }));
+    const unavailable = results.filter(({ feats }) => feats === null).map(({ L }) => L.key);
+    if (unavailable.length === LAYERS.length) throw new Error("CGS hazard data unavailable: all layer queries failed");
     const summary: Record<string, number> = {};
     let emitted = 0;
     for (const { L, feats } of results) {
@@ -77,15 +79,18 @@ export const groundHazardsWorker: Worker = {
     }
     const parts = LAYERS.filter((L) => summary[L.key] != null).map((L) => `${L.key} ${summary[L.key] ? `${Math.max(1, Math.round(summary[L.key] * 100))}%` : "none"}`);
     const worst = Math.max(0, ...LAYERS.map((L) => (summary[L.key] ? L.sev : 0)));
+    const missingNote = unavailable.length ? ` Unavailable hazard layers: ${unavailable.join(", ")}; their exposure is unknown.` : "";
     emit({
-      claim: emitted
+      claim: (emitted
         ? `CGS regulatory hazard zones cover parts of this area (share of area: ${parts.join(", ")}). Building here triggers geotechnical investigation under the Seismic Hazards Mapping Act.`
-        : `No CGS liquefaction, earthquake-landslide or tsunami hazard zone intersects this area (${parts.join(", ")}).`,
+        : `No CGS hazard zone intersects this area in the successfully checked layers (${parts.join(", ")}).`) + missingNote,
       geometry: { type: "Point", coordinates: r.center },
-      source_url: "https://maps.conservation.ca.gov/cgs/EQZApp/app/", source_type: "cgs_hazard_zone", confidence: 0.9,
+      source_url: "https://maps.conservation.ca.gov/cgs/EQZApp/app/", source_type: "cgs_hazard_zone", confidence: unavailable.length ? 0.6 : 0.9,
       category: emitted ? Object.entries(summary).sort((x, y) => y[1] - x[1])[0][0] : "liquefaction",
       severity: emitted ? +(worst * 0.85).toFixed(2) : 0.1,
-      props: { areaLevel: true, shareOfArea: summary, liquefaction: (summary.liquefaction ?? 0) > 0, landslide: (summary.landslide ?? 0) > 0, tsunami: (summary.tsunami ?? 0) > 0 },
+      props: { areaLevel: true, shareOfArea: summary, unavailableHazards: unavailable,
+        ...Object.fromEntries(LAYERS.map(({ key }) => [key, summary[key] == null ? null : summary[key] > 0])),
+      },
     });
   },
 };
