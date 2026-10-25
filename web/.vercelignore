@@ -1,0 +1,6 @@
+.env*
+!.env.example
+.cache
+.convex
+.next
+node_modules

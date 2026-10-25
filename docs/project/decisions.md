@@ -16,6 +16,8 @@
 - **2026-10-24: Hosting = Vercel (Root Directory `web`) + Convex cloud prod.** The build runs `npx convex deploy --cmd 'npm run build'` when `CONVEX_DEPLOY_KEY` is set (`web/vercel.json`, `npm run build:vercel`). Background orchestrator work runs in `after()`, stop goes through a Convex `stopRequested` flag so it works across instances, and the disk cache lives in `/tmp` on Vercel. Runs are capped at 300 s on Hobby. Steps: [web/README.md](../../web/README.md#deploy-to-vercel).
 - **2026-10-24: Visual direction "Night survey sheet".** The chrome is warm graphite with docked solid panels and hairline borders, with no glass, glow or gradients. Colour is reserved for data: the agents (`web/src/lib/client/theme.ts`) and the insight kinds. One sodium-orange accent marks the drawn area, live state and the command post. Geist in sentence case, with mono only for numbers and IDs. Collapsed panels leave a 36px activity rail.
 
+- **2026-10-24: Deployed** to https://geoswarm.vercel.app (Vercel project `geoswarm`, CLI deploys from `web/`) with Convex prod `hip-puffin-315` (project `geoswarm`, team noah-wolk). Claude runs are rate-limited (20/h per IP, 150/h global, via Convex `llmUsage`); over the cap runs fall back to heuristic mode.
+
 ## Open
 
 - [ ] **Named community for the pitch** (needed for Anthropic/Microsoft). Candidates in [submission/tracks.md](../submission/tracks.md).

@@ -2,6 +2,7 @@ import { after } from "next/server";
 import type { RunEvent, RunRequest } from "@/lib/types";
 import { runOrchestrator } from "@/lib/orchestrator/run";
 import { convexUrl, startConvexRun } from "@/lib/server/convexRun";
+import { decideLlm } from "@/lib/server/llmQuota";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,11 +13,14 @@ export const maxDuration = 300; // Vercel Hobby max (Fluid compute); Pro allows 
 // - Otherwise: text/event-stream of RunEvents (SSE fallback).
 export async function POST(req: Request) {
   const body = (await req.json()) as RunRequest;
+  // Hourly Claude caps (per IP + global); over the cap the run proceeds in heuristic mode.
+  const decision = await decideLlm(req, convexUrl());
+  const opts = { llm: decision.llm, quotaLimited: decision.limited };
 
   if (convexUrl()) {
     try {
       // after(): on Vercel the orchestrator keeps running after the response (waitUntil); locally a no-op wrapper.
-      return Response.json({ runId: await startConvexRun(body, (work) => after(work)) });
+      return Response.json({ runId: await startConvexRun(body, (work) => after(work), opts) });
     } catch (e) {
       console.error("[convex] could not start run, falling back to SSE:", (e as Error).message);
     }
@@ -33,7 +37,7 @@ export async function POST(req: Request) {
         try { controller.enqueue(enc.encode(`data: ${JSON.stringify(e)}\n\n`)); } catch { /* closed */ }
       };
       try {
-        await runOrchestrator(body, send, ctl.signal);
+        await runOrchestrator(body, send, ctl.signal, opts);
       } catch (e) {
         send({ type: "error", message: (e as Error).message });
       } finally {

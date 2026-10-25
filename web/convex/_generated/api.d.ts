@@ -10,6 +10,7 @@
 
 import type * as events from "../events.js";
 import type * as findings from "../findings.js";
+import type * as llm from "../llm.js";
 import type * as runs from "../runs.js";
 
 import type {
@@ -21,6 +22,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   events: typeof events;
   findings: typeof findings;
+  llm: typeof llm;
   runs: typeof runs;
 }>;
 
