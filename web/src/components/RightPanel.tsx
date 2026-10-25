@@ -1,15 +1,17 @@
 "use client";
 
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { ExternalLink, Check, Trash2 } from "lucide-react";
+import { ArrowLeft, ExternalLink, Check, Loader2, Plus, Trash2 } from "lucide-react";
 import { KIND_COLORS } from "@/lib/client/theme";
 import { useStore, agentById } from "@/lib/client/store";
-import { decideSpawned } from "@/lib/client/runClient";
+import { decideSpawned, isOwnRun, stopRun } from "@/lib/client/runClient";
 import type { Finding, Insight } from "@/lib/types";
 import { useLayout, dragPanel, GUTTER } from "@/lib/client/layout";
 import { StatusPill, VehicleGlyph } from "./ui";
 import Sash from "./Sash";
+import { AutoPicked, OrchestratorLog, ResearchForm } from "./ResearchForm";
+import { fmt, useMissionStats } from "./StatusBar";
 
 const KIND: Record<Insight["kind"], { label: string; color: string }> = {
   risk: { label: "Risk", color: KIND_COLORS.risk },
@@ -18,34 +20,7 @@ const KIND: Record<Insight["kind"], { label: string; color: string }> = {
   note: { label: "Signal", color: KIND_COLORS.note },
 };
 
-export type RightTab = "agents" | "insights" | "answer" | "findings";
-
-/** Tab list (with live counts) shared by the desktop panel and the mobile sheet. */
-export function useRightTabs() {
-  const { insights, findingOrder, answer, mode, plan, agentState } = useStore();
-  return [
-    { id: "agents", label: "Agents", n: Object.keys(agentState).length || plan.length },
-    { id: "insights", label: "Insights", n: insights.length },
-    ...(mode === "ask" || answer ? [{ id: "answer", label: "Answer", n: 0 }] : []),
-    { id: "findings", label: "Findings", n: findingOrder.length },
-  ] as { id: RightTab; label: string; n: number }[];
-}
-
-export function RightTabBody({ tab }: { tab: RightTab }) {
-  return (
-    <>
-      {tab === "agents" && <AgentsTab />}
-      {tab === "insights" && <InsightsTab />}
-      {tab === "answer" && <AnswerTab />}
-      {tab === "findings" && <FindingsTab />}
-    </>
-  );
-}
-
 export default function RightPanel() {
-  const { rightTab, set } = useStore();
-  const tabs = useRightTabs();
-
   const open = useLayout((s) => s.rightOpen);
   const dragging = useLayout((s) => s.dragging === "right");
 
@@ -55,42 +30,149 @@ export default function RightPanel() {
       transition={{ type: "spring", stiffness: 420, damping: 40 }}
       style={{ width: "var(--gs-rw)" }}
       className="dock pointer-events-auto absolute bottom-0 right-0 top-12 z-20 flex flex-col border-l border-line max-lg:hidden">
-      <div role="tablist" className="flex shrink-0 gap-5 overflow-hidden border-b border-line px-4">
-        {tabs.map((t) => (
-          <button key={t.id} role="tab" aria-selected={rightTab === t.id} onClick={() => set({ rightTab: t.id })}
-            className={`relative flex h-10 shrink-0 items-center gap-1.5 whitespace-nowrap text-[13px] transition-colors ${rightTab === t.id ? "text-fg1" : "text-fg3 hover:text-fg2"}`}>
-            {t.label}{t.n ? <span className="num text-[11.5px] text-fg3">{t.n}</span> : null}
-            {rightTab === t.id && <motion.span layoutId="tab" transition={{ duration: 0.16, ease: "easeOut" }} className="absolute inset-x-0 -bottom-px h-[1.5px] bg-fg1" />}
-          </button>
-        ))}
-      </div>
-      <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
-        <RightTabBody tab={rightTab} />
-      </div>
-      <Sash axis="x" id="right" label="Resize results panel" className="inset-y-0 -left-[4px]"
-        onMove={(x) => dragPanel("right", window.innerWidth - GUTTER - x)} onReset={() => useLayout.getState().set({ rightWidth: null })} />
+      <ResearchFlow className="scroll-thin min-h-0 flex-1 overflow-y-auto" />
+      <Sash axis="x" id="right" label="Resize research panel" className="inset-y-0 -left-[4px]"
+        onMove={(x) => dragPanel(window.innerWidth - GUTTER - x)} onReset={() => useLayout.getState().set({ rightWidth: null })} />
     </motion.aside>
   );
 }
 
-function AgentsTab() {
-  const { agentState, agents, running } = useStore();
-  const ids = Object.keys(agentState);
-  if (!ids.length) {
-    return (
-      <div className="py-2">
-        <p className="px-4 pb-2 pt-1 text-[12.5px] text-fg3">Fleet on standby. The orchestrator picks from these agents.</p>
-        {agents.filter((a) => !a.temporary).map((a) => (
-          <div key={a.id} className="grid grid-cols-[18px_1fr_auto] items-center gap-x-2.5 px-4 py-2">
-            <VehicleGlyph kind={a.vehicle} color={a.color} size={16} />
-            <span className="truncate text-[13px] text-fg1">{a.name}</span>
-            <span className="text-[12px] text-fg4" title={a.needsKeys?.length ? `Needs ${a.needsKeys.join(" + ")}` : undefined}>{a.needsKeys?.length ? "Needs key" : a.coverage}</span>
-            <span className="col-start-2 col-end-4 truncate text-[12px] text-fg3">{a.dataSources.join(" · ")}</span>
-          </div>
-        ))}
+/**
+ * The whole research page in one column: ask (area + question) → researching (progress) → results
+ * (answer, insights, findings). Which agents ran sits behind a button on the results. Shared with the mobile sheet.
+ */
+export function ResearchFlow({ className = "" }: { className?: string }) {
+  const running = useStore((s) => s.running);
+  const done = useStore((s) => !s.running && s.runDurationMs != null);
+  const bbox = useStore((s) => s.region?.bbox);
+  const [composing, setComposing] = useState(false);
+  const [showAgents, setShowAgents] = useState(false);
+
+  // A new run leaves the form; drawing a new area after a run goes back to it.
+  useEffect(() => { if (running) { setComposing(false); setShowAgents(false); } }, [running]);
+  const lastBbox = useRef(bbox);
+  useEffect(() => {
+    if (bbox !== lastBbox.current && !useStore.getState().running) setComposing(true);
+    lastBbox.current = bbox;
+  }, [bbox]);
+
+  return (
+    <div className={className}>
+      {running ? <Progress />
+        : !done || composing ? <ResearchForm onBack={done ? () => setComposing(false) : undefined} />
+        : showAgents ? <AgentsDetail onBack={() => setShowAgents(false)} />
+        : <Results onNew={() => setComposing(true)} onAgents={() => setShowAgents(true)} />}
+    </div>
+  );
+}
+
+/** Area + question being researched, atop the progress and results steps. */
+function Asked() {
+  const { mode, question, region, routed, profiles } = useStore();
+  const routedTo = routed?.auto ? profiles.find((p) => p.id === routed.profileId) : undefined;
+  return (
+    <div>
+      <div className="truncate text-[12px] text-fg3">{region?.label ?? "Selected area"}</div>
+      <div className="mt-0.5 text-[14px] font-medium leading-snug tracking-[-0.005em] text-fg1">
+        {mode === "ask" && question ? question : "What stands out in this area?"}
       </div>
-    );
-  }
+      {routedTo && <AutoPicked name={routedTo.name} reason={routed!.reason} className="mt-1.5" />}
+    </div>
+  );
+}
+
+function Progress() {
+  const { thoughts, answer, runId } = useStore();
+  const { elapsed, shown } = useMissionStats();
+  const last = thoughts[thoughts.length - 1]?.text;
+  // Viewers of a shared run can't stop it.
+  const own = !runId || isOwnRun(runId);
+  return (
+    <div className="space-y-4 p-4">
+      <Asked />
+      <div className="rounded-md border border-line bg-bg px-3 py-2.5">
+        <div className="flex items-center gap-2 text-[12.5px] text-fg1">
+          <Loader2 size={13} className="animate-spin text-accent" />
+          {answer ? "Writing the answer" : "Researching"}
+          <span className="num ml-auto text-[11.5px] text-fg3">{fmt(elapsed)}</span>
+        </div>
+        <div className="mt-1 text-[12px] text-fg3"><span className="num">{shown}</span> findings so far, pinned on the map as they come in.</div>
+        {last && !answer && <div className="mt-2 truncate border-t border-line pt-2 text-[12px] text-fg2" title={last}>{last}</div>}
+      </div>
+      {answer && <Markdown text={answer} streaming />}
+      {own && (
+        <button onClick={() => stopRun()}
+          className="flex h-8 w-full items-center justify-center gap-2 rounded-md border border-line-strong text-[12.5px] text-fg1 transition-colors hover:bg-raised">
+          <span className="h-2 w-2 rounded-[1px] bg-accent" /> Stop research
+        </button>
+      )}
+    </div>
+  );
+}
+
+function Results({ onNew, onAgents }: { onNew: () => void; onAgents: () => void }) {
+  const { answer, insights, findingOrder, agentState } = useStore();
+  const ran = Object.keys(agentState).length;
+  // Agents the orchestrator created mid-run wait for keep/discard behind the agents button.
+  const pending = Object.values(agentState).filter((a) => a.spawnedBy && !a.decision).length;
+  return (
+    <div className="pb-4">
+      <div className="space-y-3 p-4">
+        <Asked />
+        <div className="flex gap-1.5">
+          <button onClick={onNew}
+            className="flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border border-line-strong px-3 text-[12.5px] text-fg1 transition-colors hover:bg-raised">
+            <Plus size={13} strokeWidth={1.5} /> New research
+          </button>
+          {ran > 0 && (
+            <button onClick={onAgents}
+              className="flex h-8 min-w-0 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-line px-3 text-[12.5px] text-fg2 transition-colors hover:bg-raised hover:text-fg1">
+              {pending ? <><span className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent" /><span className="truncate">{pending} new agent{pending > 1 ? "s" : ""} to review</span></>
+                : <><span className="truncate">How this was researched</span><span className="num text-[11.5px] text-fg3">{ran}</span></>}
+            </button>
+          )}
+        </div>
+      </div>
+      {answer && <div className="border-t border-line p-4"><Markdown text={answer} /></div>}
+      {insights.length > 0 && (
+        <section className="border-t border-line">
+          <SectionHead label="Insights" n={insights.length} />
+          <InsightsList />
+        </section>
+      )}
+      <section className="border-t border-line">
+        <SectionHead label="Findings" n={findingOrder.length} />
+        {findingOrder.length ? <FindingsList /> : <p className="px-4 py-3 text-[12.5px] text-fg3">Nothing turned up here. Try a larger area or a different question.</p>}
+      </section>
+    </div>
+  );
+}
+
+function SectionHead({ label, n }: { label: string; n: number }) {
+  return <div className="flex items-center px-4 pb-1 pt-3 text-[12px] text-fg3">{label}<span className="num ml-auto text-[11.5px]">{n}</span></div>;
+}
+
+function AgentsDetail({ onBack }: { onBack: () => void }) {
+  return (
+    <div className="pb-4">
+      <div className="p-4 pb-2">
+        <button onClick={onBack} className="flex items-center gap-1.5 text-[12px] text-fg3 transition-colors hover:text-fg1">
+          <ArrowLeft size={13} strokeWidth={1.5} /> Back to results
+        </button>
+        <div className="mt-3 text-[14px] font-medium text-fg1">How this was researched</div>
+        <p className="mt-0.5 text-[12px] text-fg3">The agents that ran, what each found, and the orchestrator&apos;s reasoning.</p>
+      </div>
+      <AgentsList />
+      <div className="mt-2 border-t border-line">
+        <OrchestratorLog className="max-h-[360px]" />
+      </div>
+    </div>
+  );
+}
+
+function AgentsList() {
+  const { agentState, running } = useStore();
+  const ids = Object.keys(agentState);
   return (
     <div className="py-1.5">
       {ids.map((id) => {
@@ -114,7 +196,6 @@ function AgentsTab() {
           </motion.div>
         );
       })}
-      {!running && <p className="px-4 pb-2 pt-3 text-[12px] text-fg4">Mission complete. Hover an insight to see which findings it connects.</p>}
     </div>
   );
 }
@@ -160,9 +241,8 @@ function KeepOrDiscard({ id, decision }: { id: string; decision?: "kept" | "disc
   );
 }
 
-function InsightsTab() {
-  const { insights, set, selectedInsight, running } = useStore();
-  if (!insights.length) return <Empty text={running ? "Agents are still in the field. Insights appear once the orchestrator cross-references their findings." : "No insights yet. Deploy agents to an area."} />;
+function InsightsList() {
+  const { insights, set, selectedInsight } = useStore();
   return (
     <div>
       {insights.map((ins, i) => {
@@ -209,25 +289,13 @@ function SourceChips({ ids }: { ids: string[] }) {
   );
 }
 
-function AnswerTab() {
-  const { answer, running, question } = useStore();
-  if (!answer) return <Empty text={running ? "The orchestrator answers once the agents report back." : "Switch to Ask mode and deploy to get an answer."} />;
-  return (
-    <div className="p-4">
-      {question && <div className="mb-3 border-l-2 border-line-strong pl-3 text-[12.5px] text-fg3">{question}</div>}
-      <Markdown text={answer} streaming={running} />
-    </div>
-  );
-}
-
-function FindingsTab() {
+function FindingsList() {
   const { findingOrder, findings, revealed, selectedFinding, set } = useStore();
   const groups = useMemo(() => {
     const m = new Map<string, Finding[]>();
     for (const id of findingOrder) { const f = findings[id]; if (!m.has(f.worker_id)) m.set(f.worker_id, []); m.get(f.worker_id)!.push(f); }
     return [...m];
   }, [findingOrder, findings]);
-  if (!groups.length) return <Empty text="Findings stream in here as agents report them." />;
   return (
     <div className="pb-3">
       {groups.map(([wid, list]) => {
@@ -255,14 +323,6 @@ function FindingsTab() {
           </div>
         );
       })}
-    </div>
-  );
-}
-
-function Empty({ text }: { text: string }) {
-  return (
-    <div className="grid h-full place-items-center px-8 text-center">
-      <p className="max-w-[260px] text-[12.5px] leading-relaxed text-fg3">{text}</p>
     </div>
   );
 }

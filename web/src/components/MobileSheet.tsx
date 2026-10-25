@@ -1,6 +1,6 @@
 "use client";
-// Below `lg`: the side panels collapse into one bottom sheet (peek / half / full).
-// Peek shows the live status row (what the desktop StatusBar shows) + segmented tabs.
+// Below `lg`: the research panel becomes a bottom sheet (peek / half / full).
+// Peek shows the live status row (what the desktop StatusBar shows); the body is the same research flow.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { motion, AnimatePresence, type PanInfo } from "framer-motion";
 import { Video, VideoOff, Check } from "lucide-react";
@@ -8,13 +8,12 @@ import { useStore } from "@/lib/client/store";
 import { isOwnRun, startRun } from "@/lib/client/runClient";
 import { setSheetInset } from "@/lib/client/camera";
 import { regionAreaKm2 } from "@/lib/geo";
-import { MissionControls, OrchestratorLog, useCanRun } from "./CommandPanel";
-import { RightTabBody, useRightTabs, type RightTab } from "./RightPanel";
+import { useCanRun } from "./ResearchForm";
+import { ResearchFlow } from "./RightPanel";
 import { fmt, useCinematic, useMissionStats } from "./StatusBar";
 import { TOOLS } from "./TopBar";
 
 type Snap = "peek" | "half" | "full";
-type SheetTab = "mission" | RightTab;
 const ORDER: Snap[] = ["peek", "half", "full"];
 /** Visible height of the collapsed sheet, above the home-indicator safe area. */
 export const SHEET_PEEK = 124;
@@ -38,7 +37,6 @@ export default function MobileSheet() {
   const set = useStore((s) => s.set);
   const watching = !!runId && !isOwnRun(runId);
   const [snap, setSnap] = useState<Snap>("peek");
-  const [tab, setTab] = useState<SheetTab>("mission");
   const [drag, setDrag] = useState(0);
   const dragged = useRef(false);
 
@@ -55,24 +53,18 @@ export default function MobileSheet() {
   // Touch: one finger should pan the map by default (desktop starts on the box tool).
   useEffect(() => { if (useStore.getState().tool === "box") set({ tool: "pan" }); }, [set]);
 
-  // Follow the store: auto tab switches (first insight, answer streaming, a finding tapped on the map),
-  // run start (drop to peek so the swarm is visible), drawing (get out of the way), and a fresh region.
+  // Follow the store: run start (drop to peek so the swarm is visible), run end (rise to show results),
+  // drawing (get out of the way), a fresh region, and a finding tapped on the map.
   useEffect(() => useStore.subscribe((s, prev) => {
-    if (s.rightTab !== prev.rightTab) setTab(s.rightTab);
-    if (s.running && !prev.running) { setTab(s.rightTab); setSnap("peek"); }
+    if (s.running && !prev.running) setSnap("peek");
+    if (!s.running && prev.running && s.runDurationMs != null) setSnap("half");
     if (s.tool !== "pan" && s.tool !== prev.tool) setSnap("peek");
     if (s.region && s.region !== prev.region && !s.running) setSnap("peek");
     if (s.selectedFinding && s.selectedFinding !== prev.selectedFinding) setSnap((v) => (v === "full" ? "half" : v));
   }), []);
 
-  // Spectators (shared `/?run=` link) land on the live agents feed.
-  useEffect(() => { if (watching) { setTab("agents"); setSnap("peek"); } }, [watching]);
-
-  const pick = (t: SheetTab) => {
-    setTab(t);
-    if (t !== "mission") set({ rightTab: t });
-    if (snap === "peek") setSnap("half");
-  };
+  // Spectators (shared `/?run=` link) land on the map with the sheet peeking.
+  useEffect(() => { if (watching) setSnap("peek"); }, [watching]);
 
   const onPan = (_: PointerEvent, info: PanInfo) => { dragged.current = true; setDrag(info.offset.y); };
   const onPanEnd = (_: PointerEvent, info: PanInfo) => {
@@ -122,43 +114,15 @@ export default function MobileSheet() {
           <PeekRow watching={watching} />
         </motion.div>
 
-        {/* Segmented tabs */}
-        <Tabs tab={tab} onPick={pick} />
-
         {/* Body */}
-        <div key={tab} className={`scroll-thin min-h-0 flex-1 overflow-y-auto overscroll-contain ${snap === "peek" && !drag ? "invisible" : ""}`}>
-          {tab === "mission" ? (
-            <>
-              <MissionControls />
-              <OrchestratorLog className="h-[300px]" />
-            </>
-          ) : (
-            <div className="pb-6"><RightTabBody tab={tab} /></div>
-          )}
-        </div>
+        <ResearchFlow className={`scroll-thin mt-1.5 min-h-0 flex-1 overflow-y-auto overscroll-contain border-t border-line pb-6 ${snap === "peek" && !drag ? "invisible" : ""}`} />
       </motion.section>
     </>
   );
 }
 
-function Tabs({ tab, onPick }: { tab: SheetTab; onPick: (t: SheetTab) => void }) {
-  const right = useRightTabs();
-  const tabs = [{ id: "mission" as const, label: "Mission", n: 0 }, ...right];
-  return (
-    <div role="tablist" className="mt-1.5 flex shrink-0 border-b border-line px-2">
-      {tabs.map((t) => (
-        <button key={t.id} role="tab" aria-selected={tab === t.id} onClick={() => onPick(t.id)}
-          className={`relative min-w-0 flex-1 px-1 py-2.5 text-[13px] transition-colors ${tab === t.id ? "text-fg1" : "text-fg3"}`}>
-          <span className="block truncate">{t.label}{t.n ? <span className="num ml-1 text-[11px] text-fg3">{t.n}</span> : null}</span>
-          {tab === t.id && <span className="absolute inset-x-2 -bottom-px h-[1.5px] bg-fg1" />}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 function PeekRow({ watching }: { watching: boolean }) {
-  const { running, done, elapsed, active, agents, shown, total, insights } = useMissionStats();
+  const { running, done, elapsed, shown, total, insights } = useMissionStats();
   const region = useStore((s) => s.region);
   const canRun = useCanRun();
   const [cinematic, toggleCine] = useCinematic();
@@ -176,7 +140,6 @@ function PeekRow({ watching }: { watching: boolean }) {
 
       {running || done ? (
         <div className="flex min-w-0 flex-1 items-center justify-evenly gap-2 border-l border-line pl-2">
-          {running && <Stat label="Agents" value={active} total={agents} />}
           <Stat label="Findings" value={shown} total={total} />
           <Stat label="Insights" value={insights} />
         </div>
@@ -192,7 +155,7 @@ function PeekRow({ watching }: { watching: boolean }) {
       {!running && canRun ? (
         <button onClick={() => startRun()}
           className="flex h-9 shrink-0 items-center rounded-md bg-fg1 px-3.5 text-[13px] font-medium text-bg active:bg-white">
-          Deploy
+          Research
         </button>
       ) : region || running ? (
         <button onClick={toggleCine} aria-label="Toggle cinematic camera"

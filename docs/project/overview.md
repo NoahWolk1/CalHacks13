@@ -17,7 +17,7 @@ The UI currently brands the app **GeoSwarm** (`web/src/lib/brand.ts`); the proje
    - **Insights:** no question needed. The orchestrator's default survey team scans the area, and the orchestrator looks for findings that *combine* into something notable (risks, opportunities, contradictions).
 3. **Watch agents work.** Each agent drives/flies onto the map as a vehicle and shows in the side panel with its status and log; its findings drop onto the map as they arrive.
 4. **Get the answer / insights.** The orchestrator returns ranked insights (and, in Ask mode, a streamed written answer), each citing the findings it rests on.
-5. **Missing an agent?** Open the **Agent Hub**, describe the agent you need in plain English, review the draft, and save it to the library. In Ask mode the **orchestrator also creates agents itself** mid-run when nothing in the library fits; after the run you **Keep** or **Discard** them (see [architecture.md](architecture.md#agents-can-create-agents)).
+5. **Missing an agent?** Open the **Agents** page (`/agents`, top-right), describe the agent you need in plain English, review the draft, and save it to the library. In Ask mode the **orchestrator also creates agents itself** mid-run when nothing in the library fits; after the run you **Keep** or **Discard** them (see [architecture.md](architecture.md#agents-can-create-agents)).
 
 ## Orchestrators (user types)
 
@@ -39,7 +39,7 @@ Design the build backward from this.
 2. The workers spin up; pins appear on the map in real time, each with a source.
 3. **Storm Scout (SFPUC 100-year storm map) and Flood Recon (FEMA NFHL) map the flood zones. Permit Patrol (SF DBI) finds new buildings approved there.** FEMA covers little of the inland Mission; SFPUC is what makes the overlap fire.
 4. The orchestrator connects the two ("6 permitted projects inside a mapped flood zone") and links the insight to both sets of pins. It then **re-dispatches Terrain Scanner** to measure ground elevation at each permitted parcel.
-5. **Bonus beat (agents creating agents):** with **Storefront Scout**, ask "Is this a good spot for a café?". The orchestrator hits a gap, **creates a new agent** that pulls SF restaurant health-inspection scores (DataSF), it appears in the agent panel marked "created by", drops pins, and after the run the user clicks **Keep in library**. Fallback: create the same agent from the Agent Hub.
+5. **Bonus beat (agents creating agents):** with Research focus on **Auto** (it routes to **Storefront Scout**), ask "Is this a good spot for a café?". The orchestrator hits a gap, **creates a new agent** that pulls SF restaurant health-inspection scores (DataSF), drops pins, and after the run the user opens **1 new agent to review** (it's marked "created by") and clicks **Keep in library**. Fallback: create the same agent from the Agent Hub.
 
 The cross-agent insight shows the system is doing real reasoning, not just summarizing. A conflict-catch is the second example: "FEMA map vs. ground truth disagree" fires when FEMA shows no hazard but 311 flooding reports or low-elevation samples say otherwise.
 

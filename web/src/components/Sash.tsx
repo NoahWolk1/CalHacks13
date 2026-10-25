@@ -5,7 +5,7 @@ import { useLayout } from "@/lib/client/layout";
 
 type Props = {
   axis: "x" | "y";
-  id: "left" | "right" | "log";
+  id: "right";
   /** Called (at most once per frame) with the pointer's client coordinate on the drag axis. */
   onMove: (pos: number) => void;
   onReset: () => void;

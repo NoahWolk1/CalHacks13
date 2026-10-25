@@ -99,9 +99,10 @@ npx vercel env add CONVEX_DEPLOY_KEY production  # optional: keeps the Convex fa
  ─────────────────────                          ─────────────────────────────────────────────
  MapView: MapLibre GL + deck.gl                 GET  /api/agents → worker configs + profiles + llm flag + live backend
    box / polygon / pin → Region (lib/geo.ts)
- CommandPanel: mode, question, profile   ──POST /api/run (RunRequest)──►  runOrchestrator (lib/orchestrator/run.ts)
- RightPanel: agents, insights, answer    ◄──── SSE stream of RunEvents ───   0. reverse-geocode region (Nominatim)
- lib/client/sim.ts: vehicle motion                                            1. route + plan (Claude, or keywords)  
+ ResearchForm: area, mode, question,      ──POST /api/run (RunRequest)──►  runOrchestrator (lib/orchestrator/run.ts)
+   focus (Auto or a profile)
+ RightPanel: answer, insights, findings  ◄──── SSE stream of RunEvents ───   0. reverse-geocode region (Nominatim)
+ lib/client/sim.ts: vehicle motion                                            1. route + plan (Claude, or keywords)
  lib/client/store.ts: zustand state                                              └ gaps → factory.requestSpawn()
                                                                               2. dispatch all planned workers in parallel
                                                                               3. re-dispatch Terrain Scanner to risky permit parcels
@@ -118,7 +119,7 @@ npx vercel env add CONVEX_DEPLOY_KEY production  # optional: keeps the Convex fa
 ```
 
 - **Orchestrator profiles** (`lib/orchestrator/profiles.ts`): Site Risk Analyst, Storefront Scout, Disaster Response. Each has a `domainPrompt` and the `defaultAgents` used in Insights mode. All share the same worker pool.
-- **Auto-routing** (default; `profileId: "auto"` or omitted). With Claude, the planner's system prompt lists the three profiles and its structured output gains `profileId` (enum) + `routeReason` (≤ 12 words), so routing costs no extra round trip; the routed profile's `domainPrompt` drives the rest of the run (gap check, insights, answer, core-team top-up). Without Claude (no key, quota, planner error) `routeByKeywords` in `lib/orchestrator/route.ts` decides (storefront: shop/café/customers/rent/foot traffic…; disaster: now/current/fire/smoke/evacuation/alert…; otherwise site-risk). Insights mode with Auto uses the Site Risk Analyst team. Choosing a specialist in the picker forces it. The UI shows Auto selected, the routed profile marked "auto-picked", and "Routed to …: reason" atop the orchestrator log; the picker choice persists in `localStorage`.
+- **Auto-routing** (default; `profileId: "auto"` or omitted). With Claude, the planner's system prompt lists the three profiles and its structured output gains `profileId` (enum) + `routeReason` (≤ 12 words), so routing costs no extra round trip; the routed profile's `domainPrompt` drives the rest of the run (gap check, insights, answer, core-team top-up). Without Claude (no key, quota, planner error) `routeByKeywords` in `lib/orchestrator/route.ts` decides (storefront: shop/café/customers/rent/foot traffic…; disaster: now/current/fire/smoke/evacuation/alert…; otherwise site-risk). Insights mode with Auto uses the Site Risk Analyst team. Choosing a specialist in the **Research focus** select (`ResearchForm.tsx`) forces it. After an auto-routed run the panel header shows "Routed to <profile>" tagged *auto-picked* (reason in the tooltip), the select marks that profile "(auto-picked)", and "Routed to …: reason" opens the orchestrator log behind **How this was researched**; the choice persists in `localStorage`.
 - **Findings store**: in live mode every run, event and finding is persisted in SpacetimeDB (or Convex as fallback; see above). The orchestrator also keeps an in-memory array per run for cross-referencing.
 - SF-only workers are dropped from the plan when the region doesn't touch San Francisco. Re-dispatch is skipped for Storefront Scout.
 - Claude calls use structured outputs (zod schemas) for the plan and insights; any LLM failure falls back to the heuristic path.
@@ -166,7 +167,7 @@ Registered in `BUILTIN_WORKERS` (`lib/agents/registry.ts`). All use only the `ht
 | `env-burden` | Clean Air Patrol | drone | OEHHA CalEnviroScreen 4.0, Open-Meteo Air Quality (CAMS) | California (CalEnviroScreen); global (PM2.5) | No |
 | `fema-disasters` | Archivist | satellite | OpenFEMA Disaster Declarations Summaries v2, FCC Area API (county lookup) | US | No |
 
-36 built-ins. **Agents with a missing key sit out**: `missingEnv(w)` (`lib/sponsors/keys.ts`) removes them from the Claude planner roster, the keyword plan and the Insights teams; `/api/agents` sends them with `needsKeys: string[]`, and the Hub / Agents tab show a "Needs key" label. Census Rover counts too (without `CENSUS_API_KEY` it emits nothing).
+36 built-ins. **Agents with a missing key sit out**: `missingEnv(w)` (`lib/sponsors/keys.ts`) removes them from the Claude planner roster, the keyword plan and the Insights teams; `/api/agents` sends them with `needsKeys: string[]`, and the Agents page (`/agents`) labels them "Needs key" and dims them in each orchestrator team. Census Rover counts too (without `CENSUS_API_KEY` it emits nothing).
 
 **Insights teams** (`defaultAgents` in `lib/orchestrator/profiles.ts`, ~9–12 agents each after coverage and key filtering):
 
@@ -232,19 +233,19 @@ Prices are list rates as of 2026-10-25. Check your plan.
 
 ## Generated agents (agents creating agents + the library)
 
-Generated agents are **configs, not code**: an `AgentConfig` with a `prompt` (its brief) run by one shared runtime. Users create them in the Agent Hub; the orchestrator creates them mid-run when it hits a gap.
+Generated agents are **configs, not code**: an `AgentConfig` with a `prompt` (its brief) run by one shared runtime. Users create them on the Agents page (`/agents`); the orchestrator creates them mid-run when it hits a gap.
 
 | File | Role |
 |---|---|
 | `lib/agents/factory.ts` | `draftAgent(spec)`: one Claude call that either **reuses** a library agent or drafts a new config. `requestSpawn(spec, spawnedSoFar)`: guardrails (`SPAWN_LIMITS = { maxDepth: 2, maxPerRun: 4 }`), then registers a new agent as **temporary**. |
 | `lib/agents/runtime.ts` | `buildGeneratedWorker(config)`: a bounded Claude tool-use loop (`CLAUDE_WORKER_MODEL`, default Sonnet 5.5; 6 turns, 45 s, 15 findings). Tools: `web_search` (`search`), `web_fetch` (`scrape`), `http_get` (public URLs only, `urlGuard.ts`), and `emit_findings`, which enforces the finding schema. |
 | `lib/agents/placement.ts` | Finding coordinates: the agent's lng/lat, else a geocoded address (`geocode.ts`, Nominatim, 1 req/s), else the region center at reduced confidence. Findings well outside the region are dropped. Category is `custom`; pins use the agent's color. |
-| `lib/agents/registry.ts` | Built-ins + **saved** agents (every planner and the Hub see them) + **temporary** agents (spawned this run, reachable only by id until kept or discarded; lost on restart). |
+| `lib/agents/registry.ts` | Built-ins + **saved** agents (every planner and the Agents page see them) + **temporary** agents (spawned this run, reachable only by id until kept or discarded; lost on restart). |
 | `lib/agents/library.ts` | Saved agents persisted to `data/agents.json` (gitignored; override with `AGENT_LIBRARY_PATH`). On Vercel it falls back to per-instance `/tmp`, so saved and temporary agents don't reliably survive across requests there; not in Convex yet. |
 
 **When the orchestrator spawns** (Ask mode with an API key only): for each planner `gap` (dispatched alongside the planned workers), and once after the first sweep if `llmGapCheck` finds a remaining gap. Either may resolve to an existing agent instead of a new one.
 
-**After a run**, spawned agents show **Keep in library / Discard** in the agent panel. The Hub's create card drafts a config from a prompt, lets you edit the name and brief, then saves it; custom cards have a delete button.
+**After a run**, the results show a **"N new agents to review"** button; behind it, spawned agents show **Keep in library / Discard**. The Agents page's create card drafts a config from a prompt, lets you edit the name and brief, then saves it; custom cards have a delete button.
 
 | Route | Does |
 |---|---|

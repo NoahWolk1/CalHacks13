@@ -83,7 +83,7 @@ export default function MapView() {
         },
         onClick: (info: PickingInfo) => {
           const f = pickedFinding(info);
-          if (f && "claim" in f) useStore.getState().set({ selectedFinding: f.id, rightTab: "findings" });
+          if (f && "claim" in f) useStore.getState().set({ selectedFinding: f.id });
         },
         getCursor: ({ isHovering }: { isHovering: boolean }) => (isHovering ? "pointer" : useStore.getState().tool === "pan" ? "grab" : "crosshair"),
       });

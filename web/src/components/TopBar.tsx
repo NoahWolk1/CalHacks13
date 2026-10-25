@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Hand, BoxSelect, Pentagon, MapPin, Users, Search, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen } from "lucide-react";
+import Link from "next/link";
+import { Hand, BoxSelect, Pentagon, MapPin, Users, Search, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useLayout } from "@/lib/client/layout";
 import { useStore, type Tool } from "@/lib/client/store";
 import { useIsDesktop } from "@/lib/client/useMedia";
@@ -32,14 +33,12 @@ export default function TopBar() {
   return desktop ? <DesktopTopBar /> : <MobileTopBar />;
 }
 
-function PanelToggle({ side }: { side: "left" | "right" }) {
-  const open = useLayout((s) => (side === "left" ? s.leftOpen : s.rightOpen));
-  const Icon = side === "left" ? (open ? PanelLeftClose : PanelLeftOpen) : (open ? PanelRightClose : PanelRightOpen);
-  const what = side === "left" ? "mission panel" : "results panel";
-  const kbd = side === "left" ? "⌘B" : "⌥⌘B";
+function PanelToggle() {
+  const open = useLayout((s) => s.rightOpen);
+  const Icon = open ? PanelRightClose : PanelRightOpen;
   return (
-    <button onClick={() => (side === "left" ? useLayout.getState().toggleLeft() : useLayout.getState().toggleRight())}
-      title={`${open ? "Hide" : "Show"} ${what} (${kbd})`} aria-label={`${open ? "Hide" : "Show"} ${what}`} aria-pressed={open}
+    <button onClick={() => useLayout.getState().toggleRight()}
+      title={`${open ? "Hide" : "Show"} research panel (⌘B)`} aria-label={`${open ? "Hide" : "Show"} research panel`} aria-pressed={open}
       className="grid h-7 w-7 shrink-0 place-items-center rounded-[4px] text-fg3 transition-colors hover:bg-raised hover:text-fg1">
       <Icon size={15} strokeWidth={1.5} />
     </button>
@@ -64,14 +63,13 @@ function DesktopTopBar() {
 
   return (
     <header className="dock absolute inset-x-0 top-0 z-30 flex h-12 items-stretch border-b border-line max-lg:hidden">
-      {/* Brand (tracks the mission panel's width) */}
-      <div className="gs-follow flex shrink-0 items-center gap-2.5 pl-4 pr-2" style={{ width: "var(--gs-tlw)" }}>
+      {/* Brand */}
+      <div className="flex shrink-0 items-center gap-2.5 pl-4 pr-2">
         <SwarmMark />
         <div className="flex min-w-0 flex-1 items-baseline gap-2 whitespace-nowrap">
           <span className="text-[14px] font-semibold tracking-[-0.01em] text-fg1">{APP_NAME}</span>
           <span className="truncate text-[12px] text-fg3">Area research</span>
         </div>
-        <PanelToggle side="left" />
       </div>
 
       {/* Drawing tools + place search, centered over the visible map strip */}
@@ -120,19 +118,19 @@ function DesktopTopBar() {
       </div>
       </div>
 
-      {/* Status + hub (tracks the results panel's width) */}
+      {/* Status + agents link (tracks the research panel's width) */}
       <div className="gs-follow flex shrink-0 items-center justify-end gap-3 pl-3 pr-2" style={{ width: "var(--gs-trw)" }}>
         <span title={llm ? "Claude is reasoning over findings" : "Set ANTHROPIC_API_KEY for Claude reasoning"}
           className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap text-[12.5px] text-fg3 ${llm ? "" : "cursor-help"}`}>
           <span className={`h-1.5 w-1.5 rounded-full ${llm ? "bg-ok" : "bg-[#d2c162]"}`} />
           {llm ? "Claude online" : "Heuristic mode"}
         </span>
-        <button onClick={() => set({ hubOpen: true })}
+        <Link href="/agents"
           className="flex h-[30px] shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-line-strong px-3 text-[12.5px] text-fg1 transition-colors hover:bg-raised">
-          Agent hub
+          Agents
           <span className="num text-[11.5px] text-fg3">{agents.length}</span>
-        </button>
-        <PanelToggle side="right" />
+        </Link>
+        <PanelToggle />
       </div>
     </header>
   );
@@ -158,10 +156,10 @@ function MobileTopBar() {
             </div>
             <div className="flex-1" />
             <button onClick={() => setSearching(true)} className={btn} aria-label="Search a place"><Search size={17} strokeWidth={1.5} /></button>
-            <button onClick={() => set({ hubOpen: true })} className={`${btn} relative`} aria-label="Agent Hub">
+            <Link href="/agents" className={`${btn} relative`} aria-label="Agents">
               <Users size={17} strokeWidth={1.5} />
               <span className="num absolute -right-1 -top-1 min-w-[18px] rounded-[4px] border border-line-strong bg-panel px-1 text-center text-[10px] leading-[16px] text-fg2">{agents.length}</span>
-            </button>
+            </Link>
           </>
         )}
       </header>

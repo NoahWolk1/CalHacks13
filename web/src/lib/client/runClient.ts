@@ -114,7 +114,7 @@ export async function startRun() {
   if (!s.region) return;
   stopRun();
   s.resetRun();
-  useStore.getState().set({ running: true, runStartedAt: Date.now(), rightTab: "agents", runId: null });
+  useStore.getState().set({ running: true, runStartedAt: Date.now(), runId: null });
   const ctl = (current = new AbortController());
   try {
     const res = await fetch("/api/run", {
