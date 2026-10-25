@@ -12,6 +12,8 @@ export interface AgentRunState {
   focus?: string;
   redispatched?: boolean;
   spawnedBy?: string;
+  /** For spawned agents, what the user chose after the run. */
+  decision?: "kept" | "discarded";
 }
 
 export interface Thought { agentId: string; text: string; at: number; kind?: "gap" | "plan" | "info" }
@@ -89,7 +91,7 @@ export const useStore = create<State>((set, get) => ({
         return { agentState: { ...s.agentState, [e.agentId]: { ...prev, logs: [...prev.logs, e.text].slice(-6) } } };
       }
       case "agent_gap": return think({ agentId: e.parentId, text: `Capability gap: "${e.need}". Requesting a new agent…`, at: Date.now(), kind: "gap" });
-      case "agent_spawned": return { agents: [...s.agents, e.agent], agentState: { ...s.agentState, [e.agent.id]: { status: "queued", logs: [], findings: 0, spawnedBy: e.parentId } } };
+      case "agent_spawned": return { agents: [...s.agents.filter((a) => a.id !== e.agent.id), e.agent], agentState: { ...s.agentState, [e.agent.id]: { status: "queued", logs: [], findings: 0, spawnedBy: e.parentId } } };
       case "finding": {
         const prev = agent(e.finding.worker_id);
         return {

@@ -38,7 +38,7 @@ export interface Finding {
 export type VehicleKind = "drone" | "car" | "rover" | "satellite" | "boat";
 
 /** Tool primitives a worker (built-in or generated) may use. README §3c. */
-export type ToolPrimitive = "http_get" | "scrape" | "search" | "transcribe" | "llm";
+export type ToolPrimitive = "http_get" | "scrape" | "search" | "transcribe" | "llm" | "geocode";
 
 /** README §3c: an agent is just a saved config. Built-ins also carry a `run` impl. */
 export interface AgentConfig {
@@ -56,6 +56,8 @@ export interface AgentConfig {
   /** For generated agents: the prompt that defines it. */
   prompt?: string;
   createdBy?: string; // parent agent id, or "user"
+  /** Spawned mid-run and not yet kept: invisible to other runs' planners and to the Hub. */
+  temporary?: boolean;
 }
 
 export interface WorkerTask {

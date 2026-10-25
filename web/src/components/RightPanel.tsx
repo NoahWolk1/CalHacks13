@@ -1,10 +1,11 @@
 "use client";
 
-import { Fragment, useMemo } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, Check, Trash2 } from "lucide-react";
 import { KIND_COLORS } from "@/lib/client/theme";
 import { useStore, agentById } from "@/lib/client/store";
+import { decideSpawned } from "@/lib/client/runClient";
 import type { Finding, Insight } from "@/lib/types";
 import { useLayout, dragPanel, GUTTER } from "@/lib/client/layout";
 import { StatusPill, VehicleGlyph } from "./ui";
@@ -79,7 +80,7 @@ function AgentsTab() {
     return (
       <div className="py-2">
         <p className="px-4 pb-2 pt-1 text-[12.5px] text-fg3">Fleet on standby. The orchestrator picks from these agents.</p>
-        {agents.map((a) => (
+        {agents.filter((a) => !a.temporary).map((a) => (
           <div key={a.id} className="grid grid-cols-[18px_1fr_auto] items-center gap-x-2.5 px-4 py-2">
             <VehicleGlyph kind={a.vehicle} color={a.color} size={16} />
             <span className="truncate text-[13px] text-fg1">{a.name}</span>
@@ -107,6 +108,7 @@ function AgentsTab() {
               <span className="num w-7 text-right text-[12px] text-fg2">{st.findings || "–"}</span>
             </span>
             {st.spawnedBy && <span className="col-start-2 col-end-4 text-[12px] text-fg3">Created by {agentById(st.spawnedBy)?.name ?? st.spawnedBy}</span>}
+            {st.spawnedBy && !running && <KeepOrDiscard id={id} decision={st.decision} />}
             {st.redispatched && st.focus && <span className="col-start-2 col-end-4 truncate text-[12px] text-fg2">Re-dispatched: {st.focus}</span>}
             {last && <span className={`col-start-2 col-end-4 truncate text-[12px] ${st.status === "error" ? "text-risk" : "text-fg3"}`} title={last}>{last}</span>}
           </motion.div>
@@ -122,6 +124,38 @@ function Severity({ value, color }: { value: number; color: string }) {
     <span className="ml-auto flex items-center gap-[2px]" title={`Severity ${value.toFixed(2)}`}>
       {[0.2, 0.4, 0.6, 0.8, 1].map((v) => <span key={v} className="h-2.5 w-[3px] rounded-[0.5px]" style={{ background: value >= v - 0.1 ? color : "var(--line-strong)" }} />)}
       <span className="num ml-1.5 text-[11px] text-fg3">{value.toFixed(2)}</span>
+    </span>
+  );
+}
+
+function KeepOrDiscard({ id, decision }: { id: string; decision?: "kept" | "discarded" }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (decision) {
+    return (
+      <span className={`col-start-2 col-end-4 flex items-center gap-1.5 text-[12px] ${decision === "kept" ? "text-ok" : "text-fg4"}`}>
+        {decision === "kept" ? <><Check size={12} strokeWidth={1.5} /> Saved to your library</> : <><Trash2 size={12} strokeWidth={1.5} /> Discarded</>}
+      </span>
+    );
+  }
+  const decide = (keep: boolean) => {
+    setBusy(true);
+    setError(null);
+    decideSpawned(id, keep).catch((e: Error) => setError(e.message)).finally(() => setBusy(false));
+  };
+  return (
+    <span className="col-start-2 col-end-4 mt-1 space-y-1">
+      <span className="flex gap-1.5">
+        <button disabled={busy} onClick={() => decide(true)}
+          className="flex h-7 flex-1 items-center justify-center gap-1 rounded-md border border-line-strong text-[12px] text-fg1 transition-colors hover:bg-raised disabled:opacity-50">
+          <Check size={12} strokeWidth={1.5} /> Keep in library
+        </button>
+        <button disabled={busy} onClick={() => decide(false)}
+          className="flex h-7 flex-1 items-center justify-center gap-1 rounded-md border border-line text-[12px] text-fg2 transition-colors hover:bg-raised disabled:opacity-50">
+          <Trash2 size={12} strokeWidth={1.5} /> Discard
+        </button>
+      </span>
+      {error && <span className="block text-[12px] text-risk">{error}</span>}
     </span>
   );
 }

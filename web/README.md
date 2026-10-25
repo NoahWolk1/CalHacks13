@@ -1,6 +1,6 @@
 # Geo Research Agents: web app
 
-Next.js 15 app (App Router, React 19, Tailwind 4). Select an area on the map, pick an orchestrator, Ask a question or run Insights, and watch worker agents drive/fly in and drop findings. The team's planning doc is [`../README.md`](../README.md).
+Next.js 15 app (App Router, React 19, Tailwind 4). Select an area on the map, pick an orchestrator, Ask a question or run Insights, and watch worker agents drive/fly in and drop findings. Project docs (idea, architecture, decisions) start at [`../docs/INDEX.md`](../docs/INDEX.md).
 
 ## Quickstart
 
@@ -15,6 +15,8 @@ npm run dev                  # http://localhost:3000 (or pass -p <port>)
 |---|---|
 | `ANTHROPIC_API_KEY` | Claude plans which agents to send, writes cross-reference insights and streams the answer. Without it the app runs end-to-end in **heuristic mode** (keyword planner, rule-based insights, templated answer). |
 | `CLAUDE_MODEL` | Optional override. Default `claude-opus-5-5` (`lib/llm.ts`). |
+| `CLAUDE_WORKER_MODEL` | Model for generated agents' tool loops. Default `claude-sonnet-5-5`. |
+| `AGENT_LIBRARY_PATH` | Optional. Where saved agents are stored. Default `data/agents.json` (on Vercel, `/tmp/geoswarm/agents.json`: per instance and ephemeral). |
 | `CENSUS_API_KEY` | Free from [api.census.gov/data/key_signup.html](https://api.census.gov/data/key_signup.html). Enables Census Rover's income/rent stats. |
 | `NEXT_PUBLIC_CONVEX_URL` | Written by `npx convex dev`. Turns on Convex mode (shared live missions, history, share links). Blank → SSE fallback. |
 
@@ -131,10 +133,14 @@ Registered in `BUILTIN_WORKERS` (`lib/agents/registry.ts`). All use only the `ht
 | `live-conditions` | Sky Sentinel | drone | NWS Alerts API, Open-Meteo Air Quality | US alerts, global AQ | No |
 | `local-news` | News Uplink | satellite | Google News RSS | Global | No |
 | `census-demographics` | Census Rover | rover | US Census Geocoder, ACS 5-year | US | `CENSUS_API_KEY` for stats (tract lookup works without) |
+| `sf-stormwater` | Storm Scout | drone | SFPUC 100-Year Storm Flood Risk Map, historical creeks & water bodies | San Francisco | No |
+| `sentinel-imagery` | Sentinel Eye | satellite | Sentinel-2 L2A (Element84 Earth Search), USGS Landsat Collection 2 | Global | No |
+| `orbit-passes` | Orbit Planner | satellite | CelesTrak TLEs + SGP4 (satellite.js) | Global | No |
+| `nasa-eonet` | Earth Events | satellite | NASA EONET v3 | Global | No |
 
 ## RunEvent protocol
 
-`POST /api/run` with a `RunRequest` (`mode`, `profileId`, `region`, optional `question`, optional `includeAgents`) returns `{runId}` in Convex mode (events land in the Convex `events` table), otherwise `text/event-stream`; each message is `data: <JSON RunEvent>\n\n`. Types live in `lib/types.ts`.
+`POST /api/run` with a `RunRequest` (`mode`, `profileId`, `region`, optional `question`, optional `includeAgents`, which the UI doesn't send yet) returns `{runId}` in Convex mode (events land in the Convex `events` table), otherwise `text/event-stream`; each message is `data: <JSON RunEvent>\n\n`. Types live in `lib/types.ts`.
 
 | Event | Meaning |
 |---|---|
@@ -142,11 +148,11 @@ Registered in `BUILTIN_WORKERS` (`lib/agents/registry.ts`). All use only the `ht
 | `region_labeled` | reverse-geocoded place name |
 | `thought` | orchestrator narration |
 | `plan` | chosen `steps` (agentId, reason, focus) + rationale |
-| `agent_gap` | planner found a need no agent covers (`need`, `parentId`) |
-| `agent_spawned` | factory created a new agent (`agent` config, `parentId`) |
+| `agent_gap` | the planner or the post-sweep coverage check found a need no agent covers (`need`, `parentId`) |
+| `agent_spawned` | factory created a new, temporary agent (`agent` config with `temporary: true`, `parentId`) |
 | `agent_status` | `queued → deploying → scanning → done/error`, keyed by `dispatchId` (one worker can be dispatched twice) |
 | `agent_log` | a worker's log line |
-| `finding` | one `Finding` (README §3b schema) |
+| `finding` | one `Finding` ([finding schema](../docs/project/architecture.md#shared-finding-schema)) |
 | `insight` | cross-referenced `Insight` citing `findingIds` |
 | `answer_delta` | streamed answer text (Ask mode) |
 | `run_done` / `error` | end of stream |
@@ -160,22 +166,32 @@ Registered in `BUILTIN_WORKERS` (`lib/agents/registry.ts`). All use only the `ht
 
 ---
 
-## ✦ For the agent-creation teammate
+## Generated agents (agents creating agents + the library)
 
-Agent creation (README §2 "Agents can create agents", §3c guardrails) is yours. Everything around it is already wired; the stub is **`lib/agents/factory.ts`**.
+Generated agents are **configs, not code**: an `AgentConfig` with a `prompt` (its brief) run by one shared runtime. Users create them in the Agent Hub; the orchestrator creates them mid-run when it hits a gap.
 
-**Contract**
+| File | Role |
+|---|---|
+| `lib/agents/factory.ts` | `draftAgent(spec)`: one Claude call that either **reuses** a library agent or drafts a new config. `requestSpawn(spec, spawnedSoFar)`: guardrails (`SPAWN_LIMITS = { maxDepth: 2, maxPerRun: 4 }`), then registers a new agent as **temporary**. |
+| `lib/agents/runtime.ts` | `buildGeneratedWorker(config)`: a bounded Claude tool-use loop (`CLAUDE_WORKER_MODEL`, default Sonnet 5.5; 6 turns, 45 s, 15 findings). Tools: `web_search` (`search`), `web_fetch` (`scrape`), `http_get` (public URLs only, `urlGuard.ts`), and `emit_findings`, which enforces the finding schema. |
+| `lib/agents/placement.ts` | Finding coordinates: the agent's lng/lat, else a geocoded address (`geocode.ts`, Nominatim, 1 req/s), else the region center at reduced confidence. Findings well outside the region are dropped. Category is `custom`; pins use the agent's color. |
+| `lib/agents/registry.ts` | Built-ins + **saved** agents (every planner and the Hub see them) + **temporary** agents (spawned this run, reachable only by id until kept or discarded; lost on restart). |
+| `lib/agents/library.ts` | Saved agents persisted to `data/agents.json` (gitignored; override with `AGENT_LIBRARY_PATH`). On Vercel it falls back to per-instance `/tmp`, so saved and temporary agents don't reliably survive across requests there; not in Convex yet. |
 
-- `createAgent(spec: AgentSpec): Promise<Worker | null>`: currently returns `null`. Turn `spec.prompt` (plain English) into an `AgentConfig` and a `run()` built only from the allowed `ToolPrimitive`s (`http_get | scrape | search | transcribe | llm`), emitting `Finding`s in the shared schema. Set `builtin: false`, `prompt`, `createdBy: spec.createdBy`.
-- `requestSpawn(spec, spawnedSoFar)`: the guardrail gate. Returns `null` when `spec.depth > SPAWN_LIMITS.maxDepth` or `spawnedSoFar >= SPAWN_LIMITS.maxPerRun`, otherwise calls `createAgent`. Defaults are `SPAWN_LIMITS = { maxDepth: 2, maxPerRun: 4 }`; tune as you see fit. Approval policy is still open.
-- `registerWorker(w)` in `lib/agents/registry.ts`: puts a custom worker in an in-memory map so `allWorkers()`, the planner roster and `GET /api/agents` see it. Call it for agents the user keeps / creates in the hub.
+**When the orchestrator spawns** (Ask mode with an API key only): for each planner `gap` (dispatched alongside the planned workers), and once after the first sweep if `llmGapCheck` finds a remaining gap. Either may resolve to an existing agent instead of a new one.
 
-**Already wired for you**
+**After a run**, spawned agents show **Keep in library / Discard** in the agent panel. The Hub's create card drafts a config from a prompt, lets you edit the name and brief, then saves it; custom cards have a delete button.
 
-- The Claude planner (`llmPlan` in `lib/orchestrator/run.ts`) returns `gaps`: up to 2 one-line specs for data no agent can provide. Only in Ask mode with an API key.
-- For each gap the orchestrator emits `agent_gap`, calls `requestSpawn({ prompt: need, createdBy: "orchestrator", depth: 1 }, spawned)`, and if a `Worker` comes back emits `agent_spawned` with `parentId` and adds it to the plan, so it's dispatched in the same run like any other worker.
-- The agent panel (`components/RightPanel.tsx`) shows spawned agents with **"✦ created by &lt;parent&gt;"**.
-- `RunRequest.includeAgents` lets the UI force custom agents into a run ("Added by you").
-- `components/App.tsx` mounts `components/AgentHub.tsx`, which has a placeholder "create agent" card for the prompt-to-create flow.
+| Route | Does |
+|---|---|
+| `GET /api/agents` | library (built-in + saved) + profiles + `llm` flag |
+| `POST /api/agents/draft` `{ prompt }` | `{ kind: "new" \| "reuse", agent }`; saves nothing. 503 without a key |
+| `POST /api/agents` `{ agent }` | validate and save to the library |
+| `POST /api/agents/:id/keep` | temporary → saved |
+| `DELETE /api/agents/:id` | discard a temporary agent or delete a saved one (never built-ins) |
 
-**Still yours:** the create flow itself, keep/discard after a run, persistence beyond the server process, worker-initiated spawns (workers don't have a spawn hook in `WorkerContext` yet), and the tool primitives/transcription choice.
+**Try one without the UI:** `npx vite-node --config vitest.config.mts scripts/try-agent.ts "SF restaurant health inspection scores"` drafts an agent, runs it once on a Mission District block and prints its logs and findings.
+
+**Tests:** `npm test` (vitest) covers the URL guard, placement, library, registry, factory and runtime loop with a fake Claude client.
+
+**Not built:** worker-initiated spawns (`WorkerContext` has no spawn hook), transcription.

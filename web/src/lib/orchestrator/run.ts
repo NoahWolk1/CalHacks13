@@ -6,10 +6,11 @@ import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { partialParse } from "@anthropic-ai/sdk/_vendor/partial-json-parser/parser";
 import type { Finding, Insight, PlanStep, RunEvent, RunRequest, Worker, WorkerTask } from "@/lib/types";
 import { allWorkers, getWorker, toConfig } from "@/lib/agents/registry";
-import { requestSpawn } from "@/lib/agents/factory";
+import { requestSpawn, SPAWN_LIMITS } from "@/lib/agents/factory";
+import { RUNTIME_LIMITS } from "@/lib/agents/runtime";
 import { getProfile } from "./profiles";
 import { crossReference, redispatchTargets, type Link } from "./crossref";
-import { llm, MODEL } from "@/lib/llm";
+import { llm, MODEL, FALLBACK } from "@/lib/llm";
 
 const QUOTA_NOTE = "Claude quota reached for this hour — running in heuristic mode.";
 import { getJson, sleep } from "@/lib/http";
@@ -17,7 +18,8 @@ import { regionAreaKm2, touchesSF, touchesUS } from "@/lib/geo";
 
 const ORCH = "orchestrator";
 const WORKER_TIMEOUT_MS = 30_000;
-const FALLBACK = { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const };
+// Generated agents run their own bounded Claude loop (runtime.ts); give it room to finish.
+const GENERATED_TIMEOUT_MS = RUNTIME_LIMITS.timeMs + 5_000;
 
 export type RunOptions = {
   /** false forces heuristic mode (e.g. the hourly Claude quota is used up). Default: use Claude if a key is set. */
@@ -73,21 +75,9 @@ export async function runOrchestrator(req: RunRequest, emitRaw: (e: RunEvent) =>
   const skipped = steps.filter((s) => getWorker(s.agentId) && !covered(getWorker(s.agentId)!));
   steps = steps.filter((s) => getWorker(s.agentId) && covered(getWorker(s.agentId)!));
   if (skipped.length) rationale += ` Skipping ${skipped.map((s) => getWorker(s.agentId)!.name).join(", ")}: no coverage here.`;
-  for (const extra of req.includeAgents ?? []) if (!steps.some((s) => s.agentId === extra) && getWorker(extra)) steps.push({ agentId: extra, reason: "Added by you" });
+  for (const extra of req.includeAgents ?? []) if (!steps.some((s) => s.agentId === extra) && allWorkers().some((w) => w.id === extra)) steps.push({ agentId: extra, reason: "Added by you" });
   emit({ type: "plan", steps, rationale });
   think(rationale);
-
-  // ── 1b. Capability gaps → ask the factory to spawn an agent (teammate's module) ──
-  let spawned = 0;
-  for (const need of gaps) {
-    emit({ type: "agent_gap", need, parentId: ORCH });
-    const w = await requestSpawn({ prompt: need, createdBy: ORCH, depth: 1 }, spawned).catch(() => null);
-    if (w) {
-      spawned++;
-      emit({ type: "agent_spawned", agent: toConfig(w), parentId: ORCH });
-      steps.push({ agentId: w.id, reason: `Spawned to cover: ${need}` });
-    }
-  }
 
   // ── 2. Dispatch ───────────────────────────────────────────────────────────
   const dispatch = async (w: Worker, task: WorkerTask, delayMs = 0) => {
@@ -106,8 +96,9 @@ export async function runOrchestrator(req: RunRequest, emitRaw: (e: RunEvent) =>
     signal.addEventListener("abort", onAbort);
     let timedOut = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const limitMs = w.builtin ? WORKER_TIMEOUT_MS : GENERATED_TIMEOUT_MS;
     const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => { timedOut = true; wctl.abort(); reject(new Error(`timed out after ${WORKER_TIMEOUT_MS / 1000}s`)); }, WORKER_TIMEOUT_MS);
+      timer = setTimeout(() => { timedOut = true; wctl.abort(); reject(new Error(`timed out after ${limitMs / 1000}s`)); }, limitMs);
     });
     try {
       await Promise.race([timeout, w.run({
@@ -125,7 +116,7 @@ export async function runOrchestrator(req: RunRequest, emitRaw: (e: RunEvent) =>
       emit({ type: "agent_status", agentId: w.id, status: "done", dispatchId, detail: `${n} finding${n === 1 ? "" : "s"}` });
     } catch (e) {
       if (signal.aborted) return;
-      const detail = timedOut ? `timed out after ${WORKER_TIMEOUT_MS / 1000}s${n ? ` (${n} finding${n === 1 ? "" : "s"} kept)` : ""}` : (e as Error).message.slice(0, 140);
+      const detail = timedOut ? `timed out after ${limitMs / 1000}s${n ? ` (${n} finding${n === 1 ? "" : "s"} kept)` : ""}` : (e as Error).message.slice(0, 140);
       if (timedOut) think(`${w.name} timed out; continuing without it.`);
       emit({ type: "agent_status", agentId: w.id, status: "error", dispatchId, detail });
     } finally {
@@ -134,9 +125,37 @@ export async function runOrchestrator(req: RunRequest, emitRaw: (e: RunEvent) =>
     }
   };
 
+  // Capability gaps → the factory reuses a library agent or creates one (factory.ts), dispatched as soon as it exists.
+  let spawned = 0;
+  const spawnFor = async (need: string): Promise<Worker | null> => {
+    emit({ type: "agent_gap", need, parentId: ORCH });
+    spawned++; // reserve the slot up front: gaps are handled concurrently
+    const got = await requestSpawn({ prompt: need, createdBy: ORCH, depth: 1 }, spawned - 1).catch((e) => {
+      think(`Couldn't create an agent for "${need}" (${(e as Error).message.slice(0, 80)})`);
+      return null;
+    });
+    if (!got || got.reused) spawned--; // release the slot: nothing new was created
+    if (!got) {
+      think(`No agent created for "${need}" (spawn limit reached or generation failed).`);
+      return null;
+    }
+    if (got.reused) think(`${got.worker.name} already covers "${need}", so reusing it instead of creating a new agent.`);
+    else emit({ type: "agent_spawned", agent: toConfig(got.worker), parentId: ORCH });
+    return got.worker;
+  };
+  const coverGap = async (need: string, task: WorkerTask) => {
+    const w = await spawnFor(need);
+    if (!w || signal.aborted || steps.some((s) => s.agentId === w.id)) return; // already in this run
+    steps.push({ agentId: w.id, reason: `Covers a gap: ${need}` });
+    await dispatch(w, task);
+  };
+
   const baseTask: WorkerTask = { region, question: req.question };
   const td = Date.now();
-  await Promise.all(steps.map((s, i) => dispatch(getWorker(s.agentId)!, { ...baseTask, focus: s.focus }, i * 250)));
+  await Promise.all([
+    ...steps.map((s, i) => dispatch(getWorker(s.agentId)!, { ...baseTask, focus: s.focus }, i * 250)),
+    ...gaps.map((need) => coverGap(need, { ...baseTask, focus: need })),
+  ]);
   if (signal.aborted) return;
   lap("sweep", td);
   think(`First sweep complete: ${findings.length} findings from ${steps.length} agents. Cross-referencing…`);
@@ -147,6 +166,15 @@ export async function runOrchestrator(req: RunRequest, emitRaw: (e: RunEvent) =>
   if (terrain && targets.length && profile.id !== "storefront") {
     think(`Re-dispatching ${terrain.name} to measure ground elevation at ${targets.length} permitted parcels.`);
     await dispatch(terrain, { ...baseTask, targets, focus: `Check elevation at ${targets.length} permitted parcels` });
+    if (signal.aborted) return;
+  }
+
+  // ── 3b. Coverage check (Ask mode): one more agent if the findings still leave a gap ──
+  if (client && req.mode === "ask" && req.question && spawned < SPAWN_LIMITS.maxPerRun && !signal.aborted) {
+    think("Checking whether the findings fully cover the question…");
+    const used = steps.map((s) => getWorker(s.agentId)).filter((w): w is Worker => !!w);
+    const need = await llmGapCheck(req, findings, used, allWorkers()).catch(() => "");
+    if (need) await coverGap(need, { ...baseTask, focus: need });
     if (signal.aborted) return;
   }
 
@@ -269,6 +297,26 @@ async function llmPlan(req: RunRequest, workers: Worker[]) {
     rationale: out.rationale,
     gaps: out.gaps.slice(0, 2),
   };
+}
+
+const GapSchema = z.object({ gap: z.string() });
+
+/** After the first sweep: the one missing data need (as a spec for a new agent), or "" if covered. */
+async function llmGapCheck(req: RunRequest, findings: Finding[], used: Worker[], library: Worker[]) {
+  const profile = getProfile(req.profileId);
+  const roster = (ws: Worker[]) => ws.map((w) => `- ${w.id} | ${w.name} | ${w.description}`).join("\n") || "(none)";
+  const res = await llm()!.beta.messages.parse({
+    model: MODEL,
+    max_tokens: 2000,
+    output_config: { effort: "low", format: betaZodOutputFormat(GapSchema) },
+    ...FALLBACK,
+    system: `You are the "${profile.name}" orchestrator. ${profile.domainPrompt}\n\nYour agents have finished a first sweep. Decide whether ONE specific kind of data is still missing that would materially change the answer to the user's question and that none of the agents (dispatched or in the library) can provide. If so, put a one-line spec for a new agent in "gap" (e.g. "SF restaurant health inspection scores near the area"). Usually nothing is missing: return an empty string.`,
+    messages: [{
+      role: "user",
+      content: `Area: ${req.region.label ?? "unknown"}\nQuestion: ${req.question}\n\nDISPATCHED AGENTS\n${roster(used)}\n\nOTHER LIBRARY AGENTS\n${roster(library.filter((w) => !used.includes(w)))}\n\nFINDINGS SO FAR\n${compactFindings(findings, 60)}`,
+    }],
+  });
+  return res.parsed_output?.gap.trim() ?? "";
 }
 
 function compactFindings(findings: Finding[], max = 140) {
