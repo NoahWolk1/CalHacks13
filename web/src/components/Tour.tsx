@@ -12,36 +12,34 @@ import { useLayout } from "@/lib/client/layout";
  */
 type Step = {
   target: string;
-  /** A second element to ring, e.g. the demo areas next to the Box tool. */
-  also?: string;
   side: "below" | "left";
   /** Advance by itself when this happens (Next still works). */
   waitFor?: "region" | "run";
+  /** Put the page in the state this step talks about (e.g. start on Pan, select Ask). */
+  onEnter?: () => void;
   title: string;
   body: string;
 };
 
 export const TOUR: Step[] = [
-  { target: "tool-box", also: "demo-areas", side: "below", waitFor: "region", title: "Pick an area",
-    body: "Choose Box, then drag over any neighborhood on the map. In a hurry? Click one of the demo areas in the panel instead." },
-  { target: "mode-ask", side: "left", title: "Ask a question",
-    body: "Ask about this area in plain English, like “Is it safe to build here?” The orchestrator picks the agents that can answer it." },
+  { target: "tool-box", side: "below", waitFor: "region", onEnter: () => useStore.getState().set({ tool: "pan" }),
+    title: "Pick an area", body: "Drag over any neighborhood on the map." },
+  { target: "mode-ask", side: "left", onEnter: () => useStore.getState().set({ mode: "ask" }),
+    title: "Ask a question", body: "Ask a question and we'll find the right agents to answer it!" },
   { target: "mode-insights", side: "left", title: "Or find insights",
-    body: "No question needed. The swarm surveys the whole area and surfaces risks, opportunities and conflicts that only show up when sources are combined." },
+    body: "Don't have a specific question? Allow our agents to perform a general analysis." },
   { target: "focus", side: "left", title: "Research focus",
     body: "Pick the lens, like Site Risk Analyst or Storefront Scout. It decides which team of agents goes out." },
   { target: "run", side: "left", waitFor: "run", title: "Deploy the swarm",
-    body: "Start the research. Findings land on the map as pins while the agents work, then the answer and insights appear in this panel." },
+    body: "Start the research. Answers and insights will appear here." },
   { target: "agents", side: "below", title: "Agents",
-    body: "Each agent covers one kind of data, like permits, flood zones or local news. Browse them here, or describe a new one and Claude builds it." },
+    body: "Each agent covers one kind of data, like permits, flood zones or local news. Browse them here, or describe a new one and have Claude build it." },
 ];
 
 const DONE_KEY = "gs-tour-done";
 const CARD_W = 300;
 const GAP = 12;
 const EDGE = 12;
-
-export const startTour = () => useStore.getState().set({ tour: 0 });
 
 function finish() {
   useStore.getState().set({ tour: null });
@@ -52,8 +50,11 @@ function go(i: number) {
   if (i >= TOUR.length) return finish();
   // Panel steps need the research panel open.
   if (TOUR[i].side === "left") useLayout.getState().set({ rightOpen: true });
+  TOUR[i].onEnter?.();
   useStore.getState().set({ tour: i });
 }
+
+export const startTour = () => go(0);
 
 /** `edge`: left edge of the panel the target sits in (callouts stay clear of the whole panel), else its own left. */
 type Box = { top: number; left: number; width: number; height: number; edge: number };
@@ -92,7 +93,6 @@ export default function Tour() {
   const covered = usePathname() !== "/";
   const cur = step != null ? TOUR[step] : undefined;
   const target = useTargetBox(cur?.target);
-  const also = useTargetBox(cur?.also);
   const card = useRef<HTMLDivElement>(null);
   const [cardH, setCardH] = useState(160);
 
@@ -141,7 +141,6 @@ export default function Tour() {
   return (
     <div className="pointer-events-none fixed inset-0 z-[60]">
       {target && <Ring box={target} />}
-      {also && <Ring box={also} />}
       <div ref={card} role="dialog" aria-label={`Tour: ${cur.title}`}
         className="pointer-events-auto fixed rounded-lg border border-line-strong bg-panel p-4 shadow-[0_12px_40px_rgba(0,0,0,0.5)] transition-[top,left] duration-200"
         style={{ top: pos.top, left: pos.left, width: CARD_W }}>

@@ -53,7 +53,7 @@ export function ResearchForm({ onBack }: { onBack?: () => void }) {
             <button onClick={() => set({ region: null })} aria-label="Clear area" className="rounded-[4px] p-1 text-fg3 transition-colors hover:bg-raised hover:text-fg1"><X size={14} strokeWidth={1.5} /></button>
           </div>
         ) : (
-          <div data-tour="demo-areas" className="rounded-md border border-dashed border-line-strong px-3 py-2.5 text-[12.5px] text-fg3">
+          <div className="rounded-md border border-dashed border-line-strong px-3 py-2.5 text-[12.5px] text-fg3">
             Draw a box, polygon or pin on the map, or start from a demo area:
             <DemoSpotChips />
           </div>
