@@ -35,7 +35,7 @@ export function categoryOf(otype: string): SkyCategory {
 // ~0.8 s instead of 8–17 s in sparse fields.
 export function simbadQuery(c: Cone, cap = SIMBAD_CAP) {
   const types = [...GALAXY, ...NEBULA, ...CLUSTER].map((t) => `'${t}'`).join(",");
-  return `SELECT TOP ${cap} b.main_id, b.otype, b.ra, b.dec, b.nbref, b.galdim_majaxis, b.sp_type, f.V AS vmag, b.rvz_redshift, b.nbref + 0 AS rank `
+  return `SELECT TOP ${cap} b.main_id, b.otype, b.ra, b.dec, b.nbref, b.galdim_majaxis, b.sp_type, f.V AS vmag, b.rvz_redshift, b.plx_value, b.nbref + 0 AS rank `
     + `FROM basic AS b LEFT JOIN allfluxes AS f ON f.oidref = b.oid `
     + `WHERE CONTAINS(POINT('ICRS', b.ra, b.dec), CIRCLE('ICRS', ${adqlNum(c.ra)}, ${adqlNum(c.dec)}, ${adqlNum(c.radius)})) = 1 `
     + `AND b.ra IS NOT NULL AND (f.V < 9 OR b.otype IN (${types})) ORDER BY rank DESC`;
@@ -67,11 +67,13 @@ export function parseSimbad(json: unknown): SkyObject[] {
     if (!mainId || !Number.isFinite(ra) || !Number.isFinite(dec)) continue;
     const otype = String(get("otype") ?? "").trim();
     const props: Record<string, string | number> = { "SIMBAD id": mainId, "object type": otype };
-    const vmag = get("vmag"), nbref = get("nbref"), size = get("galdim_majaxis"), sp = get("sp_type"), z = get("rvz_redshift");
+    const vmag = get("vmag"), nbref = get("nbref"), size = get("galdim_majaxis"), sp = get("sp_type"), z = get("rvz_redshift"), plx = get("plx_value");
     if (typeof vmag === "number") props["V mag"] = +vmag.toFixed(2);
     if (typeof sp === "string" && sp) props["spectral type"] = sp;
     if (typeof size === "number") props["major axis (arcmin)"] = +size.toFixed(2);
     if (typeof z === "number" && categoryOf(otype) === "galaxy") props.redshift = +z.toPrecision(3);
+    // Parallax -> distance only when it's large enough to mean something (> 0.5 mas, i.e. < ~6,500 ly).
+    if (typeof plx === "number" && plx > 0.5) { props["parallax (mas)"] = +plx.toFixed(3); props["distance (ly)"] = Math.round(3261.56 / plx); }
     if (typeof nbref === "number") props["papers citing"] = nbref;
     out.push({
       id: "", name: tidyName(mainId), type: LABEL[otype] ?? otype, category: categoryOf(otype), ra, dec, source: "simbad",
