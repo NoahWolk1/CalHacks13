@@ -34,7 +34,6 @@ export default function MobileSheet() {
   const { h: vh, safe, probe } = useViewport();
   const runId = useStore((s) => s.runId);
   const tool = useStore((s) => s.tool);
-  const set = useStore((s) => s.set);
   const watching = !!runId && !isOwnRun(runId);
   const [snap, setSnap] = useState<Snap>("peek");
   const [drag, setDrag] = useState(0);
@@ -50,8 +49,6 @@ export default function MobileSheet() {
   useEffect(() => { setSheetInset(SHEET_PEEK + safe); }, [safe]);
   // Overlays above the sheet (finding inspector) size themselves against its live height.
   useEffect(() => { document.documentElement.style.setProperty("--gs-sheet", `${height}px`); }, [height]);
-  // Touch: one finger should pan the map by default (desktop starts on the box tool).
-  useEffect(() => { if (useStore.getState().tool === "box") set({ tool: "pan" }); }, [set]);
 
   // Follow the store: run start (drop to peek so the swarm is visible), run end (rise to show results),
   // drawing (get out of the way), a fresh region, and a finding tapped on the map.

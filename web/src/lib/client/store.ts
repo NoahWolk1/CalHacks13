@@ -28,6 +28,8 @@ interface State {
   live: LiveConfig | null;
   // inputs
   tool: Tool;
+  /** Step index of the desktop guided tour (components/Tour.tsx), or null when it isn't showing. */
+  tour: number | null;
   pinRadius: number;
   region: Region | null;
   profileId: string;
@@ -66,7 +68,7 @@ const emptyRun = {
 
 export const useStore = create<State>((set, get) => ({
   agents: [], profiles: [], llm: false, live: null,
-  runId: null, tool: "box", pinRadius: 450, region: null, profileId: "site-risk", mode: "insights", question: "",
+  runId: null, tool: "pan", tour: null, pinRadius: 450, region: null, profileId: "site-risk", mode: "insights", question: "",
   ...emptyRun,
 
   set: (p) => set(p),

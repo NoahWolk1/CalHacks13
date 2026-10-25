@@ -64,7 +64,7 @@ export function ResearchForm({ onBack }: { onBack?: () => void }) {
       <div>
         <div className="mb-2 flex items-center gap-3 text-[12px]">
           {(["ask", "insights"] as const).map((m) => (
-            <button key={m} onClick={() => set({ mode: m })} aria-pressed={mode === m}
+            <button key={m} onClick={() => set({ mode: m })} aria-pressed={mode === m} data-tour={`mode-${m}`}
               className={`transition-colors ${mode === m ? "text-fg1" : "text-fg3 hover:text-fg2"}`}>
               {m === "ask" ? "Ask a question" : "Find insights"}
             </button>
@@ -91,7 +91,7 @@ export function ResearchForm({ onBack }: { onBack?: () => void }) {
       </div>
 
       {/* Lens */}
-      <label className="block">
+      <label className="block" data-tour="focus">
         <span className="mb-2 block text-[12px] text-fg3">Research focus</span>
         <select value={profileId} onChange={(e) => set({ profileId: e.target.value })}
           className="h-9 w-full rounded-md border border-line bg-bg px-2.5 text-[13px] text-fg1 focus:border-fg4 focus:outline-none">
@@ -100,7 +100,7 @@ export function ResearchForm({ onBack }: { onBack?: () => void }) {
         {profile && <span className="mt-1.5 block text-[12px] leading-snug text-fg3">{profile.tagline}</span>}
       </label>
 
-      <button onClick={() => startRun()} disabled={running || !canRun}
+      <button onClick={() => startRun()} disabled={running || !canRun} data-tour="run"
         className="flex h-9 w-full items-center justify-center rounded-md bg-fg1 text-[13px] font-medium text-bg transition-colors hover:bg-white disabled:bg-raised disabled:text-fg4">
         {mode === "ask" ? "Research this question" : "Research this area"}
       </button>
