@@ -2,12 +2,12 @@
 
 export type Cone = { ra: number; dec: number; radius: number }; // degrees, ICRS
 
-export type SkyCategory = "galaxy" | "nebula" | "cluster" | "star" | "exoplanet" | "solar-system" | "other";
+export type SkyCategory = "galaxy" | "nebula" | "cluster" | "star" | "exoplanet" | "solar-system" | "observation" | "other";
 
-export type SkySourceId = "simbad" | "exoplanets" | "horizons";
+export type SkySourceId = "simbad" | "exoplanets" | "horizons" | "telescopes";
 
 export type SkyObject = {
-  /** Citation id, e.g. "S3" (SIMBAD), "X2" (exoplanet), "J1" (JPL Horizons). Assigned by the route. */
+  /** Citation id, e.g. "S3" (SIMBAD), "X2" (exoplanet), "J1" (JPL Horizons), "T1" (MAST telescope archive). Assigned by the route. */
   id: string;
   name: string;
   type: string;
@@ -31,9 +31,14 @@ export type SkySourceReport = {
 
 export type SkySummary = { headline: string; bullets: { text: string; ids: string[] }[]; dropped: number; question?: string };
 
+/** Observer agent: Claude looking at a DSS2 cutout of the cone, alongside the catalog results. */
+export type SkyObservation = { text: string; ids: string[] };
+export type SkyObserver = { observations: SkyObservation[]; dropped: number; image: string; model: string };
+
 export type SkyEvent =
   | { type: "results"; cone: Cone; objects: SkyObject[]; sources: SkySourceReport[]; ms: number }
   | { type: "summary"; summary: SkySummary | null; note?: string; ms: number }
+  | { type: "observer"; observer: SkyObserver | null; image?: string; note?: string; ms: number }
   | { type: "error"; message: string };
 
 export const SKY_MAX_RADIUS = 3;

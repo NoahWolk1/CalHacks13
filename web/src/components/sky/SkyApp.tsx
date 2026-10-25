@@ -7,7 +7,7 @@ import { ArrowLeft, CircleDashed, Crosshair, ExternalLink, LoaderCircle, Telesco
 import { Body, Equator, Observer } from "astronomy-engine";
 import { APP_NAME } from "@/lib/brand";
 import { formatDec, formatRa, parseCone } from "@/lib/sky/geom";
-import { SKY_MAX_RADIUS, type Cone, type SkyEvent, type SkyObject, type SkySourceReport, type SkySummary } from "@/lib/sky/types";
+import { SKY_MAX_RADIUS, type Cone, type SkyEvent, type SkyObject, type SkyObserver, type SkySourceReport, type SkySummary } from "@/lib/sky/types";
 import { CATEGORY_STYLE, SURVEYS, type AtlasApi } from "./SkyAtlas";
 import SkySearch from "./SkySearch";
 
@@ -38,6 +38,8 @@ export default function SkyApp() {
   const [objects, setObjects] = useState<SkyObject[]>([]);
   const [sources, setSources] = useState<SkySourceReport[]>([]);
   const [summary, setSummary] = useState<SkySummary | null>(null);
+  const [obs, setObs] = useState<{ observer: SkyObserver | null; note?: string; ms: number } | null>(null);
+  const [observing, setObserving] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [atlasError, setAtlasError] = useState<string | null>(null);
@@ -62,7 +64,7 @@ export default function SkyApp() {
     abort.current?.abort();
     const ctl = new AbortController();
     abort.current = ctl;
-    setStatus("running"); setObjects([]); setSources([]); setSummary(null); setNote(null); setError(null); setSelected(null); setTiming({});
+    setStatus("running"); setObjects([]); setSources([]); setSummary(null); setObs(null); setObserving(false); setNote(null); setError(null); setSelected(null); setTiming({});
     try {
       const res = await fetch("/api/sky/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...c, question: q.trim() || undefined }), signal: ctl.signal });
       if (!res.ok || !res.body) throw new Error(`${res.status} ${res.statusText}`);
@@ -79,11 +81,13 @@ export default function SkyApp() {
           buf = buf.slice(nl + 1);
           if (!line) continue;
           const e = JSON.parse(line) as SkyEvent;
-          if (e.type === "results") { setObjects(e.objects); setSources(e.sources); setTiming((t) => ({ ...t, results: e.ms })); setStatus("summarising"); }
+          if (e.type === "results") { setObserving(e.objects.length > 0); setObjects(e.objects); setSources(e.sources); setTiming((t) => ({ ...t, results: e.ms })); setStatus("summarising"); }
           else if (e.type === "summary") { setSummary(e.summary); setNote(e.note ?? null); setTiming((t) => ({ ...t, summary: e.ms })); setStatus("done"); }
+          else if (e.type === "observer") { setObs({ observer: e.observer, note: e.note, ms: e.ms }); setObserving(false); }
           else if (e.type === "error") { setError(e.message); setStatus("error"); }
         }
       }
+      setObserving(false);
       setStatus((s) => (s === "running" || s === "summarising" ? "done" : s));
     } catch (e) {
       if (ctl.signal.aborted) return;
@@ -204,13 +208,13 @@ export default function SkyApp() {
                 <span>Sky agents</span>
                 {timing.results != null && <span className="num normal-case tracking-normal text-fg4">{(timing.results / 1000).toFixed(1)}s</span>}
               </div>
-              {status === "running" && !sources.length && <div className="text-[12.5px] text-fg3">Querying SIMBAD, NASA Exoplanet Archive and JPL Horizons…</div>}
+              {status === "running" && !sources.length && <div className="text-[12.5px] text-fg3">Querying SIMBAD, NASA Exoplanet Archive, JPL Horizons and the MAST telescope archive…</div>}
               <ul className="space-y-1">
                 {sources.map((s) => (
                   <li key={s.source} className="flex items-center gap-2 text-[12.5px]">
                     <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${s.status === "ok" ? "bg-ok" : s.status === "empty" ? "bg-fg4" : "bg-risk"}`} />
                     <span className="text-fg1">{s.label}</span>
-                    <span className="truncate text-fg3" title={s.error}>{s.status === "ok" ? `${s.count} found` : s.status === "empty" ? "nothing found" : `failed: ${s.error}`}</span>
+                    <span className="truncate text-fg3" title={s.error}>{s.status === "ok" ? `${s.count} found` : s.status === "empty" ? (s.source === "telescopes" ? "no archived observations" : "nothing found") : `failed: ${s.error}`}</span>
                     <span className="num ml-auto text-[11.5px] text-fg4">{(s.ms / 1000).toFixed(1)}s</span>
                   </li>
                 ))}
@@ -246,6 +250,8 @@ export default function SkyApp() {
               {note && <div className="text-[12.5px] text-fg3">{note}</div>}
             </section>
           )}
+
+          {(observing || obs) && <ObserverSection obs={obs} byId={byId} onCite={select} />}
 
           {error && <div className="border-b border-line p-4 text-[12.5px] text-risk">{error}</div>}
 
@@ -291,6 +297,42 @@ function ResultRow({ o, on, onClick }: { o: SkyObject; on: boolean; onClick: () 
         </div>
       )}
     </li>
+  );
+}
+
+/** Observer agent: Claude's visual observations of a DSS2 cutout, with the image and its hips2fits link. */
+function ObserverSection({ obs, byId, onCite }: { obs: { observer: SkyObserver | null; note?: string; ms: number } | null; byId: Map<string, SkyObject>; onCite: (id: string) => void }) {
+  const o = obs?.observer;
+  return (
+    <section className="border-b border-line p-4">
+      <div className="mb-2 flex items-baseline justify-between text-[11.5px] uppercase tracking-[0.06em] text-fg3">
+        <span>Observer</span>
+        {o && <span className="num normal-case tracking-normal text-fg4">{(obs!.ms / 1000).toFixed(1)}s</span>}
+      </div>
+      {!obs && <div className="caret text-[12.5px] text-fg3">Looking at the DSS2 image of this region</div>}
+      {obs && !o && <div className="text-[12.5px] text-fg3">{obs.note ?? "No visual observations this run."}</div>}
+      {o && (
+        <div className="flex gap-3 max-sm:flex-col">
+          <a href={o.image} target="_blank" rel="noreferrer" title="Open the hips2fits cutout (DSS2 colour)" className="shrink-0">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={o.image} alt="DSS2 colour cutout of the research cone" width={112} height={112} className="h-28 w-28 rounded-md border border-line object-cover" />
+            <span className="mt-1 flex items-center gap-1 text-[11px] text-fg4 hover:text-fg1">DSS2 cutout <ExternalLink size={10} strokeWidth={1.5} /></span>
+          </a>
+          <ul className="min-w-0 flex-1 space-y-1.5">
+            {o.observations.map((x, i) => (
+              <li key={i} className="text-[12.5px] leading-relaxed text-fg2">
+                {x.text.replace(/\s*\[[A-Z]\d+\]/g, "")}{" "}
+                {x.ids.map((id) => (
+                  <button key={id} onClick={() => onCite(id)} title={byId.get(id)?.name}
+                    className="num mr-1 rounded-[3px] border border-line px-1 text-[11px] text-fg3 hover:border-line-strong hover:text-fg1">{id}</button>
+                ))}
+              </li>
+            ))}
+            {o.dropped > 0 && <li className="text-[11.5px] text-fg4">{o.dropped} observation{o.dropped === 1 ? "" : "s"} dropped for citing results that don&apos;t exist</li>}
+          </ul>
+        </div>
+      )}
+    </section>
   );
 }
 

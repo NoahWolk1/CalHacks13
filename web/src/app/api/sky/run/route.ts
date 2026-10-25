@@ -1,6 +1,7 @@
 import { parseCone } from "@/lib/sky/geom";
 import { runSkyAgents } from "@/lib/sky/run";
 import { cleanQuestion, skySummary } from "@/lib/sky/summary";
+import { skyObserver } from "@/lib/sky/observer";
 import type { SkyEvent } from "@/lib/sky/types";
 import { liveStore } from "@/lib/server/liveRun";
 import { decideLlm } from "@/lib/server/llmQuota";
@@ -39,14 +40,23 @@ export async function POST(req: Request) {
         const decision = await decideLlm(req, liveStore());
         if (!decision.llm) {
           send({ type: "summary", summary: null, note: decision.limited ? "Hourly Claude limit reached: showing raw results." : "No Claude key configured: showing raw results.", ms: Date.now() - t0 });
+          send({ type: "observer", observer: null, note: decision.limited ? "Hourly Claude limit reached: Observer skipped." : "No Claude key configured: Observer skipped.", ms: Date.now() - t0 });
           return;
         }
+        // Observer agent (Claude vision on a DSS2 cutout) runs alongside the summary, under the same reservation.
+        const observing = skyObserver(cone, objects, ctl.signal)
+          .then((observer) => send({ type: "observer", observer, ms: Date.now() - t0 }))
+          .catch((e: Error) => {
+            console.warn("[sky] observer failed:", e.message);
+            send({ type: "observer", observer: null, note: "Observer failed: no visual observations this run.", ms: Date.now() - t0 });
+          });
         try {
           send({ type: "summary", summary: await skySummary(cone, objects, sources, ctl.signal, question), ms: Date.now() - t0 });
         } catch (e) {
           console.warn("[sky] summary failed:", (e as Error).message);
           send({ type: "summary", summary: null, note: "Claude summary failed: showing raw results.", ms: Date.now() - t0 });
         }
+        await observing;
       } catch (e) {
         send({ type: "error", message: (e as Error).message });
       } finally {

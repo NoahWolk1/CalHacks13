@@ -20,6 +20,7 @@ export const CATEGORY_STYLE: Record<SkyCategory, { color: string; label: string;
   star: { color: "#ecebe6", label: "Stars", shape: "plus" },
   exoplanet: { color: "#6dbf8b", label: "Exoplanets", shape: "triangle" },
   "solar-system": { color: "#e8853d", label: "Sun, Moon & planets", shape: "circle" },
+  observation: { color: "#5ec8d8", label: "Telescope archives", shape: "square" },
   other: { color: "#b3afa6", label: "Other", shape: "cross" },
 };
 

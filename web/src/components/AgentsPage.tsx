@@ -10,6 +10,7 @@ import { deleteAgent, draftAgent, saveAgent } from "@/lib/client/runClient";
 import type { AgentConfig } from "@/lib/types";
 import type { AdvancedSpec } from "@/lib/agents/factory";
 import { APP_NAME } from "@/lib/brand";
+import { SKY_AGENTS } from "@/lib/sky/agents";
 import { SectionLabel, VehicleGlyph } from "./ui";
 import { SwarmMark } from "./TopBar";
 
@@ -334,6 +335,27 @@ export default function AgentsPage() {
             {library.map((a) => (
               <AgentCard key={a.id} agent={a} usedBy={usage(a.id)}
                 onDelete={a.builtin ? undefined : () => { if (confirm(`Delete "${a.name}" from the library?`)) deleteAgent(a.id).catch((e: Error) => alert(e.message)); }} />
+            ))}
+          </div>
+        </motion.section>
+
+        <motion.section variants={rise}>
+          <SectionLabel right={<Link href="/sky" className="text-[12px] text-fg3 hover:text-fg1">Open Sky research</Link>}>Sky team</SectionLabel>
+          <div className="grid gap-px overflow-hidden rounded-md border border-line bg-line sm:grid-cols-2 lg:grid-cols-3">
+            {SKY_AGENTS.map((a) => (
+              <div key={a.id} className="flex flex-col gap-2.5 bg-panel p-4">
+                <div className="flex items-center gap-2.5">
+                  <VehicleGlyph kind="satellite" color={a.color} size={18} />
+                  <span className="min-w-0 flex-1 truncate text-[13.5px] font-medium text-fg1">{a.name}</span>
+                  <span className="text-[12px] text-fg3">Sky</span>
+                </div>
+                <p className="text-[12.5px] leading-relaxed text-fg2">{a.description}</p>
+                <a href={a.sourceUrl} target="_blank" rel="noreferrer" className="truncate text-[12px] text-fg3 hover:text-fg1" title={a.sourceUrl}>{a.source}</a>
+                <div className="mt-auto flex items-center pt-1">
+                  <Tag>Celestial cone</Tag>
+                  <Link href="/sky" className="ml-auto text-[12px] text-fg4 hover:text-fg1">Runs on /sky</Link>
+                </div>
+              </div>
             ))}
           </div>
         </motion.section>

@@ -3,10 +3,11 @@ import { getJson } from "@/lib/http";
 import { EXO_TAP, exoRequest, parseExoplanets } from "./exoplanets";
 import { BODIES, bodyObject, HORIZONS_API, horizonsUrl, parseHorizons } from "./horizons";
 import { parseSimbad, SIMBAD_TAP, simbadUrl } from "./simbad";
+import { fetchMast, MAST_API, MAST_DEADLINE_MS } from "./telescopes";
 import type { Cone, SkyObject, SkySourceId, SkySourceReport } from "./types";
 
 export const SOURCE_TIMEOUT_MS = 15_000;
-const PREFIX: Record<SkySourceId, string> = { simbad: "S", exoplanets: "X", horizons: "J" };
+const PREFIX: Record<SkySourceId, string> = { simbad: "S", exoplanets: "X", horizons: "J", telescopes: "T" };
 
 type Source = { id: SkySourceId; label: string; endpoint: string; run: (c: Cone, signal: AbortSignal) => Promise<SkyObject[]> };
 
@@ -23,9 +24,10 @@ export const SOURCES: Source[] = [
       return rows.flatMap((r) => (r.status === "fulfilled" && r.value ? [r.value] : []));
     },
   },
+  { id: "telescopes", label: "MAST telescope archive", endpoint: MAST_API, run: (c, signal) => fetchMast(c, signal, MAST_DEADLINE_MS) },
 ];
 
-/** Assigns citation ids per source (S1.., X1.., J1..) in the order each source returned them. */
+/** Assigns citation ids per source (S1.., X1.., J1.., T1..) in the order each source returned them. */
 export function assignIds(bySource: { id: SkySourceId; objects: SkyObject[] }[]): SkyObject[] {
   return bySource.flatMap(({ id, objects }) => objects.map((o, i) => ({ ...o, id: `${PREFIX[id]}${i + 1}` })));
 }
