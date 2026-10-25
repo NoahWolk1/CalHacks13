@@ -1,5 +1,6 @@
 "use client";
 import type { AgentConfig, RunEvent } from "@/lib/types";
+import type { AdvancedSpec } from "@/lib/agents/factory";
 import { useStore } from "./store";
 
 /**
@@ -73,8 +74,8 @@ function upsertAgent(agent: AgentConfig) {
 }
 
 /** Prompt → a draft config to preview, or the existing agent that already covers it. */
-export function draftAgent(prompt: string) {
-  return call<{ kind: "new" | "reuse"; agent: AgentConfig }>("/api/agents/draft", json({ prompt }));
+export function draftAgent(prompt: string, advanced?: AdvancedSpec) {
+  return call<{ kind: "new" | "reuse"; agent: AgentConfig }>("/api/agents/draft", json({ prompt, advanced }));
 }
 
 export async function saveAgent(agent: AgentConfig) {

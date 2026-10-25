@@ -4,10 +4,11 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { motion, useReducedMotion, type Variants } from "framer-motion";
-import { ArrowLeft, Lock, Check, Loader2, Trash2 } from "lucide-react";
+import { ArrowLeft, Lock, Check, Loader2, Trash2, ChevronDown } from "lucide-react";
 import { useStore } from "@/lib/client/store";
 import { deleteAgent, draftAgent, saveAgent } from "@/lib/client/runClient";
 import type { AgentConfig } from "@/lib/types";
+import type { AdvancedSpec } from "@/lib/agents/factory";
 import { APP_NAME } from "@/lib/brand";
 import { SectionLabel, VehicleGlyph } from "./ui";
 import { SwarmMark } from "./TopBar";
@@ -50,6 +51,117 @@ function AgentCard({ agent, usedBy, onDelete }: { agent: AgentConfig; usedBy: nu
 
 const FIELD = "w-full rounded-md border border-line bg-bg px-2.5 py-2 text-[12.5px] text-fg1 placeholder:text-fg4 focus:border-line-strong focus:outline-none";
 
+const TOOL_OPTIONS = [
+  { id: "search", label: "Web search" },
+  { id: "scrape", label: "Read web pages" },
+  { id: "http_get", label: "Call JSON APIs" },
+] as const;
+const VEHICLE_OPTIONS = ["drone", "car", "rover", "satellite", "boat"] as const;
+const SWATCHES = ["#e879f9", "#c084fc", "#fb923c", "#facc15", "#a3e635", "#2dd4bf", "#60a5fa", "#f87171"];
+
+/** Form state for the advanced fields; sources are one per line until sent. */
+type AdvancedForm = Omit<AdvancedSpec, "dataSources"> & { sources: string };
+const EMPTY_ADVANCED: AdvancedForm = { sources: "", tools: [] };
+
+function toSpec({ sources, ...f }: AdvancedForm): AdvancedSpec | undefined {
+  const spec: AdvancedSpec = {
+    ...f,
+    name: f.name?.trim() || undefined,
+    coverage: f.coverage?.trim() || undefined,
+    criteria: f.criteria?.trim() || undefined,
+    output: f.output?.trim() || undefined,
+    notes: f.notes?.trim() || undefined,
+    dataSources: sources.split("\n").map((s) => s.trim()).filter(Boolean).slice(0, 8),
+  };
+  const any = spec.name || spec.coverage || spec.criteria || spec.output || spec.notes || spec.vehicle || spec.color
+    || spec.forceNew || spec.tools?.length || spec.dataSources?.length;
+  return any ? spec : undefined;
+}
+
+function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <label className="block space-y-1">
+      <span className="flex items-baseline gap-2 text-[12px] text-fg3">{label}{hint && <span className="text-fg4">{hint}</span>}</span>
+      {children}
+    </label>
+  );
+}
+
+function Chip({ on, onClick, children, title }: { on: boolean; onClick: () => void; children: React.ReactNode; title?: string }) {
+  return (
+    <button type="button" onClick={onClick} title={title} aria-pressed={on}
+      className={`flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-[12px] transition-colors ${on ? "border-line-strong bg-raised text-fg1" : "border-line text-fg3 hover:text-fg1"}`}>
+      {children}
+    </button>
+  );
+}
+
+/** Optional detail for the generator: sources to use, filters, output shape, and look. */
+function AdvancedFields({ value, onChange, disabled }: { value: AdvancedForm; onChange: (v: AdvancedForm) => void; disabled: boolean }) {
+  const set = (patch: Partial<AdvancedForm>) => onChange({ ...value, ...patch });
+  const tools = value.tools ?? [];
+  const toggleTool = (t: (typeof TOOL_OPTIONS)[number]["id"]) => set({ tools: tools.includes(t) ? tools.filter((x) => x !== t) : [...tools, t] });
+  return (
+    <fieldset disabled={disabled} className="grid gap-3 border-t border-line pt-3 sm:grid-cols-2">
+      <Field label="Name" hint="optional">
+        <input value={value.name ?? ""} maxLength={40} onChange={(e) => set({ name: e.target.value })} placeholder="e.g. Permit Hawk" className={FIELD} />
+      </Field>
+      <Field label="Coverage" hint="where it works">
+        <input value={value.coverage ?? ""} maxLength={80} onChange={(e) => set({ coverage: e.target.value })} placeholder="e.g. Oakland, California, US, Global" className={FIELD} />
+      </Field>
+      <Field label="Sources to use" hint="one per line: URLs, API endpoints or dataset names">
+        <textarea rows={4} value={value.sources} onChange={(e) => set({ sources: e.target.value })}
+          placeholder={"https://data.sfgov.org/resource/pyih-qa8i.json\nDataSF Restaurant Scores"} className={`${FIELD} num resize-y`} />
+      </Field>
+      <Field label="What counts as notable" hint="filters, thresholds, what to skip">
+        <textarea rows={4} value={value.criteria ?? ""} maxLength={1000} onChange={(e) => set({ criteria: e.target.value })}
+          placeholder="e.g. Only inspections from the last 12 months with a score under 70. Skip closed businesses." className={`${FIELD} resize-y`} />
+      </Field>
+      <Field label="Each finding should report" hint="fields, units, dates">
+        <textarea rows={3} value={value.output ?? ""} maxLength={1000} onChange={(e) => set({ output: e.target.value })}
+          placeholder="e.g. Business name, address, score, inspection date, top violation" className={`${FIELD} resize-y`} />
+      </Field>
+      <Field label="Other instructions" hint="anything else the agent should know">
+        <textarea rows={3} value={value.notes ?? ""} maxLength={1000} onChange={(e) => set({ notes: e.target.value })}
+          placeholder="e.g. The API pages at 1000 rows; filter by zip code rather than lat/lng." className={`${FIELD} resize-y`} />
+      </Field>
+
+      <div className="space-y-1.5">
+        <span className="flex items-baseline gap-2 text-[12px] text-fg3">Tools <span className="text-fg4">none picked = agent decides</span></span>
+        <div className="flex flex-wrap gap-1.5">
+          {TOOL_OPTIONS.map((t) => <Chip key={t.id} on={tools.includes(t.id)} onClick={() => toggleTool(t.id)}>{t.label}</Chip>)}
+        </div>
+      </div>
+      <div className="space-y-1.5">
+        <span className="text-[12px] text-fg3">Vehicle</span>
+        <div className="flex flex-wrap gap-1.5">
+          <Chip on={!value.vehicle} onClick={() => set({ vehicle: undefined })}>Auto</Chip>
+          {VEHICLE_OPTIONS.map((v) => (
+            <Chip key={v} on={value.vehicle === v} onClick={() => set({ vehicle: v })} title={v}>
+              <VehicleGlyph kind={v} color={value.color ?? "currentColor"} size={14} /><span className="capitalize">{v}</span>
+            </Chip>
+          ))}
+        </div>
+      </div>
+      <div className="space-y-1.5">
+        <span className="text-[12px] text-fg3">Color</span>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Chip on={!value.color} onClick={() => set({ color: undefined })}>Auto</Chip>
+          {SWATCHES.map((c) => (
+            <button key={c} type="button" onClick={() => set({ color: c })} aria-label={`Color ${c}`} aria-pressed={value.color === c}
+              className={`size-6 rounded-full border-2 transition-transform hover:scale-110 ${value.color === c ? "border-fg1" : "border-transparent"}`}
+              style={{ background: c }} />
+          ))}
+        </div>
+      </div>
+      <label className="flex items-center gap-2 self-end text-[12.5px] text-fg2">
+        <input type="checkbox" checked={!!value.forceNew} onChange={(e) => set({ forceNew: e.target.checked })} className="accent-current" />
+        Always create a new agent (skip the library check)
+      </label>
+    </fieldset>
+  );
+}
+
 function CreateCard() {
   const llm = useStore((s) => s.llm);
   const [prompt, setPrompt] = useState("");
@@ -57,6 +169,9 @@ function CreateCard() {
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<AgentConfig | null>(null);
   const [reuse, setReuse] = useState<AgentConfig | null>(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [advanced, setAdvanced] = useState<AdvancedForm>(EMPTY_ADVANCED);
+  const spec = toSpec(advanced);
 
   const reset = () => { setDraft(null); setReuse(null); setError(null); };
   const run = (fn: () => Promise<void>) => {
@@ -66,13 +181,14 @@ function CreateCard() {
   };
   const generate = () => run(async () => {
     reset();
-    const r = await draftAgent(prompt);
+    const r = await draftAgent(prompt, spec);
     if (r.kind === "reuse") setReuse(r.agent); else setDraft(r.agent);
   });
   const save = () => run(async () => {
     await saveAgent(draft!);
     reset();
     setPrompt("");
+    setAdvanced(EMPTY_ADVANCED);
   });
 
   return (
@@ -84,11 +200,21 @@ function CreateCard() {
             onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && prompt.trim()) generate(); }}
             placeholder={'Describe a data source, e.g. "Health inspection scores for restaurants in SF" or "Scrape the listings at <url> and pin each address"'}
             className={`${FIELD} resize-none disabled:cursor-not-allowed`} />
-          <button disabled={!llm || busy || !prompt.trim()} onClick={generate}
-            className="flex h-8 items-center self-end px-4 justify-center gap-1.5 rounded-md border border-line-strong text-[12.5px] text-fg1 transition-colors hover:bg-raised disabled:cursor-not-allowed disabled:border-line disabled:text-fg4 disabled:hover:bg-transparent">
-            {busy ? <Loader2 size={12} className="animate-spin" /> : !llm && <Lock size={12} strokeWidth={1.5} />}
-            {busy ? "Designing agent…" : "Generate agent"}
-          </button>
+          {showAdvanced && <AdvancedFields value={advanced} onChange={setAdvanced} disabled={!llm || busy} />}
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={() => setShowAdvanced((v) => !v)} aria-expanded={showAdvanced}
+              className="flex h-8 items-center gap-1 rounded-md px-2 text-[12.5px] text-fg3 transition-colors hover:text-fg1">
+              <ChevronDown size={13} strokeWidth={1.5} className={`transition-transform ${showAdvanced ? "rotate-180" : ""}`} />
+              {showAdvanced ? "Hide advanced options" : "Advanced options"}
+              {!showAdvanced && toSpec(advanced) && <span className="ml-1 size-1.5 rounded-full bg-fg2" title="Advanced options set" />}
+            </button>
+            <div className="flex-1" />
+            <button disabled={!llm || busy || !prompt.trim()} onClick={generate}
+              className="flex h-8 items-center px-4 justify-center gap-1.5 rounded-md border border-line-strong text-[12.5px] text-fg1 transition-colors hover:bg-raised disabled:cursor-not-allowed disabled:border-line disabled:text-fg4 disabled:hover:bg-transparent">
+              {busy ? <Loader2 size={12} className="animate-spin" /> : !llm && <Lock size={12} strokeWidth={1.5} />}
+              {busy ? "Designing agent…" : "Generate agent"}
+            </button>
+          </div>
           {!llm && <p className="text-[12px] leading-snug text-fg4">Creating agents needs <code className="num text-fg3">ANTHROPIC_API_KEY</code>.</p>}
         </>
       )}
