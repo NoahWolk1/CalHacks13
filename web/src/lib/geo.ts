@@ -65,6 +65,15 @@ export function touchesSF(r: Region) {
   return !(c < SF_BOUNDS[0] || a > SF_BOUNDS[2] || d < SF_BOUNDS[1] || b > SF_BOUNDS[3]);
 }
 
+/** Rough US bounds (lower 48, Alaska, Hawaii, Puerto Rico); US-only feeds (FEMA, Census) check this. */
+const US_BOUNDS: [number, number, number, number][] = [
+  [-125, 24.4, -66.9, 49.5], [-170, 51, -129, 71.5], [-161, 18.9, -154.8, 22.3], [-67.3, 17.9, -65.2, 18.6],
+];
+export function touchesUS(r: Region) {
+  const [a, b, c, d] = r.bbox;
+  return US_BOUNDS.some(([x0, y0, x1, y1]) => !(c < x0 || a > x1 || d < y0 || b > y1));
+}
+
 export function distanceM(a: [number, number], b: [number, number]) {
   return turf.distance(a, b, { units: "meters" });
 }

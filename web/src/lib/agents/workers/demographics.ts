@@ -7,7 +7,7 @@ export const demographicsWorker: Worker = {
   name: "Census Rover",
   description: "Looks up the census tract and its population, median household income, median rent and renter share (ACS 5-year).",
   vehicle: "rover",
-  color: "#60a5fa",
+  color: "#d4d0c4",
   tools: ["http_get"],
   dataSources: ["US Census Geocoder", "American Community Survey 5-yr"],
   coverage: "US",

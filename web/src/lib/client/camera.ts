@@ -2,9 +2,13 @@
 // Tiny imperative camera API so non-map components (search, demo spots) can move the map
 // without routing through the store. MapView registers its map instance here.
 import type { Map as MLMap } from "maplibre-gl";
+import { geometry } from "./layout";
 
 let map: MLMap | null = null;
-export const PANEL_PADDING = { top: 140, bottom: 120, left: 420, right: 440 };
+/** Breathing room between a fitted region and the panels / top bar / status bar. */
+const FIT_GUTTER = 36;
+/** Docked 48px top bar + mission bar above, status strip below. */
+const PAD_Y = { top: 120, bottom: 90 };
 
 export function registerMap(m: MLMap | null) { map = m; }
 
@@ -21,9 +25,16 @@ export function panelPadding() {
     const top = Math.min(96, h * 0.14), bottom = Math.min(sheetInset + 24, h * 0.45);
     return { top, bottom, left: 28, right: w < 640 ? 56 : 72 };
   }
-  const sx = Math.min(1, (w * 0.7) / (PANEL_PADDING.left + PANEL_PADDING.right));
-  const sy = Math.min(1, (h * 0.6) / (PANEL_PADDING.top + PANEL_PADDING.bottom));
-  return { top: PANEL_PADDING.top * sy, bottom: PANEL_PADDING.bottom * sy, left: PANEL_PADDING.left * sx, right: PANEL_PADDING.right * sx };
+  // Desktop: the panels float over a full-screen map, so pad by the live panel geometry.
+  const g = geometry();
+  let left = g.le + FIT_GUTTER, right = g.re + FIT_GUTTER;
+  const minFit = 240; // never leave less than this much width for the region itself
+  if (w - left - right < minFit) {
+    const k = Math.max(0, (w - minFit) / (left + right));
+    left *= k; right *= k;
+  }
+  const sy = Math.min(1, (h * 0.6) / (PAD_Y.top + PAD_Y.bottom));
+  return { top: PAD_Y.top * sy, bottom: PAD_Y.bottom * sy, left, right };
 }
 
 /** Screen offset that centers a point in the panel-free area. (Passing `padding` to easeTo/flyTo

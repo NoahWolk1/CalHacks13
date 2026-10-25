@@ -20,8 +20,14 @@ export const activeRuns = (g.__geoswarmRuns ??= new Map());
 const FLUSH_MS = 100;
 const CREATE_TIMEOUT_MS = 5000;
 
-/** Creates the run row, starts the orchestrator in the background, and returns the Convex run id. */
-export async function startConvexRun(body: RunRequest): Promise<string> {
+const STOP_POLL_MS = 1500;
+
+/**
+ * Creates the run row, starts the orchestrator in the background, and returns the Convex run id.
+ * `background` receives the work promise: the route hands it to `after()` so Vercel keeps the
+ * function alive (up to maxDuration) after the {runId} response is sent.
+ */
+export async function startConvexRun(body: RunRequest, background: (work: Promise<void>) => void = () => {}): Promise<string> {
   // Bounded so a hung (not just down) Convex backend still falls back to SSE quickly.
   let createTimer: ReturnType<typeof setTimeout> | undefined;
   const runId: Id<"runs"> = await Promise.race([
@@ -62,20 +68,39 @@ export async function startConvexRun(body: RunRequest): Promise<string> {
     timer ??= setTimeout(flush, FLUSH_MS);
   };
 
+  // /api/run/stop may land on a different serverless instance than this one, so it sets
+  // runs.stopRequested and we poll it (the local activeRuns map still covers same-process stops).
+  const stopPoll = setInterval(() => {
+    convex().query(api.runs.stopRequested, { runId })
+      .then((stop) => { if (stop) ctl.abort(); })
+      .catch(() => { /* transient; next tick retries */ });
+  }, STOP_POLL_MS);
+
   const t0 = Date.now();
-  void (async () => {
+  const work = (async () => {
     try {
       await runOrchestrator(body, emit, ctl.signal);
     } catch (e) {
       emit({ type: "error", message: (e as Error).message });
     } finally {
       // Stopped runs end cleanly for every viewer.
+      clearInterval(stopPoll);
       if (!sawEnd) emit({ type: "run_done", durationMs: Date.now() - t0 });
       if (timer) clearTimeout(timer);
       await flush();
       activeRuns.delete(runId);
     }
   })();
+  background(work);
 
   return runId;
+}
+
+/** Stops a run whichever instance is executing it: aborts locally if it's ours, and flags the run row. */
+export async function stopConvexRun(runId: string): Promise<boolean> {
+  const ctl = activeRuns.get(runId);
+  ctl?.abort();
+  if (!convexUrl()) return !!ctl;
+  try { return (await convex().mutation(api.runs.requestStop, { runId })) || !!ctl; }
+  catch (e) { console.error("[convex] requestStop failed", (e as Error).message); return !!ctl; }
 }

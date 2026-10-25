@@ -17,6 +17,15 @@ export function onRunEvent(fn: (e: RunEvent) => void) { listeners.add(fn); retur
 
 /** The single path every RunEvent takes into the UI (SSE stream or Convex subscription). */
 export function dispatchRunEvent(ev: RunEvent) {
+  // A recalled (or failed) mission ends with agents still queued/scanning: settle them so the
+  // panel stops spinning and the map parks their vehicles, for the launcher and every viewer.
+  if (ev.type === "run_done" || ev.type === "error") {
+    for (const [agentId, a] of Object.entries(useStore.getState().agentState)) {
+      if (a.status === "queued" || a.status === "deploying" || a.status === "scanning") {
+        dispatchRunEvent({ type: "agent_status", agentId, status: "done", dispatchId: "recall", detail: a.findings ? `recalled (${a.findings} kept)` : "recalled" });
+      }
+    }
+  }
   useStore.getState().apply(ev);
   listeners.forEach((fn) => fn(ev));
 }
@@ -48,10 +57,12 @@ export async function loadCatalog() {
 export function stopRun() {
   current?.abort();
   current = null;
-  const { runId, running } = useStore.getState();
+  const { runId, running, runStartedAt } = useStore.getState();
   if (running && isOwnRun(runId)) {
     fetch("/api/run/stop", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ runId }) }).catch(() => {});
   }
+  // SSE mode: the stream is gone, so no run_done will arrive; end the mission locally.
+  if (running && !runId) dispatchRunEvent({ type: "run_done", durationMs: runStartedAt ? Date.now() - runStartedAt : 0 });
   useStore.getState().set({ running: false });
 }
 

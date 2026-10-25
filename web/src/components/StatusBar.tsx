@@ -1,7 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useState } from "react";
-import { Video, VideoOff } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { useStore } from "@/lib/client/store";
 import { setCinematic } from "./MapView";
 
@@ -10,13 +9,11 @@ export function fmt(ms: number) {
   return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 }
 
-function Stat({ label, value, total, accent }: { label: string; value: number | string; total?: number; accent?: boolean }) {
+function Stat({ label, value, total, className = "" }: { label: string; value: number | string; total?: number; className?: string }) {
   return (
-    <div className="flex flex-col items-center leading-none">
-      <span className={`font-mono text-[13px] tabular-nums ${accent ? "text-teal-200" : "text-slate-100"}`}>
-        {value}{total !== undefined && <span className="text-slate-500">/{total}</span>}
-      </span>
-      <span className="mt-1 font-mono text-[8.5px] uppercase tracking-[0.18em] text-slate-500">{label}</span>
+    <div className={`flex h-full items-center gap-1.5 border-l border-line px-3 ${className}`}>
+      <span className="num text-[12px] text-fg1">{value}{total !== undefined && <span className="text-fg3">/{total}</span>}</span>
+      {label && <span className="text-[12px] text-fg3">{label}</span>}
     </div>
   );
 }
@@ -62,43 +59,25 @@ export default function StatusBar() {
 
   if (!region) return null;
 
-  const stats = [
-    <Stat key="t" label="Elapsed" value={fmt(elapsed)} accent={running} />,
-    <Stat key="a" label="Agents" value={active} total={agents} />,
-    <Stat key="f" label="Findings" value={shown} total={total} />,
-    <Stat key="s" label="Sources" value={sources} />,
-    <Stat key="i" label="Insights" value={insights} accent={insights > 0} />,
-  ];
-
+  // Narrow map strip: drop the secondary counters first (container queries on .gs-frame). Thresholds keep
+  // the full bar clear of the attribution button in the strip's bottom-right corner.
   return (
-    <div className="glass pointer-events-auto absolute bottom-6 left-1/2 z-20 flex -translate-x-1/2 items-center gap-4 rounded-full py-2 pl-4 pr-2 max-lg:hidden">
-      <div className="flex w-[78px] items-center gap-2">
-        {running ? (
-          <>
-            <span className="relative flex h-2 w-2">
-              <span className="ping-soft absolute inline-flex h-full w-full rounded-full bg-rose-500" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-rose-500 shadow-[0_0_8px] shadow-rose-500" />
-            </span>
-            <span className="font-mono text-[11px] font-semibold tracking-[0.18em] text-rose-300">LIVE</span>
-          </>
-        ) : (
-          <>
-            <span className={`h-2 w-2 rounded-full ${done ? "bg-emerald-400" : "bg-slate-500"}`} />
-            <span className={`font-mono text-[11px] tracking-[0.18em] ${done ? "text-emerald-300" : "text-slate-400"}`}>{done ? "COMPLETE" : "IDLE"}</span>
-          </>
-        )}
+    <div className="glass pointer-events-auto absolute bottom-3 left-3 z-20 flex h-[34px] w-max items-center whitespace-nowrap rounded-md max-lg:hidden">
+      <div className={`flex h-full items-center gap-2 px-3 text-[12px] font-medium ${running ? "text-accent" : done ? "text-fg2" : "text-fg3"}`}>
+        <span className={`h-1.5 w-1.5 rounded-full ${running ? "bg-accent" : done ? "bg-ok" : "bg-fg4"}`} />
+        {running ? "Live" : done ? "Complete" : "Idle"}
       </div>
-      {stats.map((s, i) => (
-        <Fragment key={i}>
-          <span className="h-6 w-px bg-white/10" />
-          {s}
-        </Fragment>
-      ))}
-      <span className="h-6 w-px bg-white/10" />
-      <button onClick={toggleCine} title="Toggle cinematic camera"
-        className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.14em] transition ${cinematic ? "bg-teal-300/15 text-teal-200 ring-1 ring-teal-300/40" : "text-slate-400 ring-1 ring-white/10 hover:text-slate-200"}`}>
-        {cinematic ? <Video size={13} /> : <VideoOff size={13} />}
-        Cinematic
+      <Stat label="" value={fmt(elapsed)} />
+      <Stat label="agents" value={active} total={agents} className="@max-[460px]:hidden" />
+      <Stat label="findings" value={shown} total={total} />
+      <Stat label="sources" value={sources} className="@max-[720px]:hidden" />
+      <Stat label="insights" value={insights} className="@max-[630px]:hidden" />
+      <button onClick={toggleCine} title="Toggle cinematic camera" aria-pressed={cinematic}
+        className="flex h-full items-center gap-2 rounded-r-md border-l border-line px-3 text-[12px] text-fg3 transition-colors hover:text-fg1">
+        <span className="@max-[530px]:hidden">Cinematic</span>
+        <span className={`relative h-3.5 w-6 rounded-full transition-colors ${cinematic ? "bg-fg2" : "bg-line-strong"}`}>
+          <span className={`absolute top-0.5 h-2.5 w-2.5 rounded-full bg-panel transition-[left] duration-150 ${cinematic ? "left-[12px]" : "left-0.5"}`} />
+        </span>
       </button>
     </div>
   );

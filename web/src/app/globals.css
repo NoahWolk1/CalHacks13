@@ -1,11 +1,19 @@
 @import "tailwindcss";
 
+/* "Night survey sheet": warm graphite chrome, colour reserved for data, one sodium accent.
+   Values mirror src/lib/client/theme.ts. */
 :root {
-  --bg: #060a11;
-  --panel: rgba(9, 14, 23, 0.78);
-  --line: rgba(148, 163, 184, 0.12);
-  --accent: #5eead4;
-  --accent-2: #38bdf8;
+  --bg: #0e0e0d;
+  --panel: #151514;
+  --raised: #1c1b19;
+  --active: #24231f;
+  --line: #2a2925;
+  --line-strong: #3a3833;
+  --fg1: #ecebe6;
+  --fg2: #b3afa6;
+  --fg3: #7d796f;
+  --fg4: #57544d;
+  --accent: #e8853d;
   --safe-top: max(12px, env(safe-area-inset-top));
   --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
@@ -13,50 +21,77 @@
 @theme inline {
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-  --color-accent: #5eead4;
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-raised: var(--raised);
+  --color-active: var(--active);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-fg1: var(--fg1);
+  --color-fg2: var(--fg2);
+  --color-fg3: var(--fg3);
+  --color-fg4: var(--fg4);
+  --color-accent: var(--accent);
+  --color-risk: #e5675a;
+  --color-ok: #6dbf8b;
 }
 
-html, body { background: var(--bg); color: #e2e8f0; height: 100%; overflow: hidden; }
+html, body { background: var(--bg); color: var(--fg1); height: 100%; overflow: hidden; }
+::selection { background: rgba(232, 133, 61, 0.3); }
+:focus-visible { outline: 1.5px solid var(--accent); outline-offset: 1px; }
 
-.glass {
+/* Floating surfaces over the map (status strip, popovers, inspector): solid, hairline, one soft shadow. */
+.glass, .surface {
   background: var(--panel);
-  backdrop-filter: blur(18px) saturate(140%);
-  -webkit-backdrop-filter: blur(18px) saturate(140%);
   border: 1px solid var(--line);
-  box-shadow: 0 10px 40px -10px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
 }
+/* Docked panels: solid, separated by a hairline, no shadow. */
+.dock { background: var(--panel); }
 
-.vignette {
-  background:
-    radial-gradient(ellipse at center, transparent 55%, rgba(3, 6, 12, 0.75) 100%),
-    linear-gradient(to bottom, rgba(3, 6, 12, 0.55), transparent 14%, transparent 86%, rgba(3, 6, 12, 0.6));
-}
-
-.grid-bg {
-  background-image: linear-gradient(rgba(94, 234, 212, 0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(94, 234, 212, 0.05) 1px, transparent 1px);
-  background-size: 24px 24px;
-}
-
-.scroll-thin { scrollbar-width: thin; scrollbar-color: rgba(148, 163, 184, 0.25) transparent; }
+.scroll-thin { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
 .scroll-thin::-webkit-scrollbar { width: 6px; }
-.scroll-thin::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.25); border-radius: 3px; }
+.scroll-thin::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 3px; }
 
-@keyframes shimmer { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
-.shimmer { animation: shimmer 1.4s ease-in-out infinite; }
+.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 
-@keyframes ping-soft { 0% { transform: scale(1); opacity: 0.8; } 100% { transform: scale(2.4); opacity: 0; } }
-.ping-soft { animation: ping-soft 1.4s cubic-bezier(0, 0, 0.2, 1) infinite; }
+/* Streaming text: a quiet static block cursor (no blinking). */
+.caret::after { content: ""; display: inline-block; width: 6px; height: 11px; margin-left: 3px; vertical-align: -1px; background: var(--fg3); }
 
-@keyframes caret { 50% { opacity: 0; } }
-.caret::after { content: "▍"; margin-left: 1px; color: var(--accent); animation: caret 1s steps(1) infinite; }
+/* Range inputs in the chrome */
+input[type="range"] { accent-color: var(--fg1); }
 
-.text-glow { text-shadow: 0 0 18px rgba(94, 234, 212, 0.45); }
-
-.maplibregl-ctrl-attrib { background: rgba(6, 10, 17, 0.6) !important; color: #475569 !important; font-size: 10px; }
-.maplibregl-ctrl-attrib a { color: #64748b !important; }
+.maplibregl-ctrl-attrib { background: rgba(14, 14, 13, 0.7) !important; color: var(--fg4) !important; font-size: 10px; }
+.maplibregl-ctrl-attrib a { color: var(--fg3) !important; }
 .maplibregl-ctrl-attrib-button { filter: invert(1) opacity(0.4); }
 
+/* (.maplibregl-map prefix: maplibre-gl.css loads after this file and would win a same-specificity tie.) */
 /* Below lg the bottom sheet's peek covers the map's bottom edge: lift the attribution above it. */
 @media (max-width: 1023.98px) {
-  .maplibregl-ctrl-bottom-right, .maplibregl-ctrl-bottom-left { bottom: calc(124px + var(--safe-bottom)); }
+  .maplibregl-map .maplibregl-ctrl-bottom-right, .maplibregl-map .maplibregl-ctrl-bottom-left { bottom: calc(124px + var(--safe-bottom)); }
+}
+@media (min-width: 1024px) {
+  .maplibregl-map .maplibregl-ctrl-bottom-right { right: var(--gs-re); transition: right 320ms cubic-bezier(0.22, 1, 0.36, 1); }
+  .maplibregl-ctrl-attrib.maplibregl-compact-show { max-width: calc(var(--gs-mw) - 24px); }
+}
+
+/* ── Resizable layout (src/lib/client/layout.ts writes the --gs-* vars) ─────── */
+:root {
+  --gs-lw: 360px; --gs-rw: 400px; --gs-le: 360px; --gs-re: 400px; --gs-mw: calc(100vw - 760px);
+  --gs-tlw: 360px; --gs-trw: 400px; --gs-log: 42%;
+}
+/* Elements that track the panels glide when a panel toggles, but follow the pointer 1:1 while dragging. */
+.gs-follow { transition: left 320ms cubic-bezier(0.22, 1, 0.36, 1), right 320ms cubic-bezier(0.22, 1, 0.36, 1), width 320ms cubic-bezier(0.22, 1, 0.36, 1), max-width 320ms cubic-bezier(0.22, 1, 0.36, 1); }
+html[data-gs-drag] .gs-follow { transition: none !important; }
+html[data-gs-drag], html[data-gs-drag] * { user-select: none !important; -webkit-user-select: none !important; }
+html[data-gs-drag="x"] * { cursor: col-resize !important; }
+html[data-gs-drag="y"] * { cursor: row-resize !important; }
+html[data-gs-sash="left"] [data-sash="left"] .gs-sash-line,
+html[data-gs-sash="right"] [data-sash="right"] .gs-sash-line,
+html[data-gs-sash="log"] [data-sash="log"] .gs-sash-line { opacity: 1; transition-delay: 0ms; }
+
+/* The visible map strip between the panels: hero, status bar and toasts center in it. */
+.gs-frame { position: absolute; inset: 0; pointer-events: none; container-type: inline-size; }
+@media (min-width: 1024px) {
+  .gs-frame { left: var(--gs-le); right: var(--gs-re); top: 48px; }
 }

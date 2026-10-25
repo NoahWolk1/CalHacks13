@@ -26,7 +26,7 @@ Convex is the source of truth for missions. With `NEXT_PUBLIC_CONVEX_URL` set:
 2. Every `RunEvent` is buffered and flushed to Convex every ~100 ms (`events.append`, batched, strictly increasing `seq`). Implemented in `src/lib/server/convexRun.ts`.
 3. The browser (`components/ConvexRunSync.tsx`) subscribes with `useQuery(api.events.since, {runId, afterSeq})` and pushes each new event through `dispatchRunEvent` (same path the SSE fallback uses: zustand store + map fleet sim).
 4. The URL becomes `/?run=<id>`. Opening it on another device (a judge's phone) loads the region/profile/question from the run row and streams the mission live; a finished mission replays with staggered events so the fleet animates. **Missions ▾** (top of the map) lists recent runs; **Share** copies the link.
-5. `POST /api/run/stop {runId}` recalls the agents (only the launching browser shows it as its own run).
+5. `POST /api/run/stop {runId}` recalls the agents: it sets `runs.stopRequested`, which the orchestrator polls, so it works across serverless instances. Only the launching browser shows the run as its own.
 
 | Table | Contents |
 |---|---|
@@ -34,7 +34,7 @@ Convex is the source of truth for missions. With `NEXT_PUBLIC_CONVEX_URL` set:
 | `events` | runId, seq, type, event (the raw `RunEvent`); index `by_run_seq` |
 | `findings` | denormalized per finding: runId, findingId, workerId, category, claim, confidence, severity, source, geometry; indexes `by_run`, `by_run_worker`, `by_run_category` |
 
-Functions live in `web/convex/`: `runs.create/finish/get/recent`, `events.append/since`, `findings.byRun({runId, workerId?, category?})`, `findings.countsByAgent`.
+Functions live in `web/convex/`: `runs.create/finish/get/recent/requestStop/stopRequested`, `events.append/since`, `findings.byRun({runId, workerId?, category?})`, `findings.countsByAgent`.
 
 **Running it (two terminals):**
 
@@ -46,6 +46,45 @@ cd web && npm run dev -- -p 3005  # terminal 2: restart after .env.local changes
 No account needed for a local backend: `CONVEX_AGENT_MODE=anonymous npx convex dev` runs one at `http://127.0.0.1:3210` and writes `.env.local`. The browser rewrites `127.0.0.1` to the page's host, so a phone on the same Wi-Fi can open `http://<laptop-ip>:3005/?run=<id>`. For a phone off the LAN, run `npx convex login` then `npx convex dev --configure` to get a cloud deployment.
 
 **Fallback:** no `NEXT_PUBLIC_CONVEX_URL` (or Convex unreachable when a run starts) → `/api/run` streams SSE exactly as before, and the mission bar is hidden.
+
+## Deploy to Vercel
+
+Already handled in code: the Convex-mode orchestrator runs inside `after()` (Vercel `waitUntil`) so it survives the `{runId}` response; `/api/run` has `maxDuration = 300` (the Hobby max with Fluid compute, which is on by default; Pro allows 800); `/api/run/stop` sets `runs.stopRequested` in Convex, which the orchestrator polls every 1.5 s, so a stop works even when it lands on another serverless instance; the HTTP disk cache moves to `/tmp/geoswarm-cache` when `VERCEL` is set. `vercel.json` sets the build command to `npm run build:vercel`. That runs `npx convex deploy --cmd 'npm run build'` when `CONVEX_DEPLOY_KEY` is set (deploys functions and injects `NEXT_PUBLIC_CONVEX_URL` into the build), and a plain `npm run build` otherwise, which gives SSE mode.
+
+**1. Convex production deployment** (one time):
+
+```bash
+cd web
+npx convex login                 # browser login
+npx convex dev --configure       # choose "create a new project" (cloud); writes .env.local with the dev URL
+npx convex deploy                # creates and pushes the *prod* deployment, prints https://<name>.convex.cloud
+```
+
+In the Convex dashboard, open the prod deployment, then Settings → General → **Generate Production Deploy Key**.
+
+**2. Vercel project:**
+
+```bash
+cd web
+npx vercel login
+npx vercel link                  # create the project; if linking from the repo root, set Root Directory = web
+npx vercel env add CONVEX_DEPLOY_KEY production     # paste the prod deploy key
+npx vercel env add ANTHROPIC_API_KEY production     # optional: heuristic mode without it
+npx vercel env add CENSUS_API_KEY production        # optional
+npx vercel env add CLAUDE_MODEL production          # optional
+npx vercel env add NEXT_PUBLIC_CONVEX_URL production  # optional safety net: the https://<name>.convex.cloud URL
+npx vercel --prod
+```
+
+For Git-based deploys, set Root Directory = `web` in Project Settings. Without `CONVEX_DEPLOY_KEY`, preview deploys build in SSE mode. Give them their own Convex preview deploy key if you want Convex there too. The browser's `127.0.0.1` → page-host rewrite only touches local URLs, so `*.convex.cloud` is used as-is.
+
+**3. Post-deploy checklist:**
+
+- `curl https://<app>.vercel.app/api/agents` returns the agent list, with `llm: true` if the key is set.
+- Run a mission in the UI. The URL should become `/?run=<id>`. Open it on a phone over cellular to confirm it streams live. Press Stop mid-run and check that the agents recall.
+- Warm the prod instance (its `/tmp` cache is per-instance, so this mainly checks that every gov API answers from Vercel):
+  `BASE_URL=https://<app>.vercel.app CONVEX_URL=https://<name>.convex.cloud npm run warm`
+- Hobby plan: runs are capped at 300 s. Function time and Convex free-tier limits are far above demo usage.
 
 ## Architecture
 

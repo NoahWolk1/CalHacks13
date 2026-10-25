@@ -1,15 +1,17 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { ShieldAlert, Store, Siren, Sparkles, MessageSquareText, Rocket, Square, X, Cpu, AlertTriangle } from "lucide-react";
+import { X } from "lucide-react";
 import { useStore, agentById } from "@/lib/client/store";
 import { startRun, stopRun } from "@/lib/client/runClient";
 import { regionAreaKm2 } from "@/lib/geo";
 import { reverseLabel } from "@/lib/client/geocode";
-import { SectionLabel, VehicleGlyph } from "./ui";
+import { motion } from "framer-motion";
+import { useLayout, dragPanel, GUTTER, LOG_MIN } from "@/lib/client/layout";
+import { VehicleGlyph } from "./ui";
+import Sash from "./Sash";
 import { DemoSpotChips } from "./PlaceSearch";
 
-const ICONS = { ShieldAlert, Store, Siren } as const;
 
 /** Reverse-geocode a freshly drawn region so the chip shows a real place name before the run. */
 export function useRegionLabel() {
@@ -30,11 +32,34 @@ export function useRegionLabel() {
 export const useCanRun = () => useStore((s) => !!s.region && (s.mode === "insights" || s.question.trim().length > 2));
 
 export default function CommandPanel() {
+  const open = useLayout((s) => s.leftOpen);
+  const dragging = useLayout((s) => s.dragging === "left");
+  const logHeight = useLayout((s) => s.logHeight);
+  const aside = useRef<HTMLElement>(null);
+  const moveLog = (y: number) => {
+    const r = aside.current?.getBoundingClientRect();
+    if (!r) return;
+    useLayout.getState().set({ logHeight: Math.round(Math.max(LOG_MIN, Math.min(r.height - 180, r.bottom - y))) });
+  };
   return (
-    <aside className="glass pointer-events-auto absolute bottom-4 left-4 top-[76px] z-20 flex w-[360px] flex-col overflow-hidden rounded-2xl max-lg:hidden">
-      <MissionControls className="p-4" />
-      <OrchestratorLog className="min-h-0 flex-1" />
-    </aside>
+    <motion.aside ref={aside} initial={false} inert={!open && !dragging} aria-hidden={!open}
+      animate={open ? { x: 0, opacity: 1, visibility: "visible" } : { x: "-100%", opacity: 0, ...(dragging ? {} : { transitionEnd: { visibility: "hidden" as const } }) }}
+      transition={{ type: "spring", stiffness: 420, damping: 40 }}
+      style={{ width: "var(--gs-lw)" }}
+      className="dock pointer-events-auto absolute bottom-0 left-0 top-12 z-20 flex flex-col border-r border-line max-lg:hidden">
+      <MissionControls className="scroll-thin min-h-0 flex-auto overflow-y-auto" />
+      <div className="relative shrink-0">
+        <Sash axis="y" id="log" label="Resize orchestrator log" onMove={moveLog}
+          onReset={() => useLayout.getState().set({ logHeight: null })} className="inset-x-0 -top-[3px]" />
+      </div>
+      {/* Default: the log takes ~42% but yields to the controls on short screens (Deploy stays visible).
+          Once the user drags the divider, their height wins and the controls scroll instead. */}
+      <OrchestratorLog style={logHeight == null
+        ? { flex: "0 1000 42%", minHeight: LOG_MIN }
+        : { flex: "none", height: `clamp(${LOG_MIN}px, var(--gs-log), calc(100% - 180px))` }} />
+      <Sash axis="x" id="left" label="Resize mission panel" className="inset-y-0 -right-[4px]"
+        onMove={(x) => dragPanel("left", x - GUTTER)} onReset={() => useLayout.getState().set({ leftWidth: null })} />
+    </motion.aside>
   );
 }
 
@@ -45,74 +70,83 @@ export function MissionControls({ className = "" }: { className?: string }) {
   const canRun = useCanRun();
 
   return (
-      <div className={`space-y-5 ${className}`}>
+      <div className={className}>
         {/* Orchestrator */}
-        <div>
-          <SectionLabel>Orchestrator</SectionLabel>
-          <div className="grid grid-cols-3 gap-1.5">
-            {profiles.map((p) => {
-              const Icon = ICONS[p.icon as keyof typeof ICONS] ?? Sparkles;
+        <div className="p-4">
+          <div className="mb-2 text-[12px] text-fg3">Orchestrator</div>
+          <div role="radiogroup" aria-label="Orchestrator" className="overflow-hidden rounded-md border border-line">
+            {profiles.map((p, i) => {
               const on = p.id === profileId;
+              const team = p.defaultAgents.map((id) => agentById(id)).filter(Boolean);
               return (
-                <button key={p.id} onClick={() => set({ profileId: p.id })} disabled={running}
-                  className={`group rounded-xl border px-2 py-2.5 text-left transition ${on ? "border-teal-300/50 bg-teal-300/10" : "border-white/5 bg-white/[0.02] hover:border-white/15"}`}>
-                  <Icon size={16} className={on ? "text-teal-300" : "text-slate-400 group-hover:text-slate-200"} />
-                  <div className={`mt-1.5 text-[11px] font-medium leading-tight ${on ? "text-white" : "text-slate-300"}`}>{p.name}</div>
+                <button key={p.id} role="radio" aria-checked={on} onClick={() => set({ profileId: p.id })} disabled={running}
+                  className={`flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition-colors disabled:cursor-not-allowed ${i ? "border-t border-line" : ""} ${on ? "bg-raised" : "hover:bg-raised/60"} ${running && !on ? "opacity-50" : ""}`}>
+                  <span className={`mt-[3px] h-3 w-3 shrink-0 rounded-full border ${on ? "border-[4px] border-fg1" : "border-line-strong"}`} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[13px] font-medium text-fg1">{p.name}</span>
+                    <span className="block text-[12px] leading-snug text-fg3">{p.tagline}</span>
+                    {team.length > 0 && (
+                      <span className="mt-1.5 flex gap-[3px]" aria-hidden>
+                        {team.map((a) => <span key={a!.id} title={a!.name} className="h-1.5 w-1.5 rounded-[1.5px]" style={{ background: a!.color }} />)}
+                      </span>
+                    )}
+                  </span>
                 </button>
               );
             })}
           </div>
-          {profile && <p className="mt-2 text-xs text-slate-400"><span className="text-slate-200">{profile.tagline}</span> · {profile.persona}</p>}
+          {profile?.persona && <p className="mt-2 text-[12px] leading-snug text-fg3">For {profile.persona.replace(/^./, (c) => c.toLowerCase())}</p>}
         </div>
 
         {/* Mode */}
-        <div>
-          <div className="relative grid grid-cols-2 rounded-xl border border-white/5 bg-black/30 p-1 text-xs">
-            <span className="absolute inset-y-1 w-[calc(50%-4px)] rounded-lg bg-white/[0.07] transition-all duration-300" style={{ left: mode === "ask" ? 4 : "50%" }} />
+        <div className="border-t border-line px-4">
+          <div role="tablist" className="-mx-4 flex gap-5 border-b border-line px-4">
             {(["ask", "insights"] as const).map((m) => (
-              <button key={m} onClick={() => set({ mode: m })} disabled={running} className={`relative z-10 flex items-center justify-center gap-1.5 py-1.5 ${mode === m ? "text-white" : "text-slate-400"}`}>
-                {m === "ask" ? <MessageSquareText size={13} /> : <Sparkles size={13} />}{m === "ask" ? "Ask" : "Insights"}
+              <button key={m} role="tab" aria-selected={mode === m} onClick={() => set({ mode: m })} disabled={running}
+                className={`relative h-9 text-[13px] transition-colors ${mode === m ? "text-fg1" : "text-fg3 hover:text-fg2"}`}>
+                {m === "ask" ? "Ask a question" : "Find insights"}
+                {mode === m && <span className="absolute inset-x-0 -bottom-px h-[1.5px] bg-fg1" />}
               </button>
             ))}
           </div>
           {mode === "ask" ? (
-            <div className="mt-2">
+            <div className="pt-3">
               <textarea value={question} onChange={(e) => set({ question: e.target.value })} disabled={running} rows={2}
                 onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && canRun) { e.preventDefault(); startRun(); } }}
-                placeholder="Ask anything about the selected area…"
-                className="w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white max-lg:text-base placeholder:text-slate-500 focus:border-teal-300/50 focus:outline-none" />
+                placeholder="Ask anything about the selected area"
+                className="w-full resize-none rounded-md border border-line bg-bg px-3 py-2 text-[13px] text-fg1 max-lg:text-base placeholder:text-fg4 focus:border-fg4 focus:outline-none focus-visible:outline-none" />
               <div className="mt-1.5 flex flex-wrap gap-1">
                 {profile?.sampleQuestions.map((q) => (
-                  <button key={q} onClick={() => set({ question: q })} className="rounded-full border border-white/10 px-2 py-0.5 text-[11px] text-slate-400 hover:border-teal-300/40 hover:text-teal-200">{q}</button>
+                  <button key={q} onClick={() => set({ question: q })} disabled={running}
+                    className="rounded-[4px] border border-line px-2 py-0.5 text-left text-[12px] text-fg3 transition-colors hover:border-line-strong hover:text-fg1">{q}</button>
                 ))}
               </div>
             </div>
           ) : (
-            <p className="mt-2 text-xs text-slate-400">No question needed. The full survey team sweeps the area, and the orchestrator hunts for findings that <span className="text-slate-200">combine</span> into risks, opportunities and conflicts.</p>
+            <p className="pt-3 text-[12.5px] leading-relaxed text-fg2">No question needed. The full survey team sweeps the area and the orchestrator looks for findings that <span className="text-fg1">combine</span> into risks, opportunities and conflicts.</p>
           )}
         </div>
 
         {/* Region + launch */}
-        <div className="space-y-2">
+        <div className="space-y-2.5 p-4">
           {region ? (
-            <div className="flex items-center gap-2 rounded-xl border border-teal-300/20 bg-teal-300/[0.05] px-3 py-2 text-xs">
-              <span className="h-2 w-2 rounded-sm bg-teal-300 shadow-[0_0_10px] shadow-teal-300" />
+            <div className="flex items-center gap-2.5 rounded-md border border-line bg-bg px-3 py-2">
+              <span className="h-2.5 w-2.5 shrink-0 rounded-[2px] border-[1.5px] border-accent bg-accent/15" />
               <div className="min-w-0 flex-1">
-                <div className="truncate text-slate-100">{region.label ?? "Selected area"}</div>
-                <div className="font-mono text-[10px] text-slate-500">{region.kind.toUpperCase()} · {regionAreaKm2(region).toFixed(2)} km²</div>
+                <div className="truncate text-[13px] font-medium text-fg1">{region.label ?? "Selected area"}</div>
+                <div className="num text-[11.5px] text-fg3">{region.kind === "box" ? "Box" : region.kind === "pin" ? "Radius" : "Polygon"} · {regionAreaKm2(region).toFixed(2)} km²</div>
               </div>
-              {!running && <button onClick={() => set({ region: null })} className="text-slate-500 hover:text-white"><X size={14} /></button>}
+              {!running && <button onClick={() => set({ region: null })} aria-label="Clear area" className="rounded-[4px] p-1 text-fg3 transition-colors hover:bg-raised hover:text-fg1"><X size={14} strokeWidth={1.5} /></button>}
             </div>
           ) : (
-            <div className="rounded-xl border border-dashed border-white/10 px-3 py-2.5 text-xs text-slate-500">
-              Draw a box, polygon or pin on the map, or jump to a demo spot:
+            <div className="rounded-md border border-dashed border-line-strong px-3 py-2.5 text-[12.5px] text-fg3">
+              Draw a box, polygon or pin on the map, or start from a demo area:
               <DemoSpotChips />
             </div>
           )}
           <button onClick={() => (running ? stopRun() : startRun())} disabled={!running && !canRun}
-            className={`group relative flex w-full items-center justify-center gap-2 overflow-hidden rounded-xl py-2.5 text-sm font-semibold transition ${running ? "bg-rose-500/15 text-rose-200 ring-1 ring-rose-400/30 hover:bg-rose-500/25" : "bg-gradient-to-r from-teal-300 to-sky-400 text-slate-950 shadow-[0_0_30px_-6px] shadow-teal-300/70 hover:brightness-110 disabled:from-slate-700 disabled:to-slate-700 disabled:text-slate-400 disabled:shadow-none"}`}>
-            {running ? <><Square size={14} /> Recall agents</> : <><Rocket size={15} /> Deploy agents</>}
-            {!running && canRun && <span className="shimmer absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/40 to-transparent" />}
+            className={`flex h-9 w-full items-center justify-center gap-2 rounded-md text-[13px] font-medium transition-colors ${running ? "border border-line-strong text-fg1 hover:bg-raised" : "bg-fg1 text-bg hover:bg-white disabled:bg-raised disabled:text-fg4"}`}>
+            {running ? <><span className="h-2 w-2 rounded-[1px] bg-accent" /> Recall agents</> : <>Deploy agents</>}
           </button>
         </div>
       </div>
@@ -120,34 +154,34 @@ export function MissionControls({ className = "" }: { className?: string }) {
 }
 
 /** Streaming orchestrator thoughts + dispatch plan. */
-export function OrchestratorLog({ className = "" }: { className?: string }) {
+export function OrchestratorLog({ className = "", style }: { className?: string; style?: React.CSSProperties }) {
   const { running, thoughts, plan } = useStore();
   const logRef = useRef<HTMLDivElement>(null);
   useEffect(() => { logRef.current?.scrollTo({ top: 1e6, behavior: "smooth" }); }, [thoughts.length, plan.length]);
+  const t0 = thoughts[0]?.at;
   return (
-      <div className={`flex flex-col border-t border-white/5 bg-black/20 ${className}`}>
-        <div className="flex items-center gap-2 px-4 pb-2 pt-3">
-          <Cpu size={12} className="text-teal-300" />
-          <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-slate-500">Orchestrator log</span>
-          {running && <span className="ml-auto h-1.5 w-1.5 animate-pulse rounded-full bg-teal-300" />}
+      <div className={`flex flex-col border-t border-line ${className}`} style={style}>
+        <div className="flex items-center gap-2 px-4 pb-2 pt-3 text-[12px] text-fg3">
+          <span>Orchestrator log</span>
+          {plan.length > 0 && <span className="num ml-auto text-[11.5px]">{plan.length} dispatched</span>}
         </div>
-        <div ref={logRef} className="scroll-thin min-h-0 flex-1 space-y-2 overflow-y-auto px-4 pb-4 font-mono text-[11px] leading-relaxed">
-          {!thoughts.length && <div className="text-slate-600">Waiting for a mission…</div>}
+        <div ref={logRef} className="scroll-thin min-h-0 flex-1 space-y-1 overflow-y-auto px-4 pb-4 text-[12.5px] leading-relaxed">
+          {!thoughts.length && <div className="text-fg4">Waiting for a mission.</div>}
           {thoughts.map((t, i) => (
-            <div key={i} className={`flex gap-2 ${t.kind === "gap" ? "text-amber-300" : "text-slate-300"}`}>
-              <span className="select-none text-teal-400/70">{t.kind === "gap" ? <AlertTriangle size={11} className="mt-0.5" /> : "›"}</span>
+            <div key={i} className={`grid grid-cols-[38px_1fr] gap-2 ${t.kind === "gap" ? "text-[#d9a46b]" : "text-fg2"}`}>
+              <span className="num select-none pt-px text-[11px] text-fg4">{t.at != null && t0 != null ? fmtT(t.at - t0) : String(i + 1).padStart(2, "0")}</span>
               <span className={i === thoughts.length - 1 && running ? "caret" : ""}>{t.text}</span>
             </div>
           ))}
           {plan.length > 0 && (
-            <div className="space-y-1 rounded-lg border border-white/5 bg-white/[0.02] p-2">
-              <div className="text-[10px] uppercase tracking-wider text-slate-500">Dispatch plan</div>
+            <div className="mt-2 border-t border-line pt-2">
               {plan.map((s) => {
                 const a = agentById(s.agentId);
                 return a ? (
-                  <div key={s.agentId} className="flex items-start gap-2">
-                    <VehicleGlyph kind={a.vehicle} color={a.color} size={13} />
-                    <span><span style={{ color: a.color }}>{a.name}</span> <span className="text-slate-500">· {s.reason}</span></span>
+                  <div key={s.agentId} className="grid grid-cols-[16px_minmax(0,auto)_1fr] items-baseline gap-2 py-[3px]">
+                    <span className="translate-y-[2px]"><VehicleGlyph kind={a.vehicle} color={a.color} size={13} /></span>
+                    <span className="whitespace-nowrap text-fg1">{a.name}</span>
+                    <span className="truncate text-fg3" title={s.reason}>{s.reason}</span>
                   </div>
                 ) : null;
               })}
@@ -156,4 +190,9 @@ export function OrchestratorLog({ className = "" }: { className?: string }) {
         </div>
       </div>
   );
+}
+
+function fmtT(ms: number) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 }

@@ -14,7 +14,7 @@ export const stormwaterWorker: Worker = {
   name: "Storm Scout",
   description: "Maps San Francisco's 100-year storm flood risk zone (inland stormwater flooding FEMA misses) plus buried historical creeks and filled-in lagoons/marshes. San Francisco only.",
   vehicle: "drone",
-  color: "#2dd4bf",
+  color: "#62a89c",
   tools: ["http_get"],
   dataSources: ["SFPUC 100-Year Storm Flood Risk Map", "SFPUC historical creeks & water bodies"],
   coverage: "San Francisco",

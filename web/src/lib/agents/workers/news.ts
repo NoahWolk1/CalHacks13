@@ -8,7 +8,7 @@ export const newsWorker: Worker = {
   name: "News Uplink",
   description: "Searches recent local news coverage about the area (development fights, closures, crime, disasters, openings).",
   vehicle: "satellite",
-  color: "#e879f9",
+  color: "#a28be6",
   tools: ["search"],
   dataSources: ["Google News RSS"],
   coverage: "Global",
@@ -23,10 +23,11 @@ export const newsWorker: Worker = {
     const items = [new XMLParser().parse(xml)?.rss?.channel?.item ?? []].flat() as { title: string; link: string; pubDate: string; source?: string | { "#text": string } }[];
     log(`${items.length} articles`);
     for (const it of items.slice(0, 8)) {
+      const when = new Date(it.pubDate);
       emit({
-        claim: it.title,
+        claim: String(it.title),
         geometry: { type: "Point", coordinates: task.region.center },
-        source_url: it.link, source_type: "news_article", observed_at: new Date(it.pubDate).toISOString().slice(0, 10),
+        source_url: it.link, source_type: "news_article", observed_at: Number.isNaN(when.getTime()) ? undefined : when.toISOString().slice(0, 10),
         confidence: 0.6, category: "news", severity: 0.3, props: { areaLevel: true },
       });
     }

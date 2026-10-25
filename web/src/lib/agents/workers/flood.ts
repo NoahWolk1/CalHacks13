@@ -21,7 +21,7 @@ export const floodWorker: Worker = {
   name: "Flood Recon",
   description: "Maps official FEMA flood hazard zones (100-year floodplain, coastal surge zones) intersecting the area.",
   vehicle: "drone",
-  color: "#38bdf8",
+  color: "#6f9de0",
   tools: ["http_get"],
   dataSources: ["FEMA National Flood Hazard Layer"],
   coverage: "US",
