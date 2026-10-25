@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Search, MapPin, Loader2, X } from "lucide-react";
+import { Search, MapPin, Loader2, X, LocateFixed } from "lucide-react";
 import { useStore } from "@/lib/client/store";
 import { flyTo, fitBox } from "@/lib/client/camera";
 import { searchPlaces, type Place } from "@/lib/client/geocode";
@@ -41,6 +41,8 @@ export default function PlaceSearch({ variant = "desktop", onClose }: { variant?
   const [results, setResults] = useState<Place[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [active, setActive] = useState(0);
+  const [locating, setLocating] = useState(false);
+  const [locErr, setLocErr] = useState<string | null>(null);
   const wrap = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
 
@@ -82,6 +84,17 @@ export default function PlaceSearch({ variant = "desktop", onClose }: { variant?
   };
   const showResults = q.trim().length >= 3;
 
+  // Browser geolocation: fly to the user's position at the same zoom as a search result.
+  const locate = () => {
+    if (!navigator.geolocation) { setLocErr("Location isn't available in this browser"); return; }
+    setLocating(true); setLocErr(null);
+    navigator.geolocation.getCurrentPosition(
+      ({ coords }) => { setLocating(false); go({ name: "Current location", detail: "", center: [coords.longitude, coords.latitude] }); },
+      (e) => { setLocating(false); setLocErr(e.code === e.PERMISSION_DENIED ? "Location permission denied" : "Couldn't get your location"); },
+      { enableHighAccuracy: true, timeout: 10_000, maximumAge: 60_000 },
+    );
+  };
+
   return (
     <div ref={wrap} className={`pointer-events-auto relative h-full ${mobile ? "flex-1" : ""}`}>
       <div className={`flex h-full ${mobile ? "glass w-full rounded-lg" : popover ? "w-full rounded-md border bg-bg" : "w-[260px] rounded-md border bg-bg"} items-center gap-2 px-2.5 transition-colors ${open ? "border-fg4" : "border-line"}`}>
@@ -108,6 +121,14 @@ export default function PlaceSearch({ variant = "desktop", onClose }: { variant?
         {open && (
           <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.15 }}
             className={`glass absolute right-0 top-full z-40 mt-2 overflow-hidden rounded-lg p-1 ${mobile ? "left-0" : "w-[320px]"}`}>
+            <button onClick={locate} disabled={locating}
+              className={`flex w-full items-center gap-2 rounded-[4px] border-b border-line px-2 ${mobile ? "py-2.5" : "py-1.5"} text-left hover:bg-raised disabled:opacity-60`}>
+              {locating ? <Loader2 size={13} strokeWidth={1.5} className="shrink-0 animate-spin text-fg3" /> : <LocateFixed size={13} strokeWidth={1.5} className="shrink-0 text-fg3" />}
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[13px] text-fg1">{locating ? "Finding you…" : "Use current location"}</span>
+                {locErr && <span className="block truncate text-[12px] text-fg3">{locErr}</span>}
+              </span>
+            </button>
             {showResults ? (
               <>
                 <div className="px-2 pb-1 pt-1.5 text-[12px] text-fg3">Places</div>
