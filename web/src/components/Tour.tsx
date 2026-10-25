@@ -17,26 +17,26 @@ type Step = {
   waitFor?: "region" | "run";
   /** Put the page in the state this step talks about (e.g. start on Pan, select Ask). */
   onEnter?: () => void;
-  title: string;
   body: string;
 };
 
 export const TOUR: Step[] = [
   { target: "tool-box", side: "below", waitFor: "region", onEnter: () => useStore.getState().set({ tool: "pan" }),
-    title: "Pick an area", body: "Drag over any neighborhood on the map." },
+    body: "Drag over any neighborhood on the map." },
   { target: "mode-ask", side: "left", onEnter: () => useStore.getState().set({ mode: "ask" }),
-    title: "Ask a question", body: "Ask a question and we'll find the right agents to answer it!" },
-  { target: "mode-insights", side: "left", title: "Or find insights",
+    body: "Ask a question and we'll find the right agents to answer it!" },
+  { target: "mode-insights", side: "left",
     body: "Don't have a specific question? Allow our agents to perform a general analysis." },
-  { target: "focus", side: "left", title: "Research focus",
+  { target: "focus", side: "left",
     body: "Pick the lens, like Site Risk Analyst or Storefront Scout. It decides which team of agents goes out." },
-  { target: "run", side: "left", waitFor: "run", title: "Deploy the swarm",
+  { target: "run", side: "left", waitFor: "run",
     body: "Start the research. Answers and insights will appear here." },
-  { target: "agents", side: "below", title: "Agents",
+  { target: "agents", side: "below",
     body: "Each agent covers one kind of data, like permits, flood zones or local news. Browse them here, or describe a new one and have Claude build it." },
 ];
 
 const DONE_KEY = "gs-tour-done";
+const START_DELAY = 3000;
 const CARD_W = 300;
 const GAP = 12;
 const EDGE = 12;
@@ -96,12 +96,12 @@ export default function Tour() {
   const card = useRef<HTMLDivElement>(null);
   const [cardH, setCardH] = useState(160);
 
-  // First visit: start once the page has settled.
+  // First visit: let the Pan hint show for a moment, then start.
   useEffect(() => {
     let seen = false;
     try { seen = localStorage.getItem(DONE_KEY) === "1"; } catch { /* private mode: show it */ }
     if (seen) return;
-    const t = setTimeout(() => { if (useStore.getState().tour == null) go(0); }, 1200);
+    const t = setTimeout(() => { if (useStore.getState().tour == null) go(0); }, START_DELAY);
     return () => clearTimeout(t);
   }, []);
 
@@ -141,14 +141,13 @@ export default function Tour() {
   return (
     <div className="pointer-events-none fixed inset-0 z-[60]">
       {target && <Ring box={target} />}
-      <div ref={card} role="dialog" aria-label={`Tour: ${cur.title}`}
+      <div ref={card} role="dialog" aria-label={`Tour step ${step! + 1} of ${TOUR.length}`}
         className="pointer-events-auto fixed rounded-lg border border-line-strong bg-panel p-4 shadow-[0_12px_40px_rgba(0,0,0,0.5)] transition-[top,left] duration-200"
         style={{ top: pos.top, left: pos.left, width: CARD_W }}>
         {arrow && <span aria-hidden className="absolute h-2.5 w-2.5 rotate-45 border-line-strong bg-panel"
           style={{ top: arrow.top, left: arrow.left, borderWidth: cur.side === "below" ? "1px 0 0 1px" : "1px 1px 0 0" }} />}
         <div className="num text-[11.5px] text-fg3">{step! + 1} of {TOUR.length}</div>
-        <div className="mt-1 text-[14px] font-medium tracking-[-0.005em] text-fg1">{cur.title}</div>
-        <p className="mt-1 text-[12.5px] leading-relaxed text-fg2">{cur.body}</p>
+        <p className="mt-1 text-[13px] leading-relaxed text-fg1">{cur.body}</p>
         <div className="mt-3 flex items-center gap-1.5">
           <button onClick={finish} className="mr-auto text-[12px] text-fg3 underline-offset-2 transition-colors hover:text-fg1 hover:underline">
             {last ? "Close" : "Skip tour"}
