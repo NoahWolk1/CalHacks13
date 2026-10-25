@@ -1,5 +1,5 @@
 "use client";
-import type { RunEvent } from "@/lib/types";
+import type { AgentConfig, RunEvent } from "@/lib/types";
 import { useStore } from "./store";
 
 /**
@@ -56,6 +56,45 @@ export function setRunUrl(runId: string | null) {
 export async function loadCatalog() {
   const r = await fetch("/api/agents").then((r) => r.json());
   useStore.getState().set({ agents: r.agents, profiles: r.profiles, llm: r.llm, live: (r.live as LiveConfig | undefined) ?? { backend: "sse" } });
+}
+
+async function call<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, init);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error ?? `${res.status} ${res.statusText}`);
+  return body as T;
+}
+const json = (body: unknown): RequestInit => ({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+
+/** Replace (or add) an agent config in the catalog. */
+function upsertAgent(agent: AgentConfig) {
+  const { agents, set } = useStore.getState();
+  set({ agents: agents.some((a) => a.id === agent.id) ? agents.map((a) => (a.id === agent.id ? agent : a)) : [...agents, agent] });
+}
+
+/** Prompt → a draft config to preview, or the existing agent that already covers it. */
+export function draftAgent(prompt: string) {
+  return call<{ kind: "new" | "reuse"; agent: AgentConfig }>("/api/agents/draft", json({ prompt }));
+}
+
+export async function saveAgent(agent: AgentConfig) {
+  const r = await call<{ agent: AgentConfig }>("/api/agents", json({ agent }));
+  upsertAgent(r.agent);
+  return r.agent;
+}
+
+export async function deleteAgent(id: string) {
+  await call(`/api/agents/${encodeURIComponent(id)}`, { method: "DELETE" });
+  const { agents, set } = useStore.getState();
+  set({ agents: agents.filter((a) => a.id !== id) });
+}
+
+/** After a run: keep a spawned agent (saved to the library) or discard it. */
+export async function decideSpawned(id: string, keep: boolean) {
+  if (keep) upsertAgent((await call<{ agent: AgentConfig }>(`/api/agents/${encodeURIComponent(id)}/keep`, { method: "POST" })).agent);
+  else await call(`/api/agents/${encodeURIComponent(id)}`, { method: "DELETE" });
+  const { agentState, set } = useStore.getState();
+  if (agentState[id]) set({ agentState: { ...agentState, [id]: { ...agentState[id], decision: keep ? "kept" : "discarded" } } });
 }
 
 export function stopRun() {

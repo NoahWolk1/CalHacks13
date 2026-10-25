@@ -2,14 +2,15 @@
 
 Read this first, then open only the docs your task needs. Each doc starts with its source, capture date, and a one-line summary.
 
-**Now:** Saturday Oct 24, 2026. **Devpost deadline: Sunday 9:00 AM PDT** (aim for 8:45). Priorities: (1) working live demo, (2) submitted Devpost, (3) sponsor-track fit, (4) everything else.
+**Now:** Sunday Oct 25, 2026. **Devpost deadline: Sunday 9:00 AM PDT** (aim for 8:45). Priorities: (1) working live demo, (2) submitted Devpost, (3) sponsor-track fit, (4) everything else.
 
 ## Project: what we're building
 
 | Doc | Read when |
 |---|---|
-| [project/overview.md](project/overview.md) | You need the idea, user flow, candidate users, demo moment, or build order |
-| [project/architecture.md](project/architecture.md) | You're writing agent/orchestrator code, the finding schema, or the Agent Hub |
+| [project/overview.md](project/overview.md) | You need the idea, user flow, orchestrators, demo moment, or build order and status |
+| [project/architecture.md](project/architecture.md) | You're writing agent/orchestrator code, the finding schema, or the Agent Hub; also what's built vs planned |
+| [../web/README.md](../web/README.md) | You're running or changing the app: setup, env vars, Convex, deploy, file map, RunEvent protocol, API routes, adding a worker |
 | [project/decisions.md](project/decisions.md) | You need to know what's decided vs open, or you just decided something (log it) |
 
 ## Tracks: what sponsors want
@@ -20,6 +21,7 @@ Read this first, then open only the docs your task needs. Each doc starts with i
 | [sources/hive-prizes.md](sources/hive-prizes.md) | You need verbatim text for any track, including ones not on the shortlist |
 | [sources/fetch-ai-hackpack.md](sources/fetch-ai-hackpack.md) | Working on Fetch.ai integration or its submission |
 | [sources/figma-track.md](sources/figma-track.md) | Working on the Figma stage log / slides |
+| [sources/coinbase-x402.md](sources/coinbase-x402.md) | Working on Coinbase x402 / payment agents or its submission |
 | [sources/hive-starter-packs.md](sources/hive-starter-packs.md) | You need a sponsor's starter pack link (credits, API keys, docs) |
 
 ## Submission: Devpost, pitch, track claims
@@ -41,4 +43,4 @@ Read this first, then open only the docs your task needs. Each doc starts with i
 
 - `sources/hive-*.md` are generated. Re-pull with `python scripts/pull_hive.py`; don't hand-edit them.
 - Curated docs (`project/`, `tracks/`, `event/`, `submission/`) are hand-maintained. If a re-pull changes a track's rules, update `tracks/shortlist.md`.
-- Originals not stored in the repo: the 13.0 Hacker Guide PDF and the Figma track PDF (both transcribed into the docs above).
+- Originals not stored in the repo: the 13.0 Hacker Guide PDF, the Figma track PDF and the Coinbase track PDF (all transcribed into the docs above).
