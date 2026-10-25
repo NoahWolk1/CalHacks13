@@ -97,8 +97,8 @@ npx vercel env add CONVEX_DEPLOY_KEY production  # optional: keeps the Convex fa
  ─────────────────────                          ─────────────────────────────────────────────
  MapView: MapLibre GL + deck.gl                 GET  /api/agents → worker configs + profiles + llm flag + live backend
    box / polygon / pin → Region (lib/geo.ts)
- CommandPanel: profile, mode, question   ──POST /api/run (RunRequest)──►  runOrchestrator (lib/orchestrator/run.ts)
- RightPanel: agents, insights, answer    ◄──── SSE stream of RunEvents ───   0. reverse-geocode region (Nominatim)
+ ResearchForm: profile, mode, question   ──POST /api/run (RunRequest)──►  runOrchestrator (lib/orchestrator/run.ts)
+ RightPanel: answer, insights, findings  ◄──── SSE stream of RunEvents ───   0. reverse-geocode region (Nominatim)
  lib/client/sim.ts: vehicle motion                                            1. plan     (Claude or keyword heuristic)
  lib/client/store.ts: zustand state                                              └ gaps → factory.requestSpawn()
                                                                               2. dispatch all planned workers in parallel
@@ -182,7 +182,7 @@ Generated agents are **configs, not code**: an `AgentConfig` with a `prompt` (it
 
 **When the orchestrator spawns** (Ask mode with an API key only): for each planner `gap` (dispatched alongside the planned workers), and once after the first sweep if `llmGapCheck` finds a remaining gap. Either may resolve to an existing agent instead of a new one.
 
-**After a run**, spawned agents show **Keep in library / Discard** in the agent panel. The Hub's create card drafts a config from a prompt, lets you edit the name and brief, then saves it; custom cards have a delete button.
+**After a run**, the results show a **"N new agents to review"** button; behind it, spawned agents show **Keep in library / Discard**. The Hub's create card drafts a config from a prompt, lets you edit the name and brief, then saves it; custom cards have a delete button.
 
 | Route | Does |
 |---|---|

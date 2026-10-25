@@ -54,7 +54,7 @@ export function useCinematic() {
 
 export default function StatusBar() {
   const region = useStore((s) => s.region);
-  const { running, done, elapsed, active, agents, shown, total, sources, insights } = useMissionStats();
+  const { running, done, elapsed, shown, total, sources, insights } = useMissionStats();
   const [cinematic, toggleCine] = useCinematic();
 
   if (!region) return null;
@@ -68,7 +68,6 @@ export default function StatusBar() {
         {running ? "Live" : done ? "Complete" : "Idle"}
       </div>
       <Stat label="" value={fmt(elapsed)} />
-      <Stat label="agents" value={active} total={agents} className="@max-[460px]:hidden" />
       <Stat label="findings" value={shown} total={total} />
       <Stat label="sources" value={sources} className="@max-[720px]:hidden" />
       <Stat label="insights" value={insights} className="@max-[630px]:hidden" />

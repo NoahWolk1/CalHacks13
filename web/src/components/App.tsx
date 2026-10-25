@@ -5,12 +5,12 @@ import { useEffect } from "react";
 import { usePathname } from "next/navigation";
 import { useStore } from "@/lib/client/store";
 import { loadCatalog } from "@/lib/client/runClient";
-import CommandPanel, { useRegionLabel } from "./CommandPanel";
+import { useRegionLabel } from "./ResearchForm";
 import MobileSheet, { SHEET_PEEK } from "./MobileSheet";
 import { useIsDesktop } from "@/lib/client/useMedia";
 import { useLayoutSync } from "@/lib/client/layout";
 import RightPanel from "./RightPanel";
-import { LeftRail, RightRail } from "./Rail";
+import { RightRail } from "./Rail";
 import TopBar from "./TopBar";
 import StatusBar from "./StatusBar";
 import ConvexClientProvider from "./ConvexClientProvider";
@@ -38,14 +38,14 @@ export default function App({ children }: { children?: React.ReactNode }) {
     <main inert={covered} aria-hidden={covered} className="relative h-screen w-screen overflow-hidden bg-bg max-lg:h-[100dvh]">
       <MapView />
       <TopBar />
-      {desktop ? <><LeftRail /><RightRail /><CommandPanel /><RightPanel /></> : <MobileSheet />}
+      {desktop ? <><RightRail /><RightPanel /></> : <MobileSheet />}
       {/* Visible map strip between the panels (full screen on mobile): overlays center here. */}
       <div className="gs-frame gs-follow">
       {desktop && <StatusBar />}
       {!region && (
         <div className="pointer-events-none absolute left-1/2 top-1/2 z-10 w-max max-w-[calc(100%-32px)] -translate-x-1/2 -translate-y-1/2 text-center max-lg:w-[calc(100%-32px)] max-lg:rounded-xl max-lg:bg-[radial-gradient(closest-side,rgba(14,14,13,0.9),transparent)] max-lg:py-10">
           <div className="text-[22px] font-semibold tracking-[-0.015em] text-fg1 [text-shadow:0_1px_12px_var(--bg)] max-lg:text-xl">{desktop ? "Drag a box over any neighborhood" : "Pick any neighborhood"}</div>
-          <div className="mt-1 text-[13.5px] text-fg2 [text-shadow:0_1px_8px_var(--bg)]">{desktop ? "Then deploy the swarm to research it." : "Tap a demo area, or draw your own."}</div>
+          <div className="mt-1 text-[13.5px] text-fg2 [text-shadow:0_1px_8px_var(--bg)]">{desktop ? "Then ask about it in the panel." : "Tap a demo area, or draw your own."}</div>
           {!desktop && <DemoSpotChips className="pointer-events-auto mx-auto mt-4 max-w-[320px] justify-center gap-1.5" />}
         </div>
       )}
