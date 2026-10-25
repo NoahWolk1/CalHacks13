@@ -46,7 +46,9 @@ export default function MobileSheet() {
   };
   const height = Math.max(heights.peek, Math.min(heights.full, heights[snap] - drag));
 
-  useEffect(() => { setSheetInset(SHEET_PEEK + safe); }, [safe]);
+  // The camera frames the region above the settled sheet (peek or half); a full sheet covers the map.
+  const settled = snap === "full" ? null : heights[snap];
+  useEffect(() => { if (!drag) setSheetInset(settled); }, [settled, drag]);
   // Overlays above the sheet (finding inspector) size themselves against its live height.
   useEffect(() => { document.documentElement.style.setProperty("--gs-sheet", `${height}px`); }, [height]);
 

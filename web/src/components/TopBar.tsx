@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Hand, BoxSelect, Pentagon, MapPin, Users, Search, PanelRightClose, PanelRightOpen, CircleHelp } from "lucide-react";
+import { Hand, BoxSelect, Pentagon, MapPin, Users, Search, PanelRightClose, PanelRightOpen, CircleHelp, Telescope } from "lucide-react";
 import { useLayout } from "@/lib/client/layout";
 import { useStore, type Tool } from "@/lib/client/store";
 import { useIsDesktop } from "@/lib/client/useMedia";
@@ -139,6 +139,7 @@ function DesktopTopBar() {
           <span className={`h-1.5 w-1.5 rounded-full ${llm ? "bg-ok" : "bg-[#d2c162]"}`} />
           {llm ? "Claude online" : "Heuristic mode"}
         </span>
+        <Link href="/sky" title="Research a region of space" className="shrink-0 text-[12.5px] text-fg3 transition-colors hover:text-fg1">Sky</Link>
         <button onClick={startTour} title="Take the tour" aria-label="Take the tour"
           className="grid h-7 w-7 shrink-0 place-items-center rounded-[4px] text-fg3 transition-colors hover:bg-raised hover:text-fg1">
           <CircleHelp size={15} strokeWidth={1.5} />
@@ -174,6 +175,7 @@ function MobileTopBar() {
             </div>
             <div className="flex-1" />
             <button onClick={() => setSearching(true)} className={btn} aria-label="Search a place"><Search size={17} strokeWidth={1.5} /></button>
+            <Link href="/sky" className={btn} aria-label="Sky research"><Telescope size={17} strokeWidth={1.5} /></Link>
             <Link href="/agents" className={`${btn} relative`} aria-label="Agents">
               <Users size={17} strokeWidth={1.5} />
               <span className="num absolute -right-1 -top-1 min-w-[18px] rounded-[4px] border border-line-strong bg-panel px-1 text-center text-[10px] leading-[16px] text-fg2">{agents.length}</span>

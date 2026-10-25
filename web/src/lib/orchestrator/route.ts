@@ -4,7 +4,10 @@
 import { PROFILES } from "./profiles";
 
 export const AUTO = "auto";
+/** Insights mode with no question: the default survey team. */
 export const DEFAULT_PROFILE = "site-risk";
+/** A question no specialist's keywords match: the general Area Researcher. */
+export const DEFAULT_ASK_PROFILE = "general";
 
 export const isProfileId = (id?: string | null): id is string => !!id && PROFILES.some((p) => p.id === id);
 /** A known profile id, or "auto" (omitted, "auto" or unknown ids all mean auto). */
@@ -26,7 +29,7 @@ const ROUTES: { profileId: string; re: RegExp }[] = [
   },
 ];
 
-/** Keyword router: the profile whose keywords the question hits most. Ties go to the first listed; no match → Site Risk Analyst. */
+/** Keyword router: the profile whose keywords the question hits most. Ties go to the first listed; no match → Area Researcher. */
 export function routeByKeywords(question: string): { profileId: string; reason: string } {
   let best: { profileId: string; hits: string[] } | null = null;
   for (const { profileId, re } of ROUTES) {
@@ -34,6 +37,6 @@ export function routeByKeywords(question: string): { profileId: string; reason: 
     // Strictly more hits to win, so on a tie the more specific profile listed first keeps it.
     if (hits.length && (!best || hits.length > best.hits.length)) best = { profileId, hits };
   }
-  if (!best) return { profileId: DEFAULT_PROFILE, reason: "No specialist keywords; defaulting to site risk" };
+  if (!best) return { profileId: DEFAULT_ASK_PROFILE, reason: "No specialist fits; general area research" };
   return { profileId: best.profileId, reason: `Question mentions ${best.hits.slice(0, 2).map((h) => `"${h}"`).join(" and ")}` };
 }

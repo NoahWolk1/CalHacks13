@@ -7,12 +7,14 @@
 //
 // Generated agents can only use the fixed tool primitives of ./runtime.ts (README §3c).
 
+import type Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
 import type { AgentConfig, ToolPrimitive, Worker } from "@/lib/types";
 import { llm, MODEL, FALLBACK } from "@/lib/llm";
 import { registry as defaultRegistry, type Registry } from "./registry";
 import { HEX_COLOR, LIMITS, VEHICLES } from "./library";
+import { hasKeys } from "@/lib/sponsors/keys";
 
 export interface AgentSpec {
   /** Plain-English description, e.g. "scrape the listings at <url> and pin each address". */
@@ -65,50 +67,107 @@ export const SPAWN_LIMITS = { maxDepth: 2, maxPerRun: 4 };
 
 const PALETTE = ["#e879f9", "#c084fc", "#fb923c", "#facc15", "#a3e635", "#2dd4bf", "#60a5fa", "#f87171"];
 
-const GeneratedSchema = z.object({
-  decision: z.enum(["reuse", "create"]),
+// Wire schema for the structured-output call. Deliberately loose (plain strings, no enums): with
+// decision "reuse" the model fills the unused fields with "" and an enum there fails the whole parse
+// (eval 2026-10-25: austin-people lost both spawns to `vehicle: ""`). normalizeGenerated() coerces.
+const WireSchema = z.object({
+  decision: z.string(),
   reuse_id: z.string(),
   name: z.string(),
   description: z.string(),
-  tools: z.array(z.enum(GEN_TOOLS)),
+  tools: z.array(z.string()),
   data_sources: z.array(z.string()),
   coverage: z.string(),
-  vehicle: z.enum(VEHICLES),
+  vehicle: z.string(),
   color: z.string(),
   prompt: z.string(),
 });
-export type Generated = z.infer<typeof GeneratedSchema>;
+type Wire = z.infer<typeof WireSchema>;
+
+export interface Generated {
+  decision: "reuse" | "create";
+  reuse_id: string;
+  name: string;
+  description: string;
+  tools: (typeof GEN_TOOLS)[number][];
+  data_sources: string[];
+  coverage: string;
+  vehicle: (typeof VEHICLES)[number];
+  color: string;
+  prompt: string;
+}
+
+/** Coerce the loose wire output into a Generated (unknown tools dropped, bad vehicle -> drone). */
+export function normalizeGenerated(w: Wire): Generated {
+  const tools = w.tools.map((t) => t.trim().toLowerCase()).filter((t): t is Generated["tools"][number] => (GEN_TOOLS as readonly string[]).includes(t));
+  const vehicle = (VEHICLES as readonly string[]).includes(w.vehicle.trim().toLowerCase()) ? (w.vehicle.trim().toLowerCase() as Generated["vehicle"]) : "drone";
+  return {
+    ...w,
+    decision: w.decision.trim().toLowerCase() === "reuse" ? "reuse" : "create",
+    reuse_id: w.reuse_id.trim(),
+    tools: tools.length ? [...new Set(tools)] : ["search", "http_get"],
+    data_sources: w.data_sources.map((d) => d.trim()).filter(Boolean),
+    vehicle,
+  };
+}
 
 /** roster: one line per existing agent. Returns null when there is no LLM. */
 export type Generate = (request: string, roster: string) => Promise<Generated | null>;
 
 export interface FactoryDeps { registry: Registry; generate: Generate }
 
-const llmGenerate: Generate = async (request, roster) => {
-  const client = llm();
+const GEN_SYSTEM =
+  "You design worker agents for a geospatial research system. A worker researches one kind of data about a map area and reports " +
+  "mappable findings with sources. Given a request and the existing library, decide:\n" +
+  '- "reuse": an existing agent already covers the request. Put its exact id in reuse_id and fill every other field anyway ' +
+  '(tools [], data_sources [], vehicle "drone", empty strings elsewhere).\n' +
+  '- "create": nothing fits. Leave reuse_id empty and design a new worker:\n' +
+  "  name: 2-3 words, evocative (e.g. \"Inspection Scout\"). description: one line saying what data it gathers; the orchestrator reads it to decide relevance.\n" +
+  "  tools: the subset it needs of search (web search), scrape (read a web page), http_get (call a public JSON API).\n" +
+  "  Every agent also gets osm_features (OpenStreetMap features in the area from vector tiles: places/villages, POIs like schools or hospitals, " +
+  "buildings, roads, rivers, parks, land use). For counting or locating mapped features, tell the agent to use osm_features first (never public Overpass, which is unreliable).\n" +
+  "  data_sources: 2-3 specific, reachable public sources it should use, best first (e.g. \"DataSF Restaurant Scores (Socrata API)\"). Prefer official open-data " +
+  "JSON APIs that are free, need no key and answer fast (e.g. api.census.gov ACS works keyless, Open-Meteo, USGS, GBIF, iNaturalist, Wikipedia geosearch); " +
+  "avoid sites that need login, JavaScript apps and huge files. End with web search as the fallback.\n" +
+  "  coverage: where it works (\"San Francisco\", \"US\", \"Global\"). vehicle: drone, car, rover, satellite or boat (purely visual). color: a hex like #e879f9.\n" +
+  "  prompt: the agent's brief, 3-6 sentences. The agent has only 6 turns and 45 seconds, so the brief must be a concrete plan: the exact endpoint or URL " +
+  "pattern to try first (with how to filter it to the area's bbox/center), the second source, then the fallback (web search, citing the result pages). " +
+  "Say what makes a finding notable, and that if nothing is found it should still report one area-level finding saying which sources it checked.";
+
+const GEN_SYSTEM_SHORT =
+  "Design one worker agent for a geospatial research system, or reuse an existing one. Return every field. " +
+  'decision: "reuse" (reuse_id = an existing id) or "create" (reuse_id ""). tools: any of search, scrape, http_get. ' +
+  "vehicle: one of drone, car, rover, satellite, boat. color: hex. data_sources: 2-3 free public sources (no-key JSON APIs first, web search last). " +
+  "prompt: 3-5 sentences naming the first endpoint to call, the fallback, and what to report.";
+
+/** The Claude-backed generator: one structured-output call, one retry with a shorter brief, then a clear error. */
+export const makeLlmGenerate = (getClient: () => Pick<Anthropic, "beta"> | null = llm): Generate => async (request, roster) => {
+  const client = getClient();
   if (!client) return null;
-  const res = await client.beta.messages.parse({
-    model: MODEL,
-    max_tokens: 4000,
-    output_config: { effort: "low", format: betaZodOutputFormat(GeneratedSchema) },
-    ...FALLBACK,
-    system:
-      "You design worker agents for a geospatial research system. A worker researches one kind of data about a map area and reports " +
-      "mappable findings with sources. Given a request and the existing library, decide:\n" +
-      '- "reuse": an existing agent already covers the request. Put its exact id in reuse_id (fill the other fields with empty values).\n' +
-      '- "create": nothing fits. Leave reuse_id empty and design a new worker:\n' +
-      "  name: 2-3 words, evocative (e.g. \"Inspection Scout\"). description: one line saying what data it gathers; the orchestrator reads it to decide relevance.\n" +
-      "  tools: the subset it needs of search (web search), scrape (read a web page), http_get (call a public JSON API).\n" +
-      "  data_sources: the specific public sources it should use (e.g. \"DataSF Restaurant Scores (Socrata API)\"). Prefer official open-data APIs that are free and need no key.\n" +
-      "  coverage: where it works (\"San Francisco\", \"US\", \"Global\"). vehicle: drone, car, rover, satellite or boat (purely visual). color: a hex like #e879f9.\n" +
-      "  prompt: the agent's brief, 3-6 sentences: what to find, which sources/endpoints to try first, how to filter to the area, and what makes a finding notable.",
-    messages: [{ role: "user", content: `Request: ${request}\n\nExisting agents (id | name | coverage | description):\n${roster}` }],
-  });
-  if (!res.parsed_output) throw new Error(`agent generator returned no parse (${res.stop_reason})`);
-  return res.parsed_output;
+  const user = `Request: ${request}\n\nExisting agents (id | name | coverage | description):\n${roster}`;
+  let lastErr = "";
+  for (const [attempt, system] of [GEN_SYSTEM, GEN_SYSTEM_SHORT].entries()) {
+    try {
+      const res = await client.beta.messages.parse({
+        model: MODEL,
+        max_tokens: 8000,
+        output_config: { effort: "low", format: betaZodOutputFormat(WireSchema) },
+        ...FALLBACK,
+        system,
+        messages: [{ role: "user", content: attempt ? user.slice(0, 6000) : user }],
+      });
+      if (res.stop_reason !== "end_turn") throw new Error(`stop_reason ${res.stop_reason}`);
+      if (!res.parsed_output) throw new Error("no parsed output");
+      return normalizeGenerated(res.parsed_output);
+    } catch (e) {
+      lastErr = (e as Error).message.replace(/\s+/g, " ").slice(0, 300);
+      console.warn(`[factory] agent generator attempt ${attempt + 1} failed: ${lastErr}`);
+    }
+  }
+  throw new Error(`agent generator failed twice (${lastErr})`);
 };
 
-const defaultDeps = (): FactoryDeps => ({ registry: defaultRegistry, generate: llmGenerate });
+const defaultDeps = (): FactoryDeps => ({ registry: defaultRegistry, generate: makeLlmGenerate() });
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "agent";
 
@@ -123,17 +182,24 @@ export type Draft = { kind: "reuse"; worker: Worker } | { kind: "new"; config: A
 
 export async function draftAgent(spec: AgentSpec, deps: FactoryDeps = defaultDeps()): Promise<Draft | null> {
   const { registry, generate } = deps;
-  const roster = registry.allWorkers().map((w) => `- ${w.id} | ${w.name} | ${w.coverage} | ${w.description}`).join("\n");
+  // Agents whose API key isn't set can't run, so don't offer them for reuse (austin-people reused keyless census-demographics).
+  const roster = registry.allWorkers().filter(hasKeys).map((w) => `- ${w.id} | ${w.name} | ${w.coverage} | ${w.description}`).join("\n");
   const adv = spec.advanced ?? {};
-  const g = await generate(spec.prompt + requirementsText(spec.advanced), roster);
+  const request = spec.prompt + requirementsText(spec.advanced);
+  let g = await generate(request, roster);
   if (!g) return null;
 
   const existing = g.decision === "reuse" && !adv.forceNew ? registry.getWorker(g.reuse_id) : undefined;
-  if (existing) return { kind: "reuse", worker: existing };
+  if (existing && hasKeys(existing)) return { kind: "reuse", worker: existing };
+  // Picked "reuse" of something unusable and left the design blank: ask once more for a real design.
+  if (g.decision === "reuse" && !g.prompt.trim()) {
+    const again = await generate(`${request}\n\nAgent "${g.reuse_id}" is not available. Design a new agent (decision "create").`, roster);
+    if (again) g = again;
+  }
 
   const name = (adv.name?.trim() || g.name.trim()).slice(0, LIMITS.name) || "Custom Agent";
   const picked = adv.tools?.length ? adv.tools : g.tools;
-  const tools: ToolPrimitive[] = [...new Set<ToolPrimitive>([...picked, "geocode", "llm"])];
+  const tools: ToolPrimitive[] = [...new Set<ToolPrimitive>([...picked, "osm", "geocode", "llm"])];
   const userSources = (adv.dataSources ?? []).map((d) => d.trim()).filter(Boolean);
   const color = adv.color ?? g.color;
   return {

@@ -47,6 +47,20 @@ export const PROFILES: OrchestratorProfile[] = [
       "NASA EONET events show regional fire/storm/flood activity; the latest Sentinel-2/Landsat scene date and the next predicted imaging pass tell you how fresh the overhead picture is.",
     sampleQuestions: ["What's the current situation here?", "Which critical facilities sit in hazard zones?", "Where are people reporting problems?"],
   },
+  {
+    id: "general",
+    name: "Area Researcher",
+    persona: "Anyone curious about a place: people, settlements, wildlife, history and environment",
+    tagline: "What's here, and what is this place like?",
+    icon: "Compass",
+    // Insights team: global, keyless context agents (US-only ones like census drop out elsewhere by coverage).
+    defaultAgents: ["osm-settlements", "osm-places", "wiki-landmarks", "census-demographics", "weather-outlook", "terrain-elevation", "sentinel-imagery", "nasa-eonet", "local-news"],
+    domainPrompt:
+      "You research places for curious, general-purpose questions that no specialist owns: who and what is here (settlements, population, landmarks, wildlife, land cover), its history, environment and current context. " +
+      "Answer exactly what was asked with concrete counts and names; don't steer toward hazards, property or business unless the question does. " +
+      "Say plainly where open data is thin (e.g. OpenStreetMap coverage in rural areas) rather than padding the answer with unrelated findings. Prefer authoritative and primary sources over news.",
+    sampleQuestions: ["How many villages are located here?", "What is this place known for?", "What animals live here?"],
+  },
 ];
 
 export const getProfile = (id?: string) => PROFILES.find((p) => p.id === id) ?? PROFILES[0];

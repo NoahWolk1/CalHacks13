@@ -19,7 +19,7 @@ import { MAP, agentColor } from "@/lib/client/theme";
 import { regionFromBox, regionFromPin, regionFromPolygon, regionAreaKm2, anchorOf } from "@/lib/geo";
 import { regionHandles, grabHandle, dragHandle, isPrimary, type Handle } from "@/lib/client/regionEdit";
 import type { Finding, Region } from "@/lib/types";
-import { registerMap, fitBox, panelPadding, panelOffset } from "@/lib/client/camera";
+import { registerMap, fitBox, frameRegion, reframeSoon, releaseFrame, panelOffset } from "@/lib/client/camera";
 import { useLayout, geometry } from "@/lib/client/layout";
 import FindingInspector from "./FindingInspector";
 import SpaceControls from "./SpaceControls";
@@ -67,6 +67,12 @@ export default function MapView() {
       a?.classList.remove("maplibregl-compact-show"); a?.removeAttribute("open");
     });
     const uninstallSpace = installSpace(map); // globe, intro fly-in, imagery, live satellites
+    // A user gesture takes the camera: layout changes stop re-framing the region. (Programmatic moves,
+    // e.g. the cinematic rotation, carry no originalEvent.)
+    const takeOver = (e: { originalEvent?: unknown }) => { if (e.originalEvent) releaseFrame(); };
+    (["dragstart", "zoomstart", "rotatestart", "pitchstart"] as const).forEach((t) => map.on(t, takeOver));
+    // Phone browsers resize the canvas as toolbars show/hide; keep a framed region in view.
+    map.on("resize", () => reframeSoon());
 
     let raf = 0, last = performance.now() / 1000;
     const frame = () => {
@@ -114,7 +120,7 @@ export default function MapView() {
       const r = useStore.getState().region;
       if (!r) return;
       fleetRef.current?.setRegion(r);
-      fitBox(r.bbox);
+      frameRegion(r.bbox);
       map.once("moveend", () => map.once("idle", () => fleetRef.current?.setRoads(extractRoads(map))));
     };
     if (map.loaded()) fitExisting(); else map.once("load", fitExisting);
@@ -126,13 +132,12 @@ export default function MapView() {
     if (s.region && s.region !== prev.region && s.region.bbox !== prev.region?.bbox) {
       fleetRef.current?.setRegion(s.region);
       if (edit.dragging) return; // reshaping by handle: keep the camera still
-      const [a, b, c, d] = s.region.bbox;
-      map.fitBounds([[a, b], [c, d]], { padding: panelPadding(), pitch: 55, bearing: map.getBearing(), duration: 1400, maxZoom: 16.5 });
+      frameRegion(s.region.bbox);
       map.once("moveend", () => map.once("idle", () => fleetRef.current?.setRoads(extractRoads(map))));
     }
     if (s.selectedFinding && s.selectedFinding !== prev.selectedFinding) {
       const f = s.findings[s.selectedFinding];
-      if (f && !f.props?.areaLevel) map.easeTo({ center: anchorOf(f.geometry), zoom: Math.max(map.getZoom(), 15.5), duration: 900, offset: panelOffset() });
+      if (f && !f.props?.areaLevel) { releaseFrame(); map.easeTo({ center: anchorOf(f.geometry), zoom: Math.max(map.getZoom(), 15.5), duration: 900, offset: panelOffset() }); }
     }
     if (s.selectedInsight && s.selectedInsight !== prev.selectedInsight) {
       const ins = s.insights.find((i) => i.id === s.selectedInsight);
@@ -141,14 +146,16 @@ export default function MapView() {
       const pts = fs.filter((f) => f.geometry.type === "Point");
       const geoms = (pts.length >= 2 ? pts : fs).map((f) => ({ type: "Feature" as const, geometry: f.geometry, properties: {} }));
       if (geoms.length) fitBox(turf.bbox(turf.featureCollection(geoms)) as [number, number, number, number], 16.5);
-      else if (s.region) fitBox(s.region.bbox);
+      else if (s.region) frameRegion(s.region.bbox);
     }
+    // Cinematic rotation during a run can swing a wide region off-screen: settle it back when the run ends.
+    if (prev.running && !s.running) reframeSoon(0);
   }), []);
 
   // ── keep the region centered in the visible strip when panels resize/toggle ─
   // Subscribes outside React: layout changes never re-render MapView, they only re-pad the camera.
+  // (The mobile sheet reports its height to camera.ts, which re-frames the same way.)
   useEffect(() => {
-    let t: ReturnType<typeof setTimeout> | undefined;
     const edges = () => { const g = geometry(); return `${g.le}|${g.re}`; };
     let last = edges();
     const unsub = useLayout.subscribe((l) => {
@@ -156,15 +163,9 @@ export default function MapView() {
       const key = edges();
       if (key === last) return;
       last = key;
-      clearTimeout(t);
-      t = setTimeout(() => {
-        const map = mapRef.current, region = useStore.getState().region;
-        if (!map || !region || window.innerWidth < 1024) return;
-        const [a, b, c, d] = region.bbox;
-        map.fitBounds([[a, b], [c, d]], { padding: panelPadding(), pitch: map.getPitch(), bearing: map.getBearing(), duration: 700, maxZoom: 16.5 });
-      }, 250);
+      reframeSoon();
     });
-    return () => { unsub(); clearTimeout(t); };
+    return unsub;
   }, []);
 
   // ── drawing tools + editing the selected area by its handles ─────────────

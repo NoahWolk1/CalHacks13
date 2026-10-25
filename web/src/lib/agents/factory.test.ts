@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createLibrary } from "./library";
 import { createRegistry, type Registry } from "./registry";
-import { draftAgent, requestSpawn, SPAWN_LIMITS, type Generated } from "./factory";
+import type Anthropic from "@anthropic-ai/sdk";
+import { draftAgent, makeLlmGenerate, normalizeGenerated, requestSpawn, SPAWN_LIMITS, type Generated } from "./factory";
 
 const created = (over: Partial<Generated> = {}): Generated => ({
   decision: "create", reuse_id: "", name: "Inspection Scout", description: "Pins SF restaurant health inspection scores.",
@@ -72,7 +73,7 @@ describe("draftAgent advanced", () => {
     const out = await draftAgent({ ...spec, advanced }, { registry, generate: async () => created() });
     if (out?.kind !== "new") throw new Error("expected new");
     expect(out.config).toMatchObject({ name: "Permit Hawk", coverage: "Oakland", vehicle: "drone", color: "#123456" });
-    expect(out.config.tools).toEqual(["scrape", "geocode", "llm"]);
+    expect(out.config.tools).toEqual(["scrape", "osm", "geocode", "llm"]);
     expect(out.config.dataSources[0]).toBe("https://data.oaklandca.gov/permits");
   });
 
@@ -100,5 +101,48 @@ describe("requestSpawn", () => {
     expect(await requestSpawn({ ...spec, depth: SPAWN_LIMITS.maxDepth + 1 }, 0, { registry, generate })).toBeNull();
     expect(await requestSpawn(spec, SPAWN_LIMITS.maxPerRun, { registry, generate })).toBeNull();
     expect(generate).not.toHaveBeenCalled();
+  });
+});
+
+describe("generator hardening", () => {
+  const wire = { ...created(), tools: ["http_get", "osm_features"], vehicle: "" } as unknown as Parameters<typeof normalizeGenerated>[0];
+
+  it("normalizes loose output instead of failing the parse (empty vehicle, unknown tools)", () => {
+    const g = normalizeGenerated(wire);
+    expect(g.vehicle).toBe("drone");
+    expect(g.tools).toEqual(["http_get"]);
+    expect(normalizeGenerated({ ...wire, decision: "Reuse" }).decision).toBe("reuse");
+  });
+
+  const fakeClient = (results: (Error | { stop_reason: string; parsed_output: unknown })[]) => {
+    const parse = vi.fn(async () => { const r = results.shift(); if (!r || r instanceof Error) throw r ?? new Error("none"); return r; });
+    return { client: { beta: { messages: { parse } } } as unknown as Pick<Anthropic, "beta">, parse };
+  };
+
+  it("retries once with a shorter brief when the structured output fails, then succeeds", async () => {
+    const { client, parse } = fakeClient([new Error("Failed to parse structured output"), { stop_reason: "end_turn", parsed_output: wire }]);
+    const g = await makeLlmGenerate(() => client)("census", "- a | A | US | x");
+    expect(g?.name).toBe("Inspection Scout");
+    expect(parse).toHaveBeenCalledTimes(2);
+    const [first, second] = parse.mock.calls as unknown as { system: string }[][];
+    expect(second[0].system.length).toBeLessThan(first[0].system.length);
+  });
+
+  it("does not trust parsed output from a truncated reply, and reports why after two failures", async () => {
+    const { client } = fakeClient([{ stop_reason: "max_tokens", parsed_output: wire }, { stop_reason: "refusal", parsed_output: null }]);
+    await expect(makeLlmGenerate(() => client)("census", "")).rejects.toThrow(/failed twice.*refusal/);
+  });
+
+  it("returns null without a client", async () => {
+    expect(await makeLlmGenerate(() => null)("x", "")).toBeNull();
+  });
+
+  it("asks again for a real design when it picks an unavailable agent and leaves the design blank", async () => {
+    const blank = created({ decision: "reuse", reuse_id: "census-demographics", name: "", prompt: "", tools: [] });
+    const generate = vi.fn().mockResolvedValueOnce(blank).mockResolvedValueOnce(created({ name: "Census Tracker" }));
+    const out = await draftAgent(spec, { registry, generate });
+    expect(generate).toHaveBeenCalledTimes(2);
+    expect(String(generate.mock.calls[1][0])).toMatch(/not available/);
+    expect(out?.kind === "new" && out.config.name).toBe("Census Tracker");
   });
 });

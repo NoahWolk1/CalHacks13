@@ -38,7 +38,7 @@ export interface Finding {
 export type VehicleKind = "drone" | "car" | "rover" | "satellite" | "boat";
 
 /** Tool primitives a worker (built-in or generated) may use. README §3c. */
-export type ToolPrimitive = "http_get" | "scrape" | "search" | "transcribe" | "llm" | "geocode";
+export type ToolPrimitive = "http_get" | "scrape" | "search" | "transcribe" | "llm" | "geocode" | "osm";
 
 /** README §3c: an agent is just a saved config. Built-ins also carry a `run` impl. */
 export interface AgentConfig {

@@ -9,6 +9,7 @@ import { create } from "zustand";
 import type { FeatureCollection, LineString, Point } from "geojson";
 import { useStore } from "./store";
 import { UI } from "./theme";
+import { installSky, SKY_ENABLED } from "./sky";
 import { loadSats, positions, groundTrack, overhead, splitAntimeridian, type Sat, type Overhead, type LL } from "./orbit";
 
 /** Globe while zoomed out, flat mercator from GLOBE_END up. deck.gl (overlaid mode) only knows
@@ -45,10 +46,37 @@ export const useSpace = create<SpaceState>((set) => ({
 }));
 
 const EMPTY: FeatureCollection = { type: "FeatureCollection", features: [] };
+/** Satellites get their own cyan so they don't read as stars on the sky backdrop behind the globe. */
+const SAT_COLOR = "#5fd0c0";
+
+/** Night side of the Earth right now: the terminator (low-precision solar position, ~0.1 deg) closed
+ *  over the dark pole, clipped to mercator's latitude range. */
+export function nightPolygon(d = new Date()): FeatureCollection {
+  const r = Math.PI / 180;
+  const n = d.getTime() / 86_400_000 - 10957.5; // days since J2000.0
+  const g = (357.529 + 0.98560028 * n) * r;
+  const lam = (280.459 + 0.98564736 * n + 1.915 * Math.sin(g) + 0.02 * Math.sin(2 * g)) * r;
+  const eps = (23.439 - 0.00000036 * n) * r;
+  const dec = Math.asin(Math.sin(eps) * Math.sin(lam));
+  const ra = Math.atan2(Math.cos(eps) * Math.sin(lam), Math.cos(lam)) / r;
+  const gmst = 280.46061837 + 360.98564736629 * n;
+  const sunLng = ((((ra - gmst) % 360) + 540) % 360) - 180;
+  const MAX = 85;
+  const t = Math.tan(dec) || 1e-6;
+  const ring: LL[] = [];
+  for (let lng = -180; lng <= 180; lng += 2) {
+    const lat = Math.atan(-Math.cos((lng - sunLng) * r) / t) / r;
+    ring.push([lng, Math.max(-MAX, Math.min(MAX, lat))]);
+  }
+  const pole = dec > 0 ? -MAX : MAX; // the pole tilted away from the Sun is dark
+  ring.push([180, pole], [-180, pole], ring[0]);
+  return { type: "FeatureCollection", features: [{ type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [ring] } }] };
+}
 
 export function installSpace(map: MLMap): () => void {
   let sats: Sat[] = [];
   let buildingOpacity: unknown;
+  const uninstallSky = SKY_ENABLED ? installSky(map) : () => {};
   const timers: ReturnType<typeof setInterval>[] = [];
 
   try {
@@ -101,6 +129,13 @@ export function installSpace(map: MLMap): () => void {
         paint: { "raster-opacity": 1, "raster-saturation": -0.15, "raster-fade-duration": 200 } }, below);
     }
 
+    // Day/night: shade the Earth's night side on the globe, gone by the time the map goes flat.
+    if (!map.getSource("night")) map.addSource("night", { type: "geojson", data: nightPolygon() });
+    if (!map.getLayer("night")) {
+      map.addLayer({ id: "night", type: "fill", source: "night", maxzoom: GLOBE_END + 0.5,
+        paint: { "fill-color": "#000000", "fill-antialias": false, "fill-opacity": ["interpolate", ["linear"], ["zoom"], 0, 0.62, GLOBE_START, 0.35, GLOBE_END, 0] as never } });
+    }
+
     if (!map.getSource("sat-pos")) {
       map.addSource("sat-pos", { type: "geojson", data: EMPTY });
       map.addSource("sat-tracks", { type: "geojson", data: EMPTY });
@@ -109,12 +144,12 @@ export function installSpace(map: MLMap): () => void {
     if (!map.getLayer("sat-tracks")) {
       const fadeOut = (a: number) => ["interpolate", ["linear"], ["zoom"], 4, a, 7.5, 0] as never;
       map.addLayer({ id: "sat-tracks", type: "line", source: "sat-tracks", maxzoom: 8,
-        paint: { "line-color": UI.fg3, "line-width": 1, "line-opacity": fadeOut(0.55), "line-dasharray": [2, 2] } });
+        paint: { "line-color": SAT_COLOR, "line-width": 1, "line-opacity": fadeOut(0.4), "line-dasharray": [2, 2] } });
       map.addLayer({ id: "sat-dots", type: "circle", source: "sat-pos", maxzoom: 8,
         paint: {
           "circle-radius": ["case", ["get", "curated"], 3.2, 1.7],
-          "circle-color": ["case", ["get", "curated"], UI.fg1, UI.fg2],
-          "circle-opacity": fadeOut(0.9),
+          "circle-color": SAT_COLOR,
+          "circle-opacity": ["interpolate", ["linear"], ["zoom"], 4, ["case", ["get", "curated"], 0.95, 0.6], 7.5, 0] as never,
           "circle-stroke-width": ["case", ["get", "curated"], 1.5, 0],
           "circle-stroke-color": UI.bg,
           "circle-stroke-opacity": fadeOut(1),
@@ -122,7 +157,7 @@ export function installSpace(map: MLMap): () => void {
         } });
       map.addLayer({ id: "sat-labels", type: "symbol", source: "sat-pos", maxzoom: 8, filter: ["get", "curated"],
         layout: { "text-field": ["get", "text"], "text-font": FONT, "text-size": 11, "text-anchor": "left", "text-offset": [0.8, 0], "text-allow-overlap": false, "text-optional": true },
-        paint: { "text-color": UI.fg2, "text-halo-color": UI.bg, "text-halo-width": 1.4, "text-opacity": fadeOut(1) } });
+        paint: { "text-color": SAT_COLOR, "text-halo-color": UI.bg, "text-halo-width": 1.4, "text-opacity": fadeOut(1) } });
       // Satellite passes reported by research workers: the swath they flew over this area.
       map.addLayer({ id: "finding-tracks", type: "line", source: "finding-tracks",
         layout: { "line-cap": "round", "line-join": "round" },
@@ -219,10 +254,11 @@ export function installSpace(map: MLMap): () => void {
   loadSats().then((list) => { sats = list; useSpace.setState({ tracked: list.length }); pushSats(true); pushOverhead(); }).catch(() => {});
   timers.push(setInterval(() => pushSats(), 250));
   timers.push(setInterval(pushOverhead, 2000));
+  timers.push(setInterval(() => (map.getSource("night") as GeoJSONSource | undefined)?.setData(nightPolygon()), 60_000));
 
   return () => {
     timers.forEach(clearInterval);
-    unsubImagery(); unsubStore();
+    unsubImagery(); unsubStore(); uninstallSky();
     map.off("style.load", setup); map.off("zoom", onZoom);
     interactions.forEach((e) => map.getCanvasContainer().removeEventListener(e, cancelIntro));
   };
