@@ -12,7 +12,7 @@ import type { Map as MLMap } from "maplibre-gl";
 
 type V3 = [number, number, number];
 interface Catalog { stars: [number, number, number, number][]; lines: number[][]; names: [number, number, string][] }
-interface Body { name: string; v: V3; kind: "sun" | "moon" | "planet"; mag: number }
+interface Body { name: string; v: V3; kind: "sun" | "moon" | "planet"; mag: number; phaseAngle?: number }
 
 /** Kill switch: NEXT_PUBLIC_SKY=0 at build time disables the starfield entirely. */
 export const SKY_ENABLED = process.env.NEXT_PUBLIC_SKY !== "0";
@@ -104,8 +104,12 @@ export function installSky(map: MLMap): () => void {
     bodies = want.map(([name, kind]) => {
       const eq = A.Equator(name as never, t, obs, true, true);
       let mag = kind === "sun" ? -26 : kind === "moon" ? -12 : 1;
-      try { if (kind === "planet") mag = A.Illumination(name as never, t).mag; } catch { /* keep default */ }
-      return { name, kind, mag, v: unit(eq.ra * 15, eq.dec) };
+      let phaseAngle: number | undefined;
+      try {
+        if (kind === "planet") mag = A.Illumination(name as never, t).mag;
+        if (kind === "moon") phaseAngle = A.Illumination(name as never, t).phase_angle;
+      } catch { /* keep defaults */ }
+      return { name, kind, mag, phaseAngle, v: unit(eq.ra * 15, eq.dec) };
     });
   };
 
@@ -204,8 +208,7 @@ export function installSky(map: MLMap): () => void {
         ctx.beginPath(); ctx.arc(x, y, 46, 0, Math.PI * 2); ctx.fill();
         ctx.fillStyle = "#fffaf0"; ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.fill();
       } else if (b.kind === "moon") {
-        ctx.globalAlpha = alpha * 0.95; ctx.fillStyle = "#d9d8d2";
-        ctx.beginPath(); ctx.arc(x, y, 5.5, 0, Math.PI * 2); ctx.fill();
+        drawMoon(x, y, b, proj, alpha);
       } else {
         ctx.globalAlpha = alpha; ctx.fillStyle = b.name === "Mars" ? "#ffb48a" : "#fff3d6";
         ctx.beginPath(); ctx.arc(x, y, Math.max(1.6, 2.6 - b.mag * 0.35), 0, Math.PI * 2); ctx.fill();
@@ -215,6 +218,34 @@ export function installSky(map: MLMap): () => void {
     }
     ctx.globalAlpha = 1;
   };
+
+  /** Moon with its real phase: the lit limb faces the Sun's on-screen direction. */
+  function drawMoon(x: number, y: number, b: Body, proj: (v: V3) => [number, number] | null, alpha: number) {
+    const r = 7;
+    const i = (b.phaseAngle ?? 0) * D; // 0 = full, 180 = new
+    // Screen direction toward the Sun: step from the Moon a little way along the sky toward it.
+    const sun = bodies.find((o) => o.kind === "sun");
+    let theta = 0;
+    if (sun) {
+      const k = 0.03;
+      const v: V3 = [b.v[0] + k * (sun.v[0] - b.v[0]), b.v[1] + k * (sun.v[1] - b.v[1]), b.v[2] + k * (sun.v[2] - b.v[2])];
+      const n = Math.hypot(...v);
+      const q = proj([v[0] / n, v[1] / n, v[2] / n]);
+      if (q) theta = Math.atan2(q[1] - y, q[0] - x);
+    }
+    ctx.save();
+    ctx.translate(x, y); ctx.rotate(theta);
+    ctx.globalAlpha = alpha * 0.9; ctx.fillStyle = "#26272b"; // earthshine-dark disc
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
+    // Lit part: the sunward half-disc, closed by the terminator ellipse (bulging away for gibbous).
+    const c = Math.cos(i);
+    ctx.globalAlpha = alpha; ctx.fillStyle = "#e4e2da";
+    ctx.beginPath();
+    ctx.arc(0, 0, r, -Math.PI / 2, Math.PI / 2, false);
+    ctx.ellipse(0, 0, Math.max(0.01, Math.abs(c) * r), r, 0, Math.PI / 2, -Math.PI / 2, c < 0);
+    ctx.fill();
+    ctx.restore();
+  }
 
   map.on("render", draw);
   map.on("resize", draw);
