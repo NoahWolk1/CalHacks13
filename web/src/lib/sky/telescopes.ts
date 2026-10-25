@@ -3,6 +3,7 @@
 // MAST's CAOM position search is slow on a cold query (20-35 s measured) but cached server-side
 // afterwards (~1 s), so the fetch keeps running in the background past our deadline and fills the
 // HTTP cache; the next run of the same cone is then fast.
+import { after } from "next/server";
 import { getJson } from "@/lib/http";
 import type { Cone, SkyObject } from "./types";
 
@@ -106,6 +107,10 @@ export function parseMast(json: unknown, c: Cone, cap = MAST_CAP): SkyObject[] {
 export async function fetchMast(c: Cone, signal: AbortSignal, deadlineMs: number): Promise<SkyObject[]> {
   const pending = getJson(MAST_API, { init: mastRequest(c), timeoutMs: 60_000, retries: 0 });
   pending.catch((e: Error) => console.warn(`[sky] MAST background fetch failed: ${e.message}`));
+  // On Vercel the function would be frozen once the response ends, killing the background fetch
+  // before it fills the cache: after() keeps it alive (within maxDuration). Outside a request
+  // (unit tests) after() throws, and there's nothing to keep alive anyway.
+  try { after(pending.then(() => {}, () => {})); } catch { /* not in a request scope */ }
   let timer: ReturnType<typeof setTimeout> | undefined;
   const json = await Promise.race([
     pending,
