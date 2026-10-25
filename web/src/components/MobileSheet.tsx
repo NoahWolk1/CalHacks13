@@ -11,7 +11,7 @@ import { regionAreaKm2 } from "@/lib/geo";
 import { useCanRun } from "./ResearchForm";
 import { ResearchFlow } from "./RightPanel";
 import { fmt, useCinematic, useMissionStats } from "./StatusBar";
-import { TOOLS } from "./TopBar";
+import { TOOLS, pickTool } from "./TopBar";
 
 type Snap = "peek" | "half" | "full";
 const ORDER: Snap[] = ["peek", "half", "full"];
@@ -193,7 +193,7 @@ function ToolHint({ text }: { text: string }) {
         <button onClick={() => window.dispatchEvent(new Event("gs:finish-polygon"))}
           className="flex items-center gap-1 rounded-[4px] bg-fg1 px-2 py-1 text-bg"><Check size={12} /> Done</button>
       )}
-      <button onClick={() => set({ tool: "pan" })} className="rounded-[4px] border border-line px-2 py-1 text-fg3">Cancel</button>
+      <button onClick={() => pickTool("pan")} className="rounded-[4px] border border-line px-2 py-1 text-fg3">Cancel</button>
     </div>
   );
 }

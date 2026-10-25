@@ -71,7 +71,7 @@ const emptyRun = {
 
 export const useStore = create<State>((set, get) => ({
   agents: [], profiles: [], llm: false, live: null,
-  runId: null, tool: "pan", tour: null, pinRadius: 450, region: null, profileId: "auto", mode: "insights", question: "",
+  runId: null, tool: "pan", tour: null, pinRadius: 450, region: null, profileId: "auto", mode: "ask", question: "",
   ...emptyRun,
 
   set: (p) => set(p),

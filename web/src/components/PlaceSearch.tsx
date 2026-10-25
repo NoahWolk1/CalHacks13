@@ -12,7 +12,7 @@ export function pickSpot(s: DemoSpot) {
   const st = useStore.getState();
   if (st.running) return;
   st.resetRun();
-  st.set({ region: regionForSpot(s), tool: "pan" });
+  st.set({ region: regionForSpot(s) }); // keep the active tool: the area stays editable by its handles
 }
 
 /** One-click demo regions (used in the search dropdown and the empty region slot). */
@@ -106,7 +106,7 @@ export default function PlaceSearch({ variant = "desktop", onClose }: { variant?
             if (e.key === "ArrowUp") { e.preventDefault(); setActive((a) => Math.max(a - 1, 0)); }
             if (e.key === "Enter" && results[active]) go(results[active]);
           }}
-          placeholder="Search a place" spellCheck={false}
+          placeholder="Search a place, e.g. San Francisco" spellCheck={false}
           className={`min-w-0 flex-1 bg-transparent ${mobile ? "text-base" : "text-[12.5px]"} text-fg1 placeholder:text-fg4 focus:outline-none focus-visible:outline-none`} />
         {mobile ? (
           <button onClick={() => { setOpen(false); onClose?.(); }} className="-mr-1 p-1.5 text-fg3 hover:text-fg1" aria-label="Close search"><X size={16} strokeWidth={1.5} /></button>

@@ -11,6 +11,7 @@ Read this first, then open only the docs your task needs. Each doc starts with i
 | [project/overview.md](project/overview.md) | You need the idea, user flow, orchestrators, demo moment, or build order and status |
 | [project/architecture.md](project/architecture.md) | You're writing agent/orchestrator code, the finding schema, or the Agent Hub; also what's built vs planned |
 | [../web/README.md](../web/README.md) | You're running or changing the app: setup, env vars, Convex, deploy, file map, RunEvent protocol, API routes, adding a worker |
+| [design/design-kit.md](design/design-kit.md) | You're changing the visual design: tokens, type, components, map styling (new design language, in progress) |
 | [project/decisions.md](project/decisions.md) | You need to know what's decided vs open, or you just decided something (log it) |
 
 ## Tracks: what sponsors want
