@@ -9,6 +9,7 @@ import { APP_NAME } from "@/lib/brand";
 import { formatDec, formatRa, parseCone } from "@/lib/sky/geom";
 import { SKY_MAX_RADIUS, type Cone, type SkyEvent, type SkyObject, type SkySourceReport, type SkySummary } from "@/lib/sky/types";
 import { CATEGORY_STYLE, SURVEYS, type AtlasApi } from "./SkyAtlas";
+import SkySearch from "./SkySearch";
 
 const SkyAtlas = dynamic(() => import("./SkyAtlas"), { ssr: false });
 
@@ -142,7 +143,8 @@ export default function SkyApp() {
 
         <aside className="dock scroll-thin flex min-h-0 w-[400px] shrink-0 flex-col overflow-y-auto border-l border-line max-lg:w-full max-lg:flex-1 max-lg:border-l-0 max-lg:border-t">
           <section className="border-b border-line p-4">
-            <div className="mb-2 text-[11.5px] uppercase tracking-[0.06em] text-fg3">Sample targets</div>
+            <SkySearch disabled={busy} onPick={(h) => applyCone({ ra: h.ra, dec: h.dec, radius: h.category === "solar-system" ? 2 : cone.radius }, true)} />
+            <div className="mb-2 mt-4 text-[11.5px] uppercase tracking-[0.06em] text-fg3">Sample targets</div>
             <div className="flex flex-wrap gap-1.5">
               {SAMPLES.map((s) => (
                 <button key={s.name} onClick={() => pickSample(s.cone)} disabled={busy} title={s.note}

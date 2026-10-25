@@ -10,7 +10,7 @@ const GALAXY = ["G", "GiG", "GiC", "GiP", "BiC", "IG", "PaG", "GrG", "CGG", "ClG
 const NEBULA = ["HII", "RNe", "DNe", "PN", "SNR", "MoC", "ISM", "Cld", "bub", "GNe"];
 const CLUSTER = ["Cl*", "OpC", "GlC", "As*"];
 
-const LABEL: Record<string, string> = {
+export const LABEL: Record<string, string> = {
   G: "Galaxy", GiG: "Galaxy in group", GiC: "Galaxy in cluster", GiP: "Galaxy in pair", BiC: "Brightest cluster galaxy", IG: "Interacting galaxies",
   PaG: "Galaxy pair", GrG: "Galaxy group", CGG: "Compact galaxy group", ClG: "Galaxy cluster", SCG: "Supercluster", SBG: "Starburst galaxy",
   H2G: "HII galaxy", EmG: "Emission-line galaxy", AGN: "Active galactic nucleus", SyG: "Seyfert galaxy", Sy1: "Seyfert 1 galaxy", Sy2: "Seyfert 2 galaxy",
