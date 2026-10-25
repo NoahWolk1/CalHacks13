@@ -10,6 +10,7 @@
 | Spacetime ($2,048 / $1,024 / $512) | **Ready** | Set the SpacetimeDB env vars on Vercel and redeploy; show the share-link moment. |
 | Convex | **Not claimed** | We switched to SpacetimeDB (one of Convex/Spacetime per team). Convex code stays as a fallback only. |
 | Anthropic | **Blocked on a decision** | Name the community + a firsthand problem |
+| Atlassian: Best Agent / Best Security Solution for Agents | Ready (criteria doc not readable without sign-in) | Show the validator log line in the demo |
 | Bright Data / Apify | **Apify live; Bright Data waiting on keys** | Apify: Review Radar returns real Google Maps places (~$0.12/run) and our Actor [`rocketlaunchers/sf-planning-notices`](https://apify.com/rocketlaunchers/sf-planning-notices) is public on the Apify Store (Best Actor entry) and powers Hearing Watch. Bright Data: Rent Scout, Local Pulse and the generated-agent fetch are built but need `BRIGHTDATA_*` keys. Still needs one demo beat that shows Apify pins live. |
 | Best Planet-First Hack | Ready (no stated criteria) | Frame the climate angle in Devpost |
 | Most Technically Complex Hack | Ready (no stated criteria) | None |
@@ -43,7 +44,7 @@ Note: the general prize is called **"Most Technically Complex Hack"** on the pri
 
 **How we qualify today**
 - [x] (3) Works end to end on live data, with ~124 findings in ~10 s in the Mission.
-- [x] (4) Claude does plan / insights / answer with structured outputs (zod). Insight citations are validated against real finding ids. The spatial joins are deterministic, so Claude explains and ranks overlaps instead of inventing them. There's a heuristic fallback when Claude is unavailable. **Where it could go wrong:** over-confident risk language, stale regulatory maps, and spawned agents. Mitigations are confidence on every finding, the conflict-flagging insight, and spawn guardrails.
+- [x] (4) Claude does plan / insights / answer with structured outputs (zod). The spatial joins are deterministic, so Claude explains and ranks overlaps instead of inventing them. One validation layer (`web/src/lib/orchestrator/validate.ts`) sits between every agent and the map: schema, area, source-URL and injection checks plus dedupe on every finding; insights that cite no real finding are dropped, and numbers in insights are checked against the cited data and the crossref totals (mismatches flagged in the log). The orchestrator log shows the tally ("Validated 180 findings · 1 rejected (1 duplicate)"). There's a heuristic fallback when Claude is unavailable. **Where it could go wrong:** over-confident risk language, stale regulatory maps, hallucinated numbers in a synthesis, and generated agents steered by text on a scraped page. Mitigations are confidence on every finding, the conflict-flagging insight, the numeric cross-check, untrusted-data wrapping of scraped pages, and spawn guardrails.
 - [ ] **(1) Named community: NOT chosen.** The generic "anyone with a question about a place" framing fails this criterion.
 - [ ] **(2) Firsthand problem: NOT documented.** Someone on the team needs to have talked to a member of the community (even a quick conversation or Slack/phone call tonight counts) and quote them in Devpost.
 
@@ -60,6 +61,19 @@ Recommendation: **A or B** matches the strongest demo result (flood × permits) 
 **What to say:** "[Community] check a property using FEMA's map, which in San Francisco only covers the shoreline. Coordinate shows them the city's storm flood map, the buried creeks and the permit activity on their block, with every claim cited, in ten seconds."
 
 **Still missing:** [ ] pick the community · [ ] one firsthand conversation + a quote · [ ] update Devpost/pitch placeholders · [ ] log the decision with the date.
+
+## Atlassian: Best Agent / Best Security Solution for Agents (AirPods Max)
+
+**Criteria:** in a Google Doc ("The Atlassian Agentic Workforce Challenge") that needs sign-in; not transcribed. Open it and check before submitting.
+
+**How we qualify**
+- [x] **Agent:** an orchestrator that plans, dispatches 9–12 workers, cross-references, re-dispatches, and creates new agents on the fly for gaps it can't cover.
+- [x] **Security for agents:** generated agents fetch pages chosen by an LLM, so: `urlGuard` blocks private/metadata hosts (SSRF), every page or API body is wrapped as `<untrusted_data>` and the agent is told never to follow instructions in it, `emit_findings` rows with non-schema fields or injection text ("ignore previous instructions", `<system>`, tool names) are rejected, and every finding from any agent passes one validator (schema, inside the area, public http(s) source, injection, dedupe) before it reaches the map or Claude. Claude's insights must cite real findings, and their numbers are checked against the deterministic joins. Spawn guardrails: fixed tool primitives, per-run caps, temporary by default. Fails open, so a validator bug can't take a mission down.
+- [x] Visible in the product: the orchestrator log shows "Validated N findings · K rejected (…)" and the insight check line.
+
+**What to say:** "Our agents read the open web, so we treat everything they read as untrusted: scraped pages are fenced off as data, and every finding passes one deterministic validator (inside the area, real public source, no injected instructions, no duplicates) before it reaches the map or Claude, which in turn must cite real findings whose numbers we check."
+
+**Still missing:** [ ] read the criteria doc · [ ] point at the validator line in the orchestrator log during the demo (open **How this was researched**).
 
 ## Bright Data / Apify
 
@@ -125,7 +139,7 @@ Recommendation: **A or B** matches the strongest demo result (flood × permits) 
 
 **How we qualify**
 - [x] End-to-end functionality on live data.
-- [x] Responsible design: source link + `observed_at` + confidence on every finding, citation validation, conflict flagging instead of silently picking a source, spawn guardrails (fixed primitives, depth/per-run caps, temporary by default), graceful degradation.
+- [x] Responsible design: source link + `observed_at` + confidence on every finding, a validation layer every finding passes (schema, area, source, injection, dedupe), citation + numeric checks on Claude's insights, conflict flagging instead of silently picking a source, spawn guardrails (fixed primitives, depth/per-run caps, temporary by default), graceful degradation.
 - [x] Path to production: deployed at https://coordinate-agents.vercel.app (Vercel + SpacetimeDB Maincloud, Convex as fallback), persistent mission history, per-agent timeouts and failure isolation, Claude rate limits with heuristic fallback.
 - [ ] **Customer understanding:** same blocker as Anthropic (the named community).
 - [ ] **Measurable usefulness:** no metric stated yet.

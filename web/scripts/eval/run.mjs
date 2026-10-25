@@ -1,6 +1,7 @@
 // Coordinate eval battery: submits cases to the dev server, reads events from SpacetimeDB, tags + LLM-judges each run.
 // usage: node run.mjs [--cases cases.json] [--only id1,id2] [--out results/<label>] [--concurrency 2] [--timeout 150] [--no-judge] [--label name]
 //        node run.mjs --report results/<label>     (re-render report.md from saved case JSONs)
+//        node run.mjs --rejudge results/<label>    (re-fetch events by runId, re-tag + re-judge saved runs)
 // env: APP (default http://localhost:3005), WEB_DIR (default: ../.. from this script, else ~/CalHacks13/web)
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from "node:fs";
 import { dirname, resolve, join } from "node:path";
@@ -113,7 +114,8 @@ function summarize(c, runId, ev, { wall, timedOut, status }) {
     findingsCount: findings.length, findingsByAgent: byAgent,
     insights: insights.map((i) => ({ title: i.title, body: i.body, kind: i.kind })),
     answer, errors, tags, thoughts,
-    findingsSample: findings.slice(0, 80).map((f) => ({ id: f.id, worker: f.worker_id, claim: f.claim.slice(0, 260), src: f.source_type })),
+    // What the synthesizer saw: top 140 by severity (compactFindings in orchestrator/run.ts), full claims.
+    findingsSample: [...findings].sort((a, b) => (b.severity ?? 0) - (a.severity ?? 0)).slice(0, 140).map((f) => ({ id: f.id, worker: f.worker_id, claim: f.claim.slice(0, 700), src: f.source_type, observed_at: f.observed_at })),
   };
 }
 
@@ -132,8 +134,8 @@ Routed to: ${r.routed?.profileId} (${r.routed?.reason})
 Plan: ${r.plan.map((p) => p.agentId).join(", ")}${r.spawned.length ? `\nGenerated agents: ${r.spawned.map((s) => `${s.name} (${s.findings} findings)`).join("; ")}` : ""}
 Agent errors: ${r.agentErrors.map((e) => `${e.agentId}: ${e.detail}`).join("; ") || "none"}
 Findings: ${r.findingsCount} total, by agent ${JSON.stringify(r.findingsByAgent)}
-FINDINGS SAMPLE (first 80)
-${r.findingsSample.map((f) => `[${f.id}] (${f.worker}) ${f.claim}`).join("\n") || "(none)"}
+FINDINGS (exactly what the answer writer saw: top 140 by severity)
+${r.findingsSample.map((f) => `[${f.id}] (${f.worker}${f.observed_at ? `, ${f.observed_at}` : ""}) ${f.claim}`).join("\n") || "(none)"}
 
 OUTPUT SHOWN TO USER
 ${out || "(empty)"}
@@ -184,6 +186,18 @@ function report(dir) {
 
 // ── main ──
 if (arg("report")) { report(resolve(arg("report"))); process.exit(0); }
+if (arg("rejudge")) { // re-fetch events for saved runs, re-tag and re-judge (after changing the rubric/tags)
+  const dir = resolve(arg("rejudge")); const cs = JSON.parse(readFileSync(join(HERE, "cases.json"), "utf8"));
+  const files = readdirSync(dir).filter((f) => f.endsWith(".json") && f !== "meta.json");
+  await Promise.all(files.map(async (f) => {
+    const old = JSON.parse(readFileSync(join(dir, f), "utf8")); const c = cs.find((x) => x.id === old.id) || old;
+    const events = (await sql(`SELECT seq, type, event_json FROM events WHERE run_id = '${old.runId}'`)).sort((a, b) => a[0] - b[0]).map((r) => JSON.parse(r[2]));
+    const r = summarize(c, old.runId, events, { wall: old.durationMs, timedOut: old.timedOut, status: old.status });
+    if (!flag("no-judge")) r.judge = await judge(r);
+    writeFileSync(join(dir, f), JSON.stringify(r, null, 2)); console.log(`✔ ${r.id} score=${r.judge?.total ?? "-"} tags=${r.tags.join(",")}`);
+  }));
+  report(dir); process.exit(0);
+}
 const casesFile = resolve(arg("cases", join(HERE, "cases.json")));
 let cases = JSON.parse(readFileSync(casesFile, "utf8"));
 const only = arg("only"); if (only) cases = cases.filter((c) => String(only).split(",").includes(c.id));
