@@ -49,8 +49,9 @@ export const pulseWorker: Worker = {
     const q2 = `${where} ${topic} (site:reddit.com OR site:nextdoor.com)`.replace(/\s+/g, " ");
     log(`Bright Data SERP: ${q1}`);
     log(`Bright Data SERP: ${q2}`);
+    // No past-year filter (tbs=qdr:y): Google takes ~35 s with it vs ~12 s without, past the 30 s agent budget.
     const [web, community] = await Promise.all([
-      googleSearch(q1, { signal, recency: "y" }),
+      googleSearch(q1, { signal }).catch((e) => { log(`Web search failed: ${(e as Error).message.slice(0, 80)}`); return []; }),
       googleSearch(q2, { signal }).catch((e) => { log(`Community search failed: ${(e as Error).message.slice(0, 80)}`); return []; }),
     ]);
     const picks = pickPulse(web, community);
