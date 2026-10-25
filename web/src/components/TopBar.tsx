@@ -11,7 +11,7 @@ import PlaceSearch from "./PlaceSearch";
 import { startTour } from "./Tour";
 
 export const TOOLS: { id: Tool; label: string; icon: typeof Hand; hint: string; touchHint: string }[] = [
-  { id: "pan", label: "Pan", icon: Hand, hint: "Drag to orbit · scroll to zoom", touchHint: "Drag to pan · pinch to zoom" },
+  { id: "pan", label: "Pan", icon: Hand, hint: "Drag to orbit. Scroll to zoom.", touchHint: "Drag to pan · pinch to zoom" },
   { id: "box", label: "Box", icon: BoxSelect, hint: "Drag to draw a box", touchHint: "Drag a finger to draw a box" },
   { id: "polygon", label: "Polygon", icon: Pentagon, hint: "Click points, click first point or press Enter to close", touchHint: "Tap corners to outline" },
   { id: "pin", label: "Pin", icon: MapPin, hint: "Click to drop a pin", touchHint: "Tap to drop a pin" },
