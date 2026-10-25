@@ -84,7 +84,7 @@ function AgentsTab() {
           <div key={a.id} className="grid grid-cols-[18px_1fr_auto] items-center gap-x-2.5 px-4 py-2">
             <VehicleGlyph kind={a.vehicle} color={a.color} size={16} />
             <span className="truncate text-[13px] text-fg1">{a.name}</span>
-            <span className="text-[12px] text-fg4">{a.coverage}</span>
+            <span className="text-[12px] text-fg4" title={a.needsKeys?.length ? `Needs ${a.needsKeys.join(" + ")}` : undefined}>{a.needsKeys?.length ? "Needs key" : a.coverage}</span>
             <span className="col-start-2 col-end-4 truncate text-[12px] text-fg3">{a.dataSources.join(" · ")}</span>
           </div>
         ))}

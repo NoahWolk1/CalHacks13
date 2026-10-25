@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { useEffect } from "react";
-import { useStore } from "@/lib/client/store";
+import { loadSavedProfile, useStore } from "@/lib/client/store";
 import { loadCatalog } from "@/lib/client/runClient";
 import CommandPanel, { useRegionLabel } from "./CommandPanel";
 import MobileSheet, { SHEET_PEEK } from "./MobileSheet";
@@ -28,7 +28,7 @@ export default function App() {
   const live = useStore((s) => s.live);
   const stHost = process.env.NEXT_PUBLIC_SPACETIME_HOST || live?.spacetime?.host;
   const stDb = process.env.NEXT_PUBLIC_SPACETIME_DB || live?.spacetime?.db;
-  useEffect(() => { loadCatalog(); }, []);
+  useEffect(() => { loadSavedProfile(); loadCatalog(); }, []);
   useRegionLabel();
   useLayoutSync();
   return (

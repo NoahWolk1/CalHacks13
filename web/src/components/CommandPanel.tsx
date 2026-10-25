@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { X } from "lucide-react";
-import { useStore, agentById } from "@/lib/client/store";
+import { useStore, agentById, pickProfile } from "@/lib/client/store";
 import { startRun, stopRun } from "@/lib/client/runClient";
 import { regionAreaKm2 } from "@/lib/geo";
 import { reverseLabel } from "@/lib/client/geocode";
@@ -63,43 +63,22 @@ export default function CommandPanel() {
   );
 }
 
-/** Orchestrator picker, mode + question, region chip and the deploy button. Shared by the desktop panel and the mobile sheet. */
+/** Mode + question, orchestrator picker, region chip and the deploy button. Shared by the desktop panel and the mobile sheet. */
 export function MissionControls({ className = "" }: { className?: string }) {
-  const { profiles, profileId, mode, question, region, running, set } = useStore();
-  const profile = profiles.find((p) => p.id === profileId);
+  const { profiles, profileId, mode, question, region, running, routed, set } = useStore();
+  // "auto" (default) lets the orchestrator route the question; a stale saved id also means auto.
+  const sel = profiles.some((p) => p.id === profileId) ? profileId : "auto";
+  const auto = sel === "auto";
+  const profile = profiles.find((p) => p.id === sel);
+  const autoPicked = routed?.auto ? routed.profileId : null;
   const canRun = useCanRun();
+  // Auto: one sample per specialist, so the chips show the range of questions it routes.
+  const samples = auto ? profiles.map((p) => p.sampleQuestions[0]).filter(Boolean) : profile?.sampleQuestions ?? [];
 
   return (
       <div className={className}>
-        {/* Orchestrator */}
-        <div className="p-4">
-          <div className="mb-2 text-[12px] text-fg3">Orchestrator</div>
-          <div role="radiogroup" aria-label="Orchestrator" className="overflow-hidden rounded-md border border-line">
-            {profiles.map((p, i) => {
-              const on = p.id === profileId;
-              const team = p.defaultAgents.map((id) => agentById(id)).filter(Boolean);
-              return (
-                <button key={p.id} role="radio" aria-checked={on} onClick={() => set({ profileId: p.id })} disabled={running}
-                  className={`flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition-colors disabled:cursor-not-allowed ${i ? "border-t border-line" : ""} ${on ? "bg-raised" : "hover:bg-raised/60"} ${running && !on ? "opacity-50" : ""}`}>
-                  <span className={`mt-[3px] h-3 w-3 shrink-0 rounded-full border ${on ? "border-[4px] border-fg1" : "border-line-strong"}`} />
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-[13px] font-medium text-fg1">{p.name}</span>
-                    <span className="block text-[12px] leading-snug text-fg3">{p.tagline}</span>
-                    {team.length > 0 && (
-                      <span className="mt-1.5 flex gap-[3px]" aria-hidden>
-                        {team.map((a) => <span key={a!.id} title={a!.name} className="h-1.5 w-1.5 rounded-[1.5px]" style={{ background: a!.color }} />)}
-                      </span>
-                    )}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-          {profile?.persona && <p className="mt-2 text-[12px] leading-snug text-fg3">For {profile.persona.replace(/^./, (c) => c.toLowerCase())}</p>}
-        </div>
-
-        {/* Mode */}
-        <div className="border-t border-line px-4">
+        {/* Mode + question: the main input */}
+        <div className="px-4">
           <div role="tablist" className="-mx-4 flex gap-5 border-b border-line px-4">
             {(["ask", "insights"] as const).map((m) => (
               <button key={m} role="tab" aria-selected={mode === m} onClick={() => set({ mode: m })} disabled={running}
@@ -110,20 +89,73 @@ export function MissionControls({ className = "" }: { className?: string }) {
             ))}
           </div>
           {mode === "ask" ? (
-            <div className="pt-3">
-              <textarea value={question} onChange={(e) => set({ question: e.target.value })} disabled={running} rows={2}
+            <div className="pb-4 pt-3">
+              <textarea value={question} onChange={(e) => set({ question: e.target.value })} disabled={running} rows={3}
                 onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && canRun) { e.preventDefault(); startRun(); } }}
-                placeholder="Ask anything about the selected area"
-                className="w-full resize-none rounded-md border border-line bg-bg px-3 py-2 text-[13px] text-fg1 max-lg:text-base placeholder:text-fg4 focus:border-fg4 focus:outline-none focus-visible:outline-none" />
+                placeholder={auto ? "Ask anything about the selected area. It goes to the right specialist." : "Ask anything about the selected area"}
+                aria-label="Question"
+                className="w-full resize-none rounded-md border border-line-strong bg-bg px-3 py-2.5 text-[14px] leading-snug text-fg1 max-lg:text-base placeholder:text-fg4 focus:border-fg3 focus:outline-none focus-visible:outline-none" />
               <div className="mt-1.5 flex flex-wrap gap-1">
-                {profile?.sampleQuestions.map((q) => (
+                {samples.map((q) => (
                   <button key={q} onClick={() => set({ question: q })} disabled={running}
                     className="rounded-[4px] border border-line px-2 py-0.5 text-left text-[12px] text-fg3 transition-colors hover:border-line-strong hover:text-fg1">{q}</button>
                 ))}
               </div>
             </div>
           ) : (
-            <p className="pt-3 text-[12.5px] leading-relaxed text-fg2">No question needed. The full survey team sweeps the area and the orchestrator looks for findings that <span className="text-fg1">combine</span> into risks, opportunities and conflicts.</p>
+            <p className="pb-4 pt-3 text-[12.5px] leading-relaxed text-fg2">No question needed. The full survey team sweeps the area and the orchestrator looks for findings that <span className="text-fg1">combine</span> into risks, opportunities and conflicts.</p>
+          )}
+        </div>
+
+        {/* Orchestrator: compact secondary row on Auto, full list when a specialist is forced */}
+        <div className="border-t border-line p-4">
+          <div className="mb-2 text-[12px] text-fg3">Orchestrator</div>
+          {auto ? (
+            <>
+              <div role="radiogroup" aria-label="Orchestrator" className="flex flex-wrap gap-1">
+                {[{ id: "auto", name: "Auto" }, ...profiles].map((p) => {
+                  const on = p.id === sel;
+                  const picked = p.id === autoPicked;
+                  return (
+                    <button key={p.id} role="radio" aria-checked={on} onClick={() => pickProfile(p.id)} disabled={running}
+                      title={"tagline" in p ? p.tagline : "Routes your question to the right specialist"}
+                      className={`flex items-center gap-1.5 rounded-[4px] border px-2 py-[3px] text-[12px] transition-colors disabled:cursor-not-allowed ${on ? "border-line-strong bg-raised text-fg1" : picked ? "border-line-strong text-fg1" : "border-line text-fg3 hover:border-line-strong hover:text-fg1"}`}>
+                      {picked && <span className="h-1.5 w-1.5 rounded-full bg-accent" aria-hidden />}
+                      {p.name}
+                      {picked && <span className="text-[11px] text-fg3">auto-picked</span>}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="mt-2 text-[12px] leading-snug text-fg3"><span className="text-fg2">Auto:</span> routes your question to the right specialist</p>
+            </>
+          ) : (
+            <>
+              <div role="radiogroup" aria-label="Orchestrator" className="overflow-hidden rounded-md border border-line">
+                {[{ id: "auto", name: "Auto", tagline: "Routes your question to the right specialist", defaultAgents: [] as string[] }, ...profiles].map((p, i) => {
+                  const on = p.id === sel;
+                  const team = p.defaultAgents.map((id) => agentById(id)).filter((a) => a && !a.needsKeys?.length); // keyless agents sit out
+                  return (
+                    <button key={p.id} role="radio" aria-checked={on} onClick={() => pickProfile(p.id)} disabled={running}
+                      className={`flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition-colors disabled:cursor-not-allowed ${i ? "border-t border-line" : ""} ${on ? "bg-raised" : "hover:bg-raised/60"} ${running && !on ? "opacity-50" : ""}`}>
+                      <span className={`mt-[3px] h-3 w-3 shrink-0 rounded-full border ${on ? "border-[4px] border-fg1" : "border-line-strong"}`} />
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-baseline gap-2 text-[13px] font-medium text-fg1">{p.name}
+                          {p.id === autoPicked && <span className="text-[11px] font-normal text-fg3">auto-picked</span>}
+                        </span>
+                        <span className="block text-[12px] leading-snug text-fg3">{p.tagline}</span>
+                        {team.length > 0 && (
+                          <span className="mt-1.5 flex gap-[3px]" aria-hidden>
+                            {team.map((a) => <span key={a!.id} title={a!.name} className="h-1.5 w-1.5 rounded-[1.5px]" style={{ background: a!.color }} />)}
+                          </span>
+                        )}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              {profile?.persona && <p className="mt-2 text-[12px] leading-snug text-fg3">For {profile.persona.replace(/^./, (c) => c.toLowerCase())}</p>}
+            </>
           )}
         </div>
 
@@ -155,7 +187,8 @@ export function MissionControls({ className = "" }: { className?: string }) {
 
 /** Streaming orchestrator thoughts + dispatch plan. */
 export function OrchestratorLog({ className = "", style }: { className?: string; style?: React.CSSProperties }) {
-  const { running, thoughts, plan } = useStore();
+  const { running, thoughts, plan, routed, profiles } = useStore();
+  const routedTo = routed?.auto ? profiles.find((p) => p.id === routed.profileId) : undefined;
   const logRef = useRef<HTMLDivElement>(null);
   useEffect(() => { logRef.current?.scrollTo({ top: 1e6, behavior: "smooth" }); }, [thoughts.length, plan.length]);
   const t0 = thoughts[0]?.at;
@@ -166,7 +199,13 @@ export function OrchestratorLog({ className = "", style }: { className?: string;
           {plan.length > 0 && <span className="num ml-auto text-[11.5px]">{plan.length} dispatched</span>}
         </div>
         <div ref={logRef} className="scroll-thin min-h-0 flex-1 space-y-1 overflow-y-auto px-4 pb-4 text-[12.5px] leading-relaxed">
-          {!thoughts.length && <div className="text-fg4">Waiting for a mission.</div>}
+          {!thoughts.length && !routedTo && <div className="text-fg4">Waiting for a mission.</div>}
+          {routedTo && (
+            <div className="grid grid-cols-[38px_1fr] gap-2 text-fg2">
+              <span className="select-none pt-px text-[11px] text-fg4">auto</span>
+              <span><span className="text-fg1">Routed to {routedTo.name}:</span> {routed!.reason}</span>
+            </div>
+          )}
           {thoughts.map((t, i) => (
             <div key={i} className={`grid grid-cols-[38px_1fr] gap-2 ${t.kind === "gap" ? "text-[#d9a46b]" : "text-fg2"}`}>
               <span className="num select-none pt-px text-[11px] text-fg4">{t.at != null && t0 != null ? fmtT(t.at - t0) : String(i + 1).padStart(2, "0")}</span>

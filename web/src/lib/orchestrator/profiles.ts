@@ -8,11 +8,13 @@ export const PROFILES: OrchestratorProfile[] = [
     persona: "Planners, developers, homebuyers and insurers vetting where to build or buy",
     tagline: "Is it safe and smart to build here?",
     icon: "ShieldAlert",
-    defaultAgents: ["fema-flood", "sf-stormwater", "terrain-elevation", "sf-permits", "usgs-seismic", "sf-311", "live-conditions", "local-news", "sentinel-imagery"],
+    // Insights team: every ground/water hazard layer, plus what's being built and what the land allows, so permits and schools can be joined against the hazard polygons.
+    defaultAgents: ["fema-flood", "sf-stormwater", "terrain-elevation", "cgs-ground-hazards", "sea-level-rise", "usgs-seismic", "calfire-fhsz", "sf-permits", "sf-zoning", "sf-property", "sf-311", "ca-schools"],
     domainPrompt:
       "You advise on development and property risk. You care most about physical hazards (flood zones, low elevation/sea-level rise, seismic exposure) " +
       "colliding with human investment (new construction, added units/stories). A permitted building inside a flood zone or on ground ≤5 m is a headline risk. " +
-      "311 sewer/flooding reports corroborate hazard maps. Weigh official sources (FEMA, USGS, DBI) above news and crowd reports.",
+      "311 sewer/flooding reports corroborate hazard maps. CGS liquefaction zones and Bay sea-level-rise scenarios flag Bay fill; schools in those zones are sensitive sites. " +
+      "Height/zoning bounds what can be built; assessed values lag the market (recent sales are the price proxy). Weigh official sources (FEMA, USGS, CGS, DBI) above news and crowd reports.",
     sampleQuestions: ["Is it risky to build here?", "Which new developments are most exposed to flooding?", "What hazards should a homebuyer know about?"],
   },
   {
@@ -21,11 +23,14 @@ export const PROFILES: OrchestratorProfile[] = [
     persona: "Small business owners scouting a location",
     tagline: "Where should I open my shop?",
     icon: "Store",
-    defaultAgents: ["osm-places", "census-demographics", "sf-311", "sf-permits", "local-news"],
+    // Insights team: demand (places, churn, transit, visitors) vs. friction (crime, street work, 311). Sponsor and census agents
+    // sit out until their keys are set (lib/sponsors/keys.ts), so the keyless team is 9.
+    defaultAgents: ["osm-places", "sf-business", "sf-transit", "sf-crime", "short-term-rentals", "wiki-landmarks", "sf-street-work", "sf-311", "sf-permits", "census-demographics", "apify-reviews", "brightdata-rent", "brightdata-pulse"],
     domainPrompt:
       "You advise small business owners choosing a storefront. You care about competition density (same-category businesses), complementary anchors " +
       "(transit, schools, offices, parks), neighborhood income and renter share, street conditions from 311, and incoming residents from new housing permits. " +
-      "New multi-unit construction nearby means future customers. Heavy 311 encampment/cleanliness complaints hurt foot traffic.",
+      "New multi-unit construction nearby means future customers. Heavy 311 encampment/cleanliness complaints hurt foot traffic. " +
+      "Business openings vs. closures are the strongest local demand signal; pair them with transit access, crime hotspots within a block, and active street digs out front.",
     sampleQuestions: ["Is this a good spot for a coffee shop?", "How saturated is food & drink here?", "Who lives here and what do they spend on?"],
   },
   {
@@ -34,7 +39,8 @@ export const PROFILES: OrchestratorProfile[] = [
     persona: "Relief coordinators and insurance adjusters",
     tagline: "What's happening on the ground right now?",
     icon: "Siren",
-    defaultAgents: ["live-conditions", "local-news", "sf-311", "fema-flood", "sf-stormwater", "usgs-seismic", "osm-places", "nasa-eonet", "sentinel-imagery", "orbit-passes"],
+    // Insights team: live signals first (alerts, dispatch, forecast, tides, news, 311), then the hazard zones and sensitive sites they land on.
+    defaultAgents: ["live-conditions", "nasa-eonet", "sentinel-imagery", "usgs-seismic", "sf-fire-ems", "weather-outlook", "sea-level-rise", "cgs-ground-hazards", "fema-disasters", "ca-schools", "sf-311", "local-news"],
     domainPrompt:
       "You support emergency responders. Prioritize live alerts, recent news, and fresh 311 reports. Map critical facilities (hospitals, schools, fire stations) " +
       "against hazard zones. Be explicit about recency: anything older than a week is background, not situation. " +
@@ -43,4 +49,4 @@ export const PROFILES: OrchestratorProfile[] = [
   },
 ];
 
-export const getProfile = (id: string) => PROFILES.find((p) => p.id === id) ?? PROFILES[0];
+export const getProfile = (id?: string) => PROFILES.find((p) => p.id === id) ?? PROFILES[0];

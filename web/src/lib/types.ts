@@ -58,6 +58,8 @@ export interface AgentConfig {
   createdBy?: string; // parent agent id, or "user"
   /** Spawned mid-run and not yet kept: invisible to other runs' planners and to the Hub. */
   temporary?: boolean;
+  /** Env vars still unset (sponsor/API keys). Set only on configs sent to the client; such agents sit out of plans. */
+  needsKeys?: string[];
 }
 
 export interface WorkerTask {
@@ -99,7 +101,10 @@ export interface PlanStep {
 
 /** Everything the server streams to the client over SSE. */
 export type RunEvent =
+  /** profileId is "auto" until the `routed` event when the user left the orchestrator on Auto. */
   | { type: "run_started"; runId: string; mode: RunMode; profileId: string; region: Region; question?: string; llm: boolean }
+  /** Which orchestrator profile runs this mission. auto: picked by the planner (or keyword router), else chosen by the user. */
+  | { type: "routed"; profileId: string; reason: string; auto: boolean }
   | { type: "region_labeled"; label: string }
   | { type: "thought"; agentId: string; text: string }
   | { type: "plan"; steps: PlanStep[]; rationale: string }
@@ -117,7 +122,8 @@ export type RunMode = "ask" | "insights";
 
 export interface RunRequest {
   mode: RunMode;
-  profileId: string;
+  /** A profile id, or "auto" / omitted to let the orchestrator route the question. */
+  profileId?: string;
   region: Region;
   question?: string;
   /** Extra agent ids the user wants included (e.g. custom ones from the hub). */

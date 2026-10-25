@@ -16,6 +16,9 @@ export const append = mutation({
         case "region_labeled":
           patch.label = event.label;
           break;
+        case "routed": // an "auto" run row takes the profile the orchestrator routed to
+          patch.profileId = event.profileId;
+          break;
         case "finding": {
           const f = event.finding;
           findingCount++;

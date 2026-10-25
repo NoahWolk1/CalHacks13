@@ -18,7 +18,7 @@ function ago(t: number) {
 }
 
 /** One history row, normalized across backends. */
-export type RecentRun = { id: string; label?: string; status: string; startedAt: number; profileId: string; mode: string; question?: string; findingCount?: number };
+export type RecentRun = { id: string; label?: string; status: string; startedAt: number; profileId: string; mode: string; question?: string; findingCount?: number; auto?: boolean };
 
 export function ConvexMissionHistory() {
   const recent = useQuery(api.runs.recent, { limit: 10 });
@@ -90,7 +90,7 @@ export default function MissionHistory({ recent, backend }: { recent: RecentRun[
                     <span className="num ml-auto shrink-0 text-[11.5px] text-fg3">{ago(r.startedAt)}</span>
                   </div>
                   <div className="mt-0.5 truncate pl-3.5 text-[12px] text-fg3">
-                    {profile?.name ?? r.profileId} · {r.mode === "ask" && r.question ? `“${r.question}”` : "Insights"} · {r.findingCount ?? 0} findings
+                    {profile?.name ?? (r.profileId === "auto" ? "Auto" : r.profileId)}{r.auto && profile ? " (auto)" : ""} · {r.mode === "ask" && r.question ? `“${r.question}”` : "Insights"} · {r.findingCount ?? 0} findings
                   </div>
                 </button>
               );

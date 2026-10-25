@@ -12,20 +12,48 @@ import { stormwaterWorker } from "./workers/stormwater";
 import { sentinelWorker } from "./workers/sentinel";
 import { orbitWorker } from "./workers/orbit";
 import { eonetWorker } from "./workers/eonet";
+import { reviewsWorker } from "./workers/reviews";
+import { rentWorker } from "./workers/rent";
+import { pulseWorker } from "./workers/pulse";
+import { planningNoticesWorker } from "./workers/planningNotices";
+import { crimeWorker } from "./workers/crime";
+import { evictionsWorker } from "./workers/evictions";
+import { businessWorker } from "./workers/business";
+import { crashesWorker } from "./workers/crashes";
+import { zoningWorker } from "./workers/zoning";
+import { propertyWorker } from "./workers/property";
+import { fireEmsWorker } from "./workers/fireEms";
+import { streetWorkWorker } from "./workers/streetWork";
+import { transitWorker } from "./workers/transit";
+import { treesWorker } from "./workers/trees";
+import { groundHazardsWorker } from "./workers/groundHazards";
+import { seaLevelWorker } from "./workers/seaLevel";
+import { wildfireWorker } from "./workers/wildfire";
+import { weatherWorker } from "./workers/weather";
+import { landmarksWorker } from "./workers/landmarks";
+import { rentalsWorker } from "./workers/rentals";
+import { schoolsWorker } from "./workers/schools";
+import { envBurdenWorker } from "./workers/envBurden";
+import { disastersWorker } from "./workers/disasters";
 import { createLibrary, type Library } from "./library";
 import { buildGeneratedWorker } from "./runtime";
 
 export const BUILTIN_WORKERS: Worker[] = [
   floodWorker, stormwaterWorker, terrainWorker, permitsWorker, complaintsWorker, placesWorker,
   seismicWorker, alertsWorker, newsWorker, demographicsWorker, sentinelWorker, orbitWorker, eonetWorker,
+  // Sponsor-backed (Apify / Bright Data): inert until their keys are set; see lib/sponsors/keys.ts.
+  reviewsWorker, rentWorker, pulseWorker, planningNoticesWorker,
+  // DataSF city-data agents (no key): crime, evictions, business churn, crashes, zoning, property, fire/EMS, street work, transit, trees.
+  crimeWorker, evictionsWorker, businessWorker, crashesWorker, zoningWorker, propertyWorker, fireEmsWorker, streetWorkWorker, transitWorker, treesWorker,
+  // Hazard / environment / context agents (no key): CGS zones, sea-level rise, CAL FIRE, weather, Wikipedia, Airbnb, schools, CalEnviroScreen, FEMA history.
+  groundHazardsWorker, seaLevelWorker, wildfireWorker, weatherWorker, landmarksWorker, rentalsWorker, schoolsWorker, envBurdenWorker, disastersWorker,
 ];
 
 // Generated agents come in two kinds:
 // - saved: in the library (data/agents.json); every planner and the Hub see them like built-ins.
 // - temporary: spawned mid-run and not yet kept; only reachable by id (the run that spawned them,
 //   and the Keep/Discard calls). Lost on server restart.
-export function createRegistry(library: Library) {
-  const temp = new Map<string, Worker>();
+export function createRegistry(library: Library, temp = new Map<string, Worker>()) {
   let saved: Map<string, Worker> | null = null;
   const savedMap = () => (saved ??= new Map(library.list().map((c) => [c.id, buildGeneratedWorker({ ...c, temporary: false })])));
 
@@ -66,9 +94,10 @@ export function createRegistry(library: Library) {
 
 export type Registry = ReturnType<typeof createRegistry>;
 
-// One registry per server process; kept on globalThis so dev hot-reloads don't drop spawned agents.
-const g = globalThis as { __agentRegistry?: Registry };
-export const registry: Registry = (g.__agentRegistry ??= createRegistry(createLibrary()));
+// Rebuilt on every module load so dev hot-reloads pick up edited BUILTIN_WORKERS; only the spawned
+// (temporary) agents live on globalThis so a reload doesn't drop them. Saved agents reload from the library file.
+const g = globalThis as { __agentTemp?: Map<string, Worker> };
+export const registry: Registry = createRegistry(createLibrary(), (g.__agentTemp ??= new Map()));
 
 export const allWorkers = () => registry.allWorkers();
 export const getWorker = (id: string) => registry.getWorker(id);

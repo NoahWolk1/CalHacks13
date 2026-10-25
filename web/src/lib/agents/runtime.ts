@@ -10,6 +10,7 @@ import { getText } from "@/lib/http";
 import { assertPublicUrl } from "./urlGuard";
 import { placeFinding, type Geocode } from "./placement";
 import { geocode as nominatim } from "./geocode";
+import { brightDataMissing, unlock } from "@/lib/sponsors/brightdata";
 
 type MessageParam = Anthropic.Beta.Messages.BetaMessageParam;
 type ToolResult = Anthropic.Beta.Messages.BetaToolResultBlockParam;
@@ -20,9 +21,14 @@ export interface RuntimeDeps {
   client: () => Anthropic | null;
   geocode: Geocode;
   fetchText: (url: string, opts: { signal?: AbortSignal; timeoutMs?: number }) => Promise<string>;
+  /** Page fetch through Bright Data Web Unlocker (markdown), or null when it isn't configured. */
+  unlockPage?: (() => ((url: string, opts: { signal?: AbortSignal }) => Promise<string>) | null);
 }
 
-const defaultDeps: RuntimeDeps = { client: llm, geocode: nominatim, fetchText: getText };
+// The `scrape` primitive: with Bright Data configured, pages are fetched client-side through Web
+// Unlocker (gets past bot walls, returns markdown) instead of Claude's server-side web_fetch.
+const brightDataPage = () => (brightDataMissing.unlocker().length ? null : (url: string, o: { signal?: AbortSignal }) => unlock(url, { signal: o.signal, as: "markdown", timeoutMs: 25_000 }));
+const defaultDeps: RuntimeDeps = { client: llm, geocode: nominatim, fetchText: getText, unlockPage: brightDataPage };
 
 const nullable = (type: string) => ({ type: [type, "null"] });
 const EMIT_FINDINGS = {
@@ -66,6 +72,13 @@ const HTTP_GET = {
   input_schema: { type: "object" as const, additionalProperties: false, required: ["url"], properties: { url: { type: "string" } } },
 };
 
+const FETCH_PAGE = {
+  name: "fetch_page",
+  description: "Fetch a public web page (rendered, bot-protection handled) and return it as markdown, truncated. Use for listing sites, news, city pages; use http_get for JSON APIs.",
+  strict: true,
+  input_schema: { type: "object" as const, additionalProperties: false, required: ["url"], properties: { url: { type: "string" } } },
+};
+
 const RawFindingSchema = z.object({
   claim: z.string().min(1),
   source_url: z.string(),
@@ -79,10 +92,10 @@ const RawFindingSchema = z.object({
 });
 const EmitInput = z.object({ findings: z.array(z.unknown()) });
 
-function toolsFor(cfg: AgentConfig): Anthropic.Beta.Messages.BetaToolUnion[] {
+function toolsFor(cfg: AgentConfig, brightData: boolean): Anthropic.Beta.Messages.BetaToolUnion[] {
   const tools: Anthropic.Beta.Messages.BetaToolUnion[] = [];
   if (cfg.tools.includes("search")) tools.push({ type: "web_search_20260209", name: "web_search", max_uses: 4 });
-  if (cfg.tools.includes("scrape")) tools.push({ type: "web_fetch_20260209", name: "web_fetch", max_uses: 4, max_content_tokens: 20_000 });
+  if (cfg.tools.includes("scrape")) tools.push(brightData ? FETCH_PAGE : { type: "web_fetch_20260209", name: "web_fetch", max_uses: 4, max_content_tokens: 20_000 });
   if (cfg.tools.includes("http_get")) tools.push(HTTP_GET);
   tools.push(EMIT_FINDINGS);
   return tools;
@@ -117,7 +130,9 @@ export function buildGeneratedWorker(cfg: AgentConfig, deps: RuntimeDeps = defau
       const client = deps.client();
       if (!client) throw new Error("Generated agents need ANTHROPIC_API_KEY");
       const signal = AbortSignal.any([ctx.signal, AbortSignal.timeout(RUNTIME_LIMITS.timeMs)]);
-      const tools = toolsFor(cfg);
+      const unlockPage = deps.unlockPage?.() ?? null;
+      const tools = toolsFor(cfg, !!unlockPage);
+      const clip = (body: string) => body.length > RUNTIME_LIMITS.httpBodyChars ? `${body.slice(0, RUNTIME_LIMITS.httpBodyChars)}\n…[truncated ${body.length - RUNTIME_LIMITS.httpBodyChars} chars]` : body;
       const messages: MessageParam[] = [{ role: "user", content: brief(ctx) }];
       let emitted = 0;
 
@@ -149,8 +164,18 @@ export function buildGeneratedWorker(cfg: AgentConfig, deps: RuntimeDeps = defau
         if (name === "http_get" && cfg.tools.includes("http_get")) {
           const url = assertPublicUrl(String((input as { url?: unknown })?.url ?? "")).toString();
           ctx.log(`GET ${short(url)}`);
-          const body = await deps.fetchText(url, { signal, timeoutMs: 12_000 });
-          return body.length > RUNTIME_LIMITS.httpBodyChars ? `${body.slice(0, RUNTIME_LIMITS.httpBodyChars)}\n…[truncated ${body.length - RUNTIME_LIMITS.httpBodyChars} chars]` : body;
+          return clip(await deps.fetchText(url, { signal, timeoutMs: 12_000 }));
+        }
+        if (name === "fetch_page" && unlockPage && cfg.tools.includes("scrape")) {
+          const url = assertPublicUrl(String((input as { url?: unknown })?.url ?? "")).toString();
+          ctx.log(`Reading ${short(url)} via Bright Data`);
+          try {
+            return clip(await unlockPage(url, { signal }));
+          } catch (e) {
+            if (signal.aborted) throw e;
+            ctx.log(`Bright Data failed (${(e as Error).message.slice(0, 60)}); fetching directly`);
+            return clip(await deps.fetchText(url, { signal, timeoutMs: 12_000 }));
+          }
         }
         throw new Error(`Unknown tool: ${name}`);
       };

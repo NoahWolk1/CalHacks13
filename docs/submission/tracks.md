@@ -10,7 +10,7 @@
 | Spacetime ($2,048 / $1,024 / $512) | **Ready** | Set the SpacetimeDB env vars on Vercel and redeploy; show the share-link moment. |
 | Convex | **Not claimed** | We switched to SpacetimeDB (one of Convex/Spacetime per team). Convex code stays as a fallback only. |
 | Anthropic | **Blocked on a decision** | Name the community + a firsthand problem |
-| Bright Data / Apify | **Not qualified yet** | Neither is integrated. A README mention alone disqualifies for Bright Data. |
+| Bright Data / Apify | **Built, waiting on keys** | Code is in (4 workers + generated-agent fetch + custom Actor). Needs the API keys set locally and on Vercel, the Actor pushed, and one demo beat that shows their pins live. |
 | Best Planet-First Hack | Ready (no stated criteria) | Frame the climate angle in Devpost |
 | Most Technically Complex Hack | Ready (no stated criteria) | None |
 | Microsoft: Built for the Real World | Medium | Same named community + production/measurement story |
@@ -61,21 +61,36 @@ Recommendation: **A or B** matches the strongest demo result (flood × permits) 
 
 **Still missing:** [ ] pick the community · [ ] one firsthand conversation + a quote · [ ] update Devpost/pitch placeholders · [ ] log the decision with the date.
 
-## Bright Data / Apify (only if we add them)
+## Bright Data / Apify
 
-**Requirements:** *Bright Data:* live public web data must be essential to the core. It must handle blocks, slowness and empty results. **Disqualified for mocked/hardcoded demo data, scraping behind logins, or Bright Data only mentioned in the README.** *Apify:* meaningful use; separate Best Actor award for an actor built at the event.
+**Requirements:** *Bright Data:* live public web data must be essential to the core. It must handle blocks, slowness and empty results. **Disqualified for mocked/hardcoded demo data, scraping behind logins, or Bright Data only mentioned in the README.** *Apify:* meaningful use; separate **Best Actor** award for an actor built at the event.
 
-**How we qualify today**
-- [x] The product depends entirely on live public data, with no mocks in the demo path. That's the spirit of Bright Data's criteria.
-- [ ] **Neither SDK is used anywhere in the code.** As things stand we do not qualify for either.
+**What's built (2026-10-25).** Every worker below runs live on each request. They have no mock or fixture fallback: recorded HTML is used only in unit tests. Without keys each one logs "needs <KEY>" and returns nothing.
 
-**Realistic paths (pick at most one, only if there are spare hours after the demo is solid)**
-- [ ] **Apify actor as the "scrape a URL" primitive** for agent creation (the `scrape` tool in `web/src/lib/agents/runtime.ts`, currently Claude's `web_fetch`), e.g. "scrape the listings at <url> and pin each address". Building one custom actor also enters Best Actor.
-- [ ] **Bright Data** behind the News Uplink worker or a new listings/news-site scraper (Web Unlocker / SERP API), replacing Google News RSS for richer article data. It must appear in the live demo, not just the README.
+| Worker | Sponsor product | Live source | What lands on the map |
+|---|---|---|---|
+| **Rent Scout** (`brightdata-rent`) | Bright Data **Web Unlocker** | Craigslist apartment search around the area (public page; it blocks datacenter IPs, which is why Unlocker is needed) | Median asking rent overall and by bedroom count, plus up to 25 listing pins with links |
+| **Local Pulse** (`brightdata-pulse`) | Bright Data **SERP API** (parsed JSON) | Google results for "<neighborhood>" + topic, plus Reddit/Nextdoor threads | Area-level news and resident-discussion findings with links |
+| Generated agents' `scrape` tool | Bright Data **Web Unlocker** (markdown) | Any public URL an agent picks (still checked by `urlGuard`) | Whatever the spawned agent finds. Falls back to a direct fetch if Bright Data errors |
+| **Review Radar** (`apify-reviews`) | Apify `compass/crawler-google-places` | Google Maps listings for the question's category, restricted to the drawn polygon | Ratings, review counts, price level, closures; saturation (places/km²), entrenched leaders, ratings gap |
+| **Hearing Watch** (`apify-planning-notices`) | **Our Actor** `sf-planning-notices` (built at the event) | sfplanning.org public notices table + DataSF address registry | Upcoming Planning Commission / variance hearings near the area, with notice and plan PDFs |
 
-**What to say (if added):** "Agents that scrape the web use [Apify actor / Bright Data] so they get through blocks and slow sites. Remove it and the [listings/news] agent goes blank."
+**How it handles blocks, slowness and empty results (Bright Data's criteria):**
+- **Blocks:** Unlocker gets past Craigslist's bot wall.
+- **Slowness:** 25 s budgets; Apify calls are capped by `timeout`, `maxItems` and `maxTotalChargeUsd`, with no retries (each retry would be billed); Bright Data gets one retry.
+- **Empty results:** an empty Google Maps result becomes a finding ("no direct competition"). Parsers return `[]` on layout changes instead of inventing data.
+- **Repeat runs:** results are cached for 6 h, so a repeated demo run doesn't re-bill.
 
-**Still missing:** everything above. **Do not list these tracks on Devpost unless the integration runs in the demo.**
+**What to say:** "Storefront owners need to know what's on the block *today*. GeoSwarm's agents pull it live: Apify scrapes Google Maps for every café in the polygon (ratings, review counts, closures), Bright Data's Web Unlocker pulls the current rent listings Craigslist blocks bots from, and the SERP API finds what residents are saying on Reddit. Take Bright Data out and Rent Scout and Local Pulse go blank. For Best Actor, we built `sf-planning-notices`: SF Planning publishes upcoming hearings as one HTML table with no API and no coordinates. Our Actor turns it into geocoded JSON you can filter by radius, and our Hearing Watch agent pins the hearings on the map."
+
+**Demo beat:** Storefront Scout, Mission District, "Is this a good spot for a café?" Show Review Radar's mint pins and its saturation line, Rent Scout's median rent, a Local Pulse Reddit thread, and a Hearing Watch pin with its PDF.
+
+**Still missing**
+- [ ] Keys in `web/.env.local` and on Vercel: `BRIGHTDATA_API_TOKEN`, `BRIGHTDATA_UNLOCKER_ZONE`, `BRIGHTDATA_SERP_ZONE`, `APIFY_TOKEN`, `APIFY_PLANNING_ACTOR` (see [web/README.md](../../web/README.md#sponsor-data-workers-bright-data--apify)).
+- [ ] `npm run apify:login && npm run apify:push` (from `web/`). Then make the Actor public in Apify Console with its README, which Best Actor judges will look at.
+- [ ] The planner must skip workers whose keys are missing (`missingEnv()` in `web/src/lib/sponsors/keys.ts`); this is an orchestrator change. Optionally add keyword regexes and add the new ids to Storefront Scout's `defaultAgents`.
+- [ ] One live rehearsal with keys: check the Craigslist parse (`rent.ts`) and that the Google Maps Actor finishes within the 25 s budget (raise `TIMEOUT_S` if it returns few places).
+- [ ] Devpost: list both tracks only once the demo shows their pins live.
 
 ## Best Planet-First Hack (Cal Hacks general prize)
 

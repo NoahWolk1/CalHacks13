@@ -17,7 +17,8 @@ let diskWarned = false;
 const UA = "GeoAgents/0.1 (CalHacks 13 hackathon project)";
 
 type Kind = "json" | "text" | "bin";
-type Opts = { timeoutMs?: number; signal?: AbortSignal; init?: RequestInit };
+/** retries: extra attempts on network errors/5xx/timeouts (default 2). Use 0 for paid, non-idempotent calls. */
+type Opts = { timeoutMs?: number; signal?: AbortSignal; init?: RequestInit; retries?: number };
 
 export async function getJson<T = unknown>(url: string, opts: Opts = {}): Promise<T> {
   return (await cached(url, opts, "json", (r) => r.json())) as T;
@@ -65,7 +66,7 @@ async function live(url: string, opts: Opts, read: (r: Response) => Promise<unkn
       const res = await fetch(url, { ...opts.init, signal: ctl.signal, headers: { "User-Agent": UA, ...(opts.init?.headers ?? {}) } });
       if (!res.ok) {
         const err = new Error(`${res.status} ${res.statusText} from ${new URL(url).host}`);
-        if (res.status >= 500 && attempt < 2) throw Object.assign(err, { retry: true });
+        if (res.status >= 500 && attempt < (opts.retries ?? 2)) throw Object.assign(err, { retry: true });
         throw err;
       }
       const data = await read(res);
@@ -74,7 +75,7 @@ async function live(url: string, opts: Opts, read: (r: Response) => Promise<unkn
       return data;
     } catch (e) {
       const retryable = (e as { retry?: boolean }).retry || e instanceof TypeError || (e as Error).name === "AbortError";
-      if (opts.signal?.aborted || !retryable || attempt >= 2) throw e;
+      if (opts.signal?.aborted || !retryable || attempt >= (opts.retries ?? 2)) throw e;
       await sleep(400 * (attempt + 1));
     } finally {
       clearTimeout(timer);

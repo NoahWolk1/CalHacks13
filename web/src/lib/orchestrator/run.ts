@@ -7,8 +7,10 @@ import { partialParse } from "@anthropic-ai/sdk/_vendor/partial-json-parser/pars
 import type { Finding, Insight, PlanStep, RunEvent, RunRequest, Worker, WorkerTask } from "@/lib/types";
 import { allWorkers, getWorker, toConfig } from "@/lib/agents/registry";
 import { requestSpawn, SPAWN_LIMITS } from "@/lib/agents/factory";
+import { hasKeys } from "@/lib/sponsors/keys";
 import { RUNTIME_LIMITS } from "@/lib/agents/runtime";
-import { getProfile } from "./profiles";
+import { getProfile, PROFILES } from "./profiles";
+import { AUTO, DEFAULT_PROFILE, normalizeProfileId, routeByKeywords } from "./route";
 import { crossReference, redispatchTargets, type Link } from "./crossref";
 import { llm, MODEL, FALLBACK } from "@/lib/llm";
 
@@ -28,11 +30,14 @@ export type RunOptions = {
   quotaLimited?: boolean;
 };
 
-export async function runOrchestrator(req: RunRequest, emitRaw: (e: RunEvent) => void, signal: AbortSignal, opts: RunOptions = {}) {
+export async function runOrchestrator(input: RunRequest, emitRaw: (e: RunEvent) => void, signal: AbortSignal, opts: RunOptions = {}) {
   const t0 = Date.now();
   // Once the user recalls the agents nothing more goes out (the caller ends the run for viewers).
   const emit = (e: RunEvent) => { if (!signal.aborted) emitRaw(e); };
-  const profile = getProfile(req.profileId);
+  // "auto" (or omitted): the planner routes the question to a profile (route.ts). Until then `req`
+  // carries "auto"; afterwards it carries the routed profile, which every later prompt reads.
+  const requested = normalizeProfileId(input.profileId);
+  let req: RunRequest = { ...input, profileId: requested };
   const region = req.region;
   const client = opts.llm === false ? null : llm();
   const findings: Finding[] = [];
@@ -41,7 +46,7 @@ export async function runOrchestrator(req: RunRequest, emitRaw: (e: RunEvent) =>
   // Phase timings go to the server log (Vercel function logs), not the user-facing thoughts.
   const lap = (phase: string, since: number) => console.info(`[timing] ${phase} ${Date.now() - since}ms (t=${Date.now() - t0}ms)`);
 
-  emit({ type: "run_started", runId: crypto.randomUUID(), mode: req.mode, profileId: profile.id, region, question: req.question, llm: !!client });
+  emit({ type: "run_started", runId: crypto.randomUUID(), mode: req.mode, profileId: requested, region, question: req.question, llm: !!client });
   if (opts.quotaLimited) think(QUOTA_NOTE);
 
   // ── 0. Where are we? ──────────────────────────────────────────────────────
@@ -51,24 +56,41 @@ export async function runOrchestrator(req: RunRequest, emitRaw: (e: RunEvent) =>
   think(`Area: ${region.label ?? "unnamed area"} · ${regionAreaKm2(region).toFixed(2)} km²${touchesSF(region) ? " · SF city feeds available" : ""}`);
 
   // ── 1. Plan ───────────────────────────────────────────────────────────────
-  const workers = allWorkers();
+  // Agents whose API keys aren't set sit out of every plan (the Hub still lists them as "Needs key").
+  const workers = allWorkers().filter(hasKeys);
   let steps: PlanStep[];
   let rationale: string;
   let gaps: string[] = [];
+  let route: { profileId: string; reason: string } | null = null;
+  const auto = requested === AUTO;
+  const keywordRoute = () => {
+    if (!auto) return;
+    route = req.mode === "ask" && req.question ? routeByKeywords(req.question) : { profileId: DEFAULT_PROFILE, reason: "No question, so the default survey team" };
+    req = { ...req, profileId: route.profileId };
+  };
   if (client && req.mode === "ask" && req.question) {
-    think("Planning which agents this question needs…");
+    think(auto ? "Routing the question and planning which agents it needs…" : "Planning which agents this question needs…");
     try {
       const tp = Date.now();
-      ({ steps, rationale, gaps } = await llmPlan(req, workers));
+      const out = await llmPlan(req, workers);
+      ({ steps, rationale, gaps } = out);
+      if (auto && out.route) { route = out.route; req = { ...req, profileId: out.route.profileId }; }
+      else keywordRoute(); // the planner skipped the profile: route by keywords, plan stays
       lap("plan", tp);
     } catch (e) {
       think(`Planner fell back to heuristics (${(e as Error).message.slice(0, 80)})`);
+      keywordRoute();
       ({ steps, rationale } = heuristicPlan(req, workers));
     }
   } else {
+    keywordRoute();
+    if (auto && !(req.mode === "ask" && req.question)) think(`No question: using ${getProfile(req.profileId).name} survey team`);
     ({ steps, rationale } = heuristicPlan(req, workers));
   }
   if (signal.aborted) return;
+  const profile = getProfile(req.profileId);
+  const routed = route as { profileId: string; reason: string } | null;
+  emit({ type: "routed", profileId: profile.id, reason: routed?.reason ?? "Selected by you", auto });
   // Drop SF-only / US-only agents outside their coverage rather than dispatching them to do nothing
   // (or worse, to report "no FEMA flood zone" in London).
   const covered = (w: Worker) => (w.coverage !== "San Francisco" || touchesSF(region)) && (w.coverage !== "US" || touchesUS(region));
@@ -173,7 +195,7 @@ export async function runOrchestrator(req: RunRequest, emitRaw: (e: RunEvent) =>
   if (client && req.mode === "ask" && req.question && spawned < SPAWN_LIMITS.maxPerRun && !signal.aborted) {
     think("Checking whether the findings fully cover the question…");
     const used = steps.map((s) => getWorker(s.agentId)).filter((w): w is Worker => !!w);
-    const need = await llmGapCheck(req, findings, used, allWorkers()).catch(() => "");
+    const need = await llmGapCheck(req, findings, used, workers).catch(() => "");
     if (need) await coverGap(need, { ...baseTask, focus: need });
     if (signal.aborted) return;
   }
@@ -246,7 +268,37 @@ const KEYWORDS: Record<string, RegExp> = {
   "sentinel-imagery": /\b(satellite|imagery|image|photo|aerial|from (space|above)|sentinel|landsat|vegetation|green|land ?cover|space)/i,
   "orbit-passes": /\b(orbit|satellite pass|overpass|next (image|pass)|revisit|iss\b|space station|tle\b|space)/i,
   "nasa-eonet": /\b(fire|wildfire|smoke|burn|storm|hurricane|cyclone|volcan|landslide|disaster|natural event|nasa|flood)/i,
+  // Sponsor-backed (only planned when their keys are set)
+  "apify-reviews": /\b(reviews?|ratings?|rated|stars?\b|yelp|google maps|competit|popular|best\b)/i,
+  "brightdata-rent": /\b(rent\b|rents\b|rental|listings?|lease|apartments?|asking price)/i,
+  "brightdata-pulse": /\b(buzz|reddit|nextdoor|chatter|sentiment|people (say|think)|residents (say|think)|vibe|reputation|online)/i,
+  "apify-planning-notices": /\b(hearings?|planning (commission|department|notices?|applications?)|zoning|public notice|variance|conditional use|entitle)/i,
+  // DataSF city data
+  "sf-crime": /\b(crime|safe\b|safety|danger|theft|break-?ins?|burglar|robber|assault|violen|police|sfpd|drugs?\b|shooting|stabbing|vandal)/i,
+  "sf-evictions": /\b(evict|tenant|rent control|ellis|owner move|displace|gentrif|landlord)/i,
+  "sf-business": /\b(business|shop|store|storefront|caf[eé]|coffee|restaurant|retail|opening|closures?|closing|vacan|churn|competit|saturat|commercial)/i,
+  "sf-crashes": /\b(crash|collision|traffic|pedestrian|cyclist|bike|vision zero|road safety|intersection|speeding|walkab)/i,
+  "sf-zoning": /\b(zon(e|ing)|height limit|density|upzon|setback|land use|allowed to build|can i build|adu\b|mixed.?use|how tall)/i,
+  "sf-property": /\b(propert(y|ies)|home values?|house prices?|price per|assess|property tax|sales?\b|sold\b|buy|purchase|invest|real estate|parcel)/i,
+  "sf-fire-ems": /\b(fires?\b|ems\b|ambulance|medical|emergenc|911|response time|paramedic)/i,
+  "sf-street-work": /\b(construction|road ?work|street work|dig\b|digging|excavat|road closure|detour|torn up|utility work|parklet|sidewalk|outdoor dining)/i,
+  "sf-transit": /\b(transit|muni|bart|bus(es)?\b|trains?\b|subway|commut|car-?free|metro|station|foot ?traffic)/i,
+  "sf-trees": /\b(trees?\b|greenery|canopy|shade|leafy|urban heat|heat island)/i,
+  // Hazards, environment, context
+  "cgs-ground-hazards": /\b(liquef|landslide|soil|ground (shaking|failure)|geotech|tsunami|earthquake|quake|seismic|landfill|foundation|hazard)/i,
+  "sea-level-rise": /\b(sea.?level|slr\b|rising (seas?|water|tides?)|tides?\b|king tide|shoreline|waterfront|coast|inundat|2050|2100|long.?term|climate)/i,
+  "calfire-fhsz": /\b(wildfire|fire hazard|fire zone|fhsz|wui\b|defensible|brush|ember|fire insurance|fire risk)/i,
+  "weather-outlook": /\b(weather|forecast|this week|weekend|rain|wind|gust|heat\b|heatwave|hot\b|temperature|outdoor)/i,
+  "wiki-landmarks": /\b(landmarks?|histor|known for|famous|notable|touris|attraction|culture|character)/i,
+  "short-term-rentals": /\b(airbnb|short.?term rental|str\b|vacation rental|touris|hotel|investor|gentrif|displace)/i,
+  "ca-schools": /\b(schools?|kids?\b|child|famil|daycare|childcare|preschool|education|students?|sensitive (site|receptor)|liquor|cannabis|dispensar)/i,
+  "env-burden": /\b(pollut|air quality|pm2\.?5|diesel|asthma|toxic|environmental (justice|burden)|disadvantaged|contaminat|health)/i,
+  "fema-disasters": /\b(disasters?|declaration|fema|past (events|disasters)|how often|track record)/i,
 };
+
+// A broad question ("is it risky to build here?") can hit a dozen keyword lists; keep the
+// heuristic plan to this many agents, preferring the profile's own survey team.
+const MAX_KEYWORD_STEPS = 8;
 
 function heuristicPlan(req: RunRequest, workers: Worker[]): { steps: PlanStep[]; rationale: string } {
   const profile = getProfile(req.profileId);
@@ -258,7 +310,11 @@ function heuristicPlan(req: RunRequest, workers: Worker[]): { steps: PlanStep[];
     };
   }
   const q = req.question;
-  const steps = workers.filter((w) => KEYWORDS[w.id]?.test(q)).map((w) => ({ agentId: w.id, reason: `Question mentions "${q.match(KEYWORDS[w.id])?.[0]}"` }));
+  const inCore = (id: string) => (core.includes(id) ? 0 : 1);
+  const steps = workers.filter((w) => KEYWORDS[w.id]?.test(q))
+    .sort((a, b) => inCore(a.id) - inCore(b.id)) // stable: registry order within each group
+    .slice(0, MAX_KEYWORD_STEPS)
+    .map((w) => ({ agentId: w.id, reason: `Question mentions "${q.match(KEYWORDS[w.id])?.[0]}"` }));
   const matched = steps.length;
   // Few keyword hits: top up with this orchestrator's core team so a vague question still gets a real survey.
   for (const id of core) {
@@ -273,29 +329,49 @@ function heuristicPlan(req: RunRequest, workers: Worker[]): { steps: PlanStep[];
   };
 }
 
+/** One roster line per agent: coverage already says "San Francisco", and the sponsor plumbing doesn't help the choice. */
+export function brief(description: string, max = 140) {
+  const d = description.replace(/\s*San Francisco only\.?/i, "").replace(/\s*Via [^.]+\.?$/i, "").replace(/\s*Custom Apify Actor[^.]*\.?$/i, "").trim();
+  if (d.length <= max) return d;
+  const cut = d.slice(0, max);
+  return `${cut.slice(0, cut.lastIndexOf(" "))}…`;
+}
+
 const PlanSchema = z.object({
   rationale: z.string(),
   steps: z.array(z.object({ agentId: z.string(), reason: z.string(), focus: z.string() })),
   gaps: z.array(z.string()),
 });
 
+// Auto mode: the same planner call also picks which orchestrator profile owns the question (no extra round trip).
+// The profile fields come first so the agent choice is made with that profile's priorities in mind.
+const PROFILE_IDS = PROFILES.map((p) => p.id) as [string, ...string[]];
+const RoutedPlanSchema = z.object({ profileId: z.enum(PROFILE_IDS), routeReason: z.string() }).extend(PlanSchema.shape);
+
 async function llmPlan(req: RunRequest, workers: Worker[]) {
+  const auto = req.profileId === AUTO;
   const profile = getProfile(req.profileId);
-  const roster = workers.map((w) => `- ${w.id} | ${w.name} | coverage: ${w.coverage} | ${w.description}`).join("\n");
+  const roster = workers.map((w) => `- ${w.id} | ${w.name} | ${w.coverage} | ${brief(w.description)}`).join("\n");
+  const profiles = PROFILES.map((p) => `- ${p.id} | ${p.name} | for ${p.persona.toLowerCase()} | "${p.tagline}" | ${p.domainPrompt.split(". ")[0]}.`).join("\n");
+  const intro = auto
+    ? `You are the dispatcher of a geospatial multi-agent system with three specialist orchestrators:\n${profiles}\n\nFirst route the user's question: set "profileId" to the specialist whose users would ask it (live/current situations → disaster; opening or running a business → storefront; building, buying, hazards and long-term risk → site-risk) and "routeReason" to why, in at most 12 words. Then plan as that specialist would.`
+    : `You are the "${profile.name}" orchestrator of a geospatial multi-agent system. ${profile.domainPrompt}`;
   const res = await llm()!.beta.messages.parse({
     model: MODEL,
     max_tokens: 4000,
-    output_config: { effort: "low", format: betaZodOutputFormat(PlanSchema) },
+    output_config: { effort: "low", format: betaZodOutputFormat(auto ? RoutedPlanSchema : PlanSchema) },
     ...FALLBACK,
-    system: `You are the "${profile.name}" orchestrator of a geospatial multi-agent system. ${profile.domainPrompt}\n\nPick ONLY the worker agents needed to answer the user's question about the selected map area (usually 2–5). For each, give a one-sentence reason and an optional narrower focus (empty string if none). In "gaps", list any data the question needs that NO agent below can provide, phrased as a one-line spec for a new agent (e.g. "scrape Yelp reviews for cafés in the area"); usually empty. "rationale" is one sentence a user will read.\n\nAvailable agents:\n${roster}`,
+    system: `${intro}\n\nPick ONLY the worker agents needed to answer the user's question about the selected map area (usually 2–5). For each, give a one-sentence reason and an optional narrower focus (empty string if none). In "gaps", list any data the question needs that NO agent below can provide, phrased as a one-line spec for a new agent (e.g. "scrape Yelp reviews for cafés in the area"); usually empty. "rationale" is one sentence a user will read.\n\nAvailable agents:\n${roster}`,
     messages: [{ role: "user", content: `Area: ${req.region.label ?? "unknown"} (${touchesSF(req.region) ? "inside San Francisco" : "outside San Francisco"}).\nQuestion: ${req.question}` }],
   });
-  const out = res.parsed_output;
+  const out = res.parsed_output as (z.infer<typeof PlanSchema> & Partial<z.infer<typeof RoutedPlanSchema>>) | null;
   if (!out) throw new Error(`planner returned no parse (${res.stop_reason})`);
+  const routedId = auto && out.profileId && PROFILES.some((p) => p.id === out.profileId) ? out.profileId : null;
   return {
     steps: out.steps.filter((s) => workers.some((w) => w.id === s.agentId)).map((s) => ({ ...s, focus: s.focus || undefined })),
     rationale: out.rationale,
     gaps: out.gaps.slice(0, 2),
+    route: routedId ? { profileId: routedId, reason: (out.routeReason ?? "").trim().split(/\s+/).slice(0, 12).join(" ") || "Best fit for the question" } : null,
   };
 }
 
@@ -304,7 +380,7 @@ const GapSchema = z.object({ gap: z.string() });
 /** After the first sweep: the one missing data need (as a spec for a new agent), or "" if covered. */
 async function llmGapCheck(req: RunRequest, findings: Finding[], used: Worker[], library: Worker[]) {
   const profile = getProfile(req.profileId);
-  const roster = (ws: Worker[]) => ws.map((w) => `- ${w.id} | ${w.name} | ${w.description}`).join("\n") || "(none)";
+  const roster = (ws: Worker[]) => ws.map((w) => `- ${w.id} | ${w.name} | ${brief(w.description)}`).join("\n") || "(none)";
   const res = await llm()!.beta.messages.parse({
     model: MODEL,
     max_tokens: 2000,

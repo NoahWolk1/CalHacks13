@@ -30,6 +30,7 @@ interface State {
   tool: Tool;
   pinRadius: number;
   region: Region | null;
+  /** The picker's selection: "auto" (the orchestrator routes the question) or a profile id. */
   profileId: string;
   mode: RunMode;
   question: string;
@@ -40,6 +41,8 @@ interface State {
   runStartedAt: number | null;
   runDurationMs: number | null;
   plan: PlanStep[];
+  /** The profile running this mission (from the `routed` event). */
+  routed: { profileId: string; reason: string; auto: boolean } | null;
   thoughts: Thought[];
   agentState: Record<string, AgentRunState>;
   findings: Record<string, Finding>;
@@ -62,13 +65,13 @@ interface State {
 }
 
 const emptyRun = {
-  running: false, runStartedAt: null, runDurationMs: null, plan: [], thoughts: [], agentState: {}, findings: {}, findingOrder: [],
+  running: false, runStartedAt: null, runDurationMs: null, plan: [], routed: null, thoughts: [], agentState: {}, findings: {}, findingOrder: [],
   revealed: {}, insights: [], answer: "", error: null, selectedFinding: null, hoveredInsight: null, selectedInsight: null,
 };
 
 export const useStore = create<State>((set, get) => ({
   agents: [], profiles: [], llm: false, live: null,
-  runId: null, tool: "box", pinRadius: 450, region: null, profileId: "site-risk", mode: "insights", question: "",
+  runId: null, tool: "box", pinRadius: 450, region: null, profileId: "auto", mode: "insights", question: "",
   ...emptyRun,
   rightTab: "agents", hubOpen: false,
 
@@ -84,6 +87,9 @@ export const useStore = create<State>((set, get) => ({
       case "region_labeled": return { region: s.region ? { ...s.region, label: e.label } : s.region };
       case "thought": return think({ agentId: e.agentId, text: e.text, at: Date.now() });
       case "plan": return { plan: e.steps };
+      // An auto-routed mission shows Auto selected with the routed profile marked (also for viewers,
+      // whose picker was hydrated from the run row's routed profile).
+      case "routed": return { routed: { profileId: e.profileId, reason: e.reason, auto: e.auto }, ...(e.auto ? { profileId: "auto" } : {}) };
       case "agent_status": {
         const prev = agent(e.agentId);
         const redispatched = !!(e.targets?.length) || prev.redispatched;
@@ -111,3 +117,18 @@ export const useStore = create<State>((set, get) => ({
 }));
 
 export const agentById = (id: string) => useStore.getState().agents.find((a) => a.id === id);
+
+// The picker selection persists per browser (like the layout prefs). Only explicit picks are saved,
+// so opening someone's shared mission doesn't change your default.
+const PROFILE_KEY = "geoswarm.profile";
+export function pickProfile(profileId: string) {
+  useStore.getState().set({ profileId });
+  try { localStorage.setItem(PROFILE_KEY, profileId); } catch { /* storage blocked */ }
+}
+/** Mount once (App), before any shared run hydrates. */
+export function loadSavedProfile() {
+  try {
+    const saved = localStorage.getItem(PROFILE_KEY);
+    if (saved && !useStore.getState().runId) useStore.getState().set({ profileId: saved });
+  } catch { /* ignore */ }
+}

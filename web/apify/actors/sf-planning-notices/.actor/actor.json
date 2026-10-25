@@ -1,0 +1,23 @@
+{
+  "actorSpecification": 1,
+  "name": "sf-planning-notices",
+  "title": "SF Planning Notices & Hearings",
+  "description": "Scrapes San Francisco Planning's public notices table (Planning Commission, variance and neighborhood-notification hearings) and geocodes each project address with the city's own address registry. Filter by neighborhood, bounding box or radius.",
+  "version": "0.1",
+  "buildTag": "latest",
+  "input": "./input_schema.json",
+  "dockerfile": "./Dockerfile",
+  "storages": {
+    "dataset": {
+      "actorSpecification": 1,
+      "title": "Planning notices",
+      "views": {
+        "overview": {
+          "title": "Overview",
+          "transformation": { "fields": ["address", "recordNumber", "recordType", "noticeType", "neighborhood", "hearingDate", "postedDate", "expirationDate", "noticeUrl", "plansUrl", "lat", "lng"] },
+          "display": { "component": "table" }
+        }
+      }
+    }
+  }
+}
