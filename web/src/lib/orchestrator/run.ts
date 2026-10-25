@@ -3,12 +3,15 @@
 
 import { z } from "zod";
 import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
+import { partialParse } from "@anthropic-ai/sdk/_vendor/partial-json-parser/parser";
 import type { Finding, Insight, PlanStep, RunEvent, RunRequest, Worker, WorkerTask } from "@/lib/types";
 import { allWorkers, getWorker, toConfig } from "@/lib/agents/registry";
 import { requestSpawn } from "@/lib/agents/factory";
 import { getProfile } from "./profiles";
 import { crossReference, redispatchTargets, type Link } from "./crossref";
 import { llm, MODEL } from "@/lib/llm";
+
+const QUOTA_NOTE = "Claude quota reached for this hour — running in heuristic mode.";
 import { getJson, sleep } from "@/lib/http";
 import { regionAreaKm2, touchesSF, touchesUS } from "@/lib/geo";
 
@@ -16,18 +19,28 @@ const ORCH = "orchestrator";
 const WORKER_TIMEOUT_MS = 30_000;
 const FALLBACK = { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const };
 
-export async function runOrchestrator(req: RunRequest, emitRaw: (e: RunEvent) => void, signal: AbortSignal) {
+export type RunOptions = {
+  /** false forces heuristic mode (e.g. the hourly Claude quota is used up). Default: use Claude if a key is set. */
+  llm?: boolean;
+  /** The run was downgraded by the quota; say so in the log and the answer. */
+  quotaLimited?: boolean;
+};
+
+export async function runOrchestrator(req: RunRequest, emitRaw: (e: RunEvent) => void, signal: AbortSignal, opts: RunOptions = {}) {
   const t0 = Date.now();
   // Once the user recalls the agents nothing more goes out (the caller ends the run for viewers).
   const emit = (e: RunEvent) => { if (!signal.aborted) emitRaw(e); };
   const profile = getProfile(req.profileId);
   const region = req.region;
-  const client = llm();
+  const client = opts.llm === false ? null : llm();
   const findings: Finding[] = [];
   let fid = 0;
   const think = (text: string) => emit({ type: "thought", agentId: ORCH, text });
+  // Phase timings go to the server log (Vercel function logs), not the user-facing thoughts.
+  const lap = (phase: string, since: number) => console.info(`[timing] ${phase} ${Date.now() - since}ms (t=${Date.now() - t0}ms)`);
 
   emit({ type: "run_started", runId: crypto.randomUUID(), mode: req.mode, profileId: profile.id, region, question: req.question, llm: !!client });
+  if (opts.quotaLimited) think(QUOTA_NOTE);
 
   // ── 0. Where are we? ──────────────────────────────────────────────────────
   region.label = await reverseGeocode(region.center, regionAreaKm2(region)).catch(() => undefined);
@@ -43,7 +56,9 @@ export async function runOrchestrator(req: RunRequest, emitRaw: (e: RunEvent) =>
   if (client && req.mode === "ask" && req.question) {
     think("Planning which agents this question needs…");
     try {
+      const tp = Date.now();
       ({ steps, rationale, gaps } = await llmPlan(req, workers));
+      lap("plan", tp);
     } catch (e) {
       think(`Planner fell back to heuristics (${(e as Error).message.slice(0, 80)})`);
       ({ steps, rationale } = heuristicPlan(req, workers));
@@ -120,8 +135,10 @@ export async function runOrchestrator(req: RunRequest, emitRaw: (e: RunEvent) =>
   };
 
   const baseTask: WorkerTask = { region, question: req.question };
+  const td = Date.now();
   await Promise.all(steps.map((s, i) => dispatch(getWorker(s.agentId)!, { ...baseTask, focus: s.focus }, i * 250)));
   if (signal.aborted) return;
+  lap("sweep", td);
   think(`First sweep complete: ${findings.length} findings from ${steps.length} agents. Cross-referencing…`);
 
   // ── 3. Re-dispatch: send the terrain drone to inspect the specific parcels that matter ──
@@ -133,29 +150,44 @@ export async function runOrchestrator(req: RunRequest, emitRaw: (e: RunEvent) =>
     if (signal.aborted) return;
   }
 
-  // ── 4. Cross-reference → insights ─────────────────────────────────────────
+  // ── 4 + 5. Cross-reference → insights, and (Ask mode) the answer, in parallel ──
+  // The answer reasons over the findings + spatial-join links directly rather than waiting for
+  // the insight synthesis, so the two Claude calls overlap (roughly halves the tail latency).
   const links = crossReference(findings);
-  let insights: Insight[] = [];
-  if (client && findings.length) {
-    think("Connecting findings across agents…");
-    try {
-      insights = await llmInsights(req, findings, links);
-    } catch (e) {
-      think(`Insight synthesis fell back to rules (${(e as Error).message.slice(0, 80)})`);
+  const asking = req.mode === "ask" && !!req.question;
+  let streamed = 0;
+  const insightsP = (async (): Promise<Insight[]> => {
+    if (client && findings.length) {
+      think("Connecting findings across agents…");
+      const ti = Date.now();
+      try { return await llmInsights(req, findings, links, (i) => { streamed++; emit({ type: "insight", insight: i }); }); }
+      catch (e) { think(`Insight synthesis fell back to rules (${(e as Error).message.slice(0, 80)})`); }
+      finally { lap("insights", ti); }
     }
-  }
-  if (!insights.length) insights = links.map((l, i) => ({ ...l, id: `I${i + 1}` }));
-  if (signal.aborted) return;
-  for (const ins of insights) { emit({ type: "insight", insight: ins }); await sleep(250); }
+    return [];
+  })();
+  // Claude's insights were emitted as they streamed; rule-based ones (no Claude, or it failed
+  // before producing any) are revealed one by one.
+  const insightsShown = insightsP.then(async (ins) => {
+    if (streamed) return ins;
+    const rules = links.map((l, i) => ({ ...l, id: `I${i + 1}` }));
+    for (const i of rules) { if (signal.aborted) break; emit({ type: "insight", insight: i }); await sleep(250); }
+    return ins.length ? ins : rules;
+  });
+  const answered = (async () => {
+    if (!asking) return;
+    if (!client) {
+      emit({ type: "answer_delta", text: fallbackAnswer(findings, await insightsShown, opts.quotaLimited) });
+      return;
+    }
+    const ta = Date.now();
+    try { await llmAnswer(req, findings, links, (t) => emit({ type: "answer_delta", text: t })); }
+    catch (e) { emit({ type: "answer_delta", text: fallbackAnswer(findings, await insightsShown) + `\n\n(LLM error: ${(e as Error).message.slice(0, 100)})` }); }
+    finally { lap("answer", ta); }
+  })();
+  await Promise.all([insightsShown, answered]);
 
-  // ── 5. Answer (Ask mode) ──────────────────────────────────────────────────
-  if (req.mode === "ask" && req.question) {
-    if (client) {
-      try { await llmAnswer(req, findings, insights, (t) => emit({ type: "answer_delta", text: t })); }
-      catch (e) { emit({ type: "answer_delta", text: fallbackAnswer(findings, insights) + `\n\n(LLM error: ${(e as Error).message.slice(0, 100)})` }); }
-    } else emit({ type: "answer_delta", text: fallbackAnswer(findings, insights) });
-  }
-
+  lap("run", t0);
   emit({ type: "run_done", durationMs: Date.now() - t0 });
 }
 
@@ -255,37 +287,61 @@ const InsightSchema = z.object({
   })),
 });
 
-async function llmInsights(req: RunRequest, findings: Finding[], links: Link[]): Promise<Insight[]> {
+// Streams the structured output and hands each insight to onInsight as soon as its JSON object is
+// complete (the next one has started), so cards land on the map while Claude is still writing.
+async function llmInsights(req: RunRequest, findings: Finding[], links: Link[], onInsight: (i: Insight) => void): Promise<Insight[]> {
   const profile = getProfile(req.profileId);
-  const res = await llm()!.beta.messages.parse({
+  const stream = llm()!.beta.messages.stream({
     model: MODEL,
     max_tokens: 8000,
-    output_config: { effort: "medium", format: betaZodOutputFormat(InsightSchema) },
+    output_config: { effort: "low", format: betaZodOutputFormat(InsightSchema) },
     ...FALLBACK,
-    system: `You are the "${profile.name}" orchestrator. ${profile.domainPrompt}\n\nYou receive findings from several independent agents about one map area, plus candidate connections computed by spatial joins. Produce 3–6 insights that COMBINE findings from different agents into something none could say alone: risks, opportunities, and conflicts (where sources disagree, say which you trust and why, using recency and source authority). Don't restate single findings. Each insight cites the finding ids it rests on (use the exact [F#] ids). Title ≤ 12 words; body 1–3 sentences with concrete numbers/addresses. severity 0–1. Never invent facts not in the findings.`,
+    system: `You are the "${profile.name}" orchestrator. ${profile.domainPrompt}\n\nYou receive findings from several independent agents about one map area, plus candidate connections computed by spatial joins. Produce 3–5 insights that COMBINE findings from different agents into something none could say alone: risks, opportunities, and conflicts (where sources disagree, say which you trust and why, using recency and source authority). Don't restate single findings. Each insight cites the finding ids it rests on (use the exact [F#] ids). Title ≤ 12 words; body 1–2 sentences with concrete numbers/addresses. severity 0–1. Never invent facts not in the findings. Most important insight first.`,
     messages: [{
       role: "user",
       content: `Area: ${req.region.label ?? "unknown"}\n${req.question ? `User question: ${req.question}\n` : "Mode: open-ended insights\n"}\nFINDINGS\n${compactFindings(findings)}\n\nCANDIDATE CONNECTIONS (spatial joins)\n${links.map((l) => `- ${l.title}: ${l.body} [${l.findingIds.join(", ")}]`).join("\n") || "(none)"}`,
     }],
   });
   const valid = new Set(findings.map((f) => f.id));
-  return (res.parsed_output?.insights ?? []).map((i, n) => ({
-    ...i, id: `I${n + 1}`, severity: Math.max(0, Math.min(1, i.severity)),
-    findingIds: i.findingIds.map((x) => x.replace(/[[\]]/g, "")).filter((x) => valid.has(x)),
-  }));
+  const out: Insight[] = [];
+  const accept = (raw: unknown) => {
+    const p = InsightSchema.shape.insights.element.safeParse(raw);
+    if (!p.success) return;
+    const ins: Insight = {
+      ...p.data, id: `I${out.length + 1}`, severity: Math.max(0, Math.min(1, p.data.severity)),
+      findingIds: p.data.findingIds.map((x) => x.replace(/[[\]]/g, "")).filter((x) => valid.has(x)),
+    };
+    out.push(ins);
+    onInsight(ins);
+  };
+  // Text deltas concatenate across blocks (a mid-stream fallback continues the same JSON text).
+  let json = "";
+  let seen = 0;
+  for await (const ev of stream) {
+    if (ev.type !== "content_block_delta" || ev.delta.type !== "text_delta") continue;
+    json += ev.delta.text;
+    let items: unknown[] = [];
+    try { items = ((partialParse(json) as { insights?: unknown[] })?.insights) ?? []; } catch { continue; }
+    // Every element but the last is complete once a later one has begun.
+    while (seen < items.length - 1) accept(items[seen++]);
+  }
+  const final = await stream.finalMessage();
+  const all = final.parsed_output?.insights ?? [];
+  while (seen < all.length) accept(all[seen++]);
+  return out;
 }
 
-async function llmAnswer(req: RunRequest, findings: Finding[], insights: Insight[], onText: (t: string) => void) {
+async function llmAnswer(req: RunRequest, findings: Finding[], links: Link[], onText: (t: string) => void) {
   const profile = getProfile(req.profileId);
   const stream = llm()!.beta.messages.stream({
     model: MODEL,
     max_tokens: 6000,
-    output_config: { effort: "medium" },
+    output_config: { effort: "low" },
     ...FALLBACK,
     system: `You are the "${profile.name}" orchestrator. ${profile.domainPrompt}\n\nAnswer the user's question about the selected area in ≤180 words of markdown: lead with a direct verdict, then 2–4 short bullets of evidence. Cite findings inline as [F12]. Be honest about gaps and data limits (e.g. coverage, data age). No preamble.`,
     messages: [{
       role: "user",
-      content: `Area: ${req.region.label ?? "unknown"}\nQuestion: ${req.question}\n\nINSIGHTS\n${insights.map((i) => `- (${i.kind}) ${i.title}: ${i.body} [${i.findingIds.join(", ")}]`).join("\n")}\n\nFINDINGS\n${compactFindings(findings, 100)}`,
+      content: `Area: ${req.region.label ?? "unknown"}\nQuestion: ${req.question}\n\nFINDINGS\n${compactFindings(findings)}\n\nCANDIDATE CONNECTIONS (spatial joins between agents' findings)\n${links.map((l) => `- ${l.title}: ${l.body} [${l.findingIds.join(", ")}]`).join("\n") || "(none)"}`,
     }],
   });
   for await (const ev of stream) {
@@ -293,9 +349,9 @@ async function llmAnswer(req: RunRequest, findings: Finding[], insights: Insight
   }
 }
 
-function fallbackAnswer(findings: Finding[], insights: Insight[]) {
+function fallbackAnswer(findings: Finding[], insights: Insight[], quotaLimited = false) {
   // Plain text: the panel's mini-markdown renders **bold** and bullets, not _italics_.
-  const note = "Heuristic mode: set ANTHROPIC_API_KEY for a reasoned answer from the orchestrator.";
+  const note = quotaLimited ? QUOTA_NOTE : "Heuristic mode: set ANTHROPIC_API_KEY for a reasoned answer from the orchestrator.";
   if (!findings.length) return `**No findings came back for this area.** The agents that cover it had nothing to report; city feeds (permits, 311, storm flooding) only cover San Francisco.\n\n${note}`;
   const top = insights.slice(0, 3).map((i) => `- **${i.title}**: ${i.body} ${i.findingIds.slice(0, 3).map((x) => `[${x}]`).join("")}`).join("\n");
   const areaLevel = findings.filter((f) => f.props?.areaLevel).slice(0, 4);

@@ -76,7 +76,7 @@ npx vercel env add NEXT_PUBLIC_CONVEX_URL production  # optional safety net: the
 npx vercel --prod
 ```
 
-For Git-based deploys, set Root Directory = `web` in Project Settings. Without `CONVEX_DEPLOY_KEY`, preview deploys build in SSE mode. Give them their own Convex preview deploy key if you want Convex there too. The browser's `127.0.0.1` → page-host rewrite only touches local URLs, so `*.convex.cloud` is used as-is.
+**Current setup:** the Vercel project `geoswarm` has Root Directory = `web` and is linked at the **repo root**, so run `npx vercel --prod` from the repo root (not from `web/`). Pushes to GitHub also build automatically (PRs → preview, `main` → production). Without `CONVEX_DEPLOY_KEY`, preview deploys build in SSE mode. Give them their own Convex preview deploy key if you want Convex there too. The browser's `127.0.0.1` → page-host rewrite only touches local URLs, so `*.convex.cloud` is used as-is.
 
 **3. Post-deploy checklist:**
 

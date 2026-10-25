@@ -5,7 +5,7 @@ import { ConvexHttpClient } from "convex/browser";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
 import type { RunEvent, RunRequest } from "@/lib/types";
-import { runOrchestrator } from "@/lib/orchestrator/run";
+import { runOrchestrator, type RunOptions } from "@/lib/orchestrator/run";
 import { llm } from "@/lib/llm";
 
 export const convexUrl = () => process.env.CONVEX_URL || process.env.NEXT_PUBLIC_CONVEX_URL || "";
@@ -27,12 +27,12 @@ const STOP_POLL_MS = 1500;
  * `background` receives the work promise: the route hands it to `after()` so Vercel keeps the
  * function alive (up to maxDuration) after the {runId} response is sent.
  */
-export async function startConvexRun(body: RunRequest, background: (work: Promise<void>) => void = () => {}): Promise<string> {
+export async function startConvexRun(body: RunRequest, background: (work: Promise<void>) => void = () => {}, opts: RunOptions = {}): Promise<string> {
   // Bounded so a hung (not just down) Convex backend still falls back to SSE quickly.
   let createTimer: ReturnType<typeof setTimeout> | undefined;
   const runId: Id<"runs"> = await Promise.race([
     convex().mutation(api.runs.create, {
-      mode: body.mode, profileId: body.profileId, question: body.question, region: body.region, llm: !!llm(),
+      mode: body.mode, profileId: body.profileId, question: body.question, region: body.region, llm: opts.llm ?? !!llm(),
     }),
     new Promise<never>((_, reject) => { createTimer = setTimeout(() => reject(new Error(`runs.create timed out after ${CREATE_TIMEOUT_MS}ms`)), CREATE_TIMEOUT_MS); }),
   ]).finally(() => clearTimeout(createTimer));
@@ -79,7 +79,7 @@ export async function startConvexRun(body: RunRequest, background: (work: Promis
   const t0 = Date.now();
   const work = (async () => {
     try {
-      await runOrchestrator(body, emit, ctl.signal);
+      await runOrchestrator(body, emit, ctl.signal, opts);
     } catch (e) {
       emit({ type: "error", message: (e as Error).message });
     } finally {

@@ -44,4 +44,13 @@ export default defineSchema({
     .index("by_run", ["runId"])
     .index("by_run_worker", ["runId", "workerId"])
     .index("by_run_category", ["runId", "category"]),
+
+  // One row per Claude-powered run, for the per-IP / global hourly caps (see convex/llm.ts).
+  // ipHash is a salted sha256 of the client IP; raw IPs are never stored.
+  llmUsage: defineTable({
+    ipHash: v.string(),
+    at: v.number(),
+  })
+    .index("by_at", ["at"])
+    .index("by_ip_at", ["ipHash", "at"]),
 });
