@@ -6,8 +6,9 @@ import { PROFILES } from "./profiles";
 export const AUTO = "auto";
 export const DEFAULT_PROFILE = "site-risk";
 
+export const isProfileId = (id?: string | null): id is string => !!id && PROFILES.some((p) => p.id === id);
 /** A known profile id, or "auto" (omitted, "auto" or unknown ids all mean auto). */
-export const normalizeProfileId = (id?: string) => (id && PROFILES.some((p) => p.id === id) ? id : AUTO);
+export const normalizeProfileId = (id?: string) => (isProfileId(id) ? id : AUTO);
 
 // Same style as run.ts KEYWORDS: leading \b so "current" doesn't match /rent/, "know" doesn't match /now/.
 const ROUTES: { profileId: string; re: RegExp }[] = [

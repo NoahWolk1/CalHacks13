@@ -192,6 +192,8 @@ const first = (f: Finding) => {
 const more = (n: number, shown: number) => (n > shown ? ` and ${n - shown} more` : "");
 const names = (fs: Finding[], n = 3) => `${fs.slice(0, n).map(first).join("; ")}${fs.length > n ? "…" : ""}`;
 const uniq = (ids: string[]) => [...new Set(ids)];
+/** 81 → "81st", 82 → "82nd", 13 → "13th". */
+const ordinal = (n: number) => `${n}${[11, 12, 13].includes(n % 100) ? "th" : ["th", "st", "nd", "rd"][n % 10] ?? "th"}`;
 
 /** Joins between the DataSF city-data and hazard/context agents (each rule pairs two different agents). */
 function cityDataLinks(findings: Finding[]): Link[] {
@@ -236,8 +238,8 @@ function cityDataLinks(findings: Finding[]): Link[] {
     const both = inSlr.filter((x) => onLiq.includes(x.p)).length;
     links.push({
       kind: "risk",
-      title: `${plural(inSlr.length, "permitted project")} flood with ${lowest} ft of sea-level rise`,
-      body: `${names(inSlr.map((x) => x.p))} fall inside the Bay sea-level-rise inundation extent at ${lowest} ft, a level state guidance expects around 2050–2070${both ? `; ${both} of them are also in a liquefaction zone (Bay fill carries both risks)` : ""}.`,
+      title: `${plural(inSlr.length, "permitted project")} ${inSlr.length === 1 ? "floods" : "flood"} with ${lowest} ft of sea-level rise`,
+      body: `${names(inSlr.map((x) => x.p))} ${inSlr.length === 1 ? "falls" : "fall"} inside the Bay sea-level-rise inundation extent at ${lowest} ft, a level state guidance expects around 2050–2070${both ? `; ${both} of them ${both === 1 ? "is" : "are"} also in a liquefaction zone (Bay fill carries both risks)` : ""}.`,
       severity: Math.min(0.9, 0.65 + inSlr.length * 0.04 + (both ? 0.05 : 0)),
       findingIds: uniq([...inSlr.slice(0, 8).map((x) => x.p.id), ...inSlr.slice(0, 2).map((x) => x.z!.id)]),
     });
@@ -369,7 +371,7 @@ function cityDataLinks(findings: Finding[]): Link[] {
     links.push({
       kind: "risk",
       title: `${units} new homes planned in top-quartile pollution-burden tracts`,
-      body: `${plural(homesIn.length, "permitted residential project")} sit in CalEnviroScreen tracts at the ${num(worst.t, "ciPercentile")}th percentile statewide (diesel ${num(worst.t, "dieselP")}th, asthma ${num(worst.t, "asthmaP")}th): new residents move into a disadvantaged-community burden.`,
+      body: `${plural(homesIn.length, "permitted residential project")} sit in CalEnviroScreen tracts at the ${ordinal(num(worst.t, "ciPercentile"))} percentile statewide (diesel ${ordinal(num(worst.t, "dieselP"))}, asthma ${ordinal(num(worst.t, "asthmaP"))}): new residents move into a disadvantaged-community burden.`,
       severity: Math.min(0.75, 0.5 + homesIn.length * 0.03 + (num(worst.t, "ciPercentile") - 75) / 100),
       findingIds: uniq([...homesIn.slice(0, 6).map((x) => x.p.id), worst.t!.id]),
     });
@@ -383,7 +385,7 @@ function cityDataLinks(findings: Finding[]): Link[] {
     links.push({
       kind: "risk",
       title: `${plural(schoolsDirty.length, "school")} in tracts with ${maxDiesel >= 90 ? "top-10% diesel exposure" : "top-quartile pollution burden"}`,
-      body: `${schoolsDirty.slice(0, 4).map((x) => first(x.s)).join("; ")}${more(schoolsDirty.length, 4)} sit in CalEnviroScreen tracts up to the ${maxDiesel}th diesel-PM percentile: children are the most exposed group.`,
+      body: `${schoolsDirty.slice(0, 4).map((x) => first(x.s)).join("; ")}${more(schoolsDirty.length, 4)} sit in CalEnviroScreen tracts up to the ${ordinal(maxDiesel)} diesel-PM percentile: children are the most exposed group.`,
       severity: Math.min(0.75, 0.5 + schoolsDirty.length * 0.03),
       findingIds: uniq([...schoolsDirty.slice(0, 6).map((x) => x.s.id), ...uniq(schoolsDirty.map((x) => x.t!.id)).slice(0, 2)]),
     });

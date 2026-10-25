@@ -36,7 +36,7 @@ export const planningNoticesWorker: Worker = {
     const radiusKm = Math.min(3, Math.max(0.6, distanceM([a, b], [c, d]) / 2000 + 0.3));
     const actor = process.env.APIFY_PLANNING_ACTOR!.trim();
     log(`Apify ${actor}: sfplanning.org notices within ${radiusKm.toFixed(1)} km…`);
-    const rows = await runActor<PlanningNotice>(actor, { center: region.center, radiusKm, geocode: true, maxItems: 30 }, { signal, timeoutSec: 25, memoryMb: 256 });
+    const rows = await runActor<PlanningNotice>(actor, { center: region.center, radiusKm, geocode: true, maxItems: 30 }, { signal, timeoutSec: 20, memoryMb: 256 });
     log(`${rows.length} notices near the area`);
     if (!rows.length) {
       emit({

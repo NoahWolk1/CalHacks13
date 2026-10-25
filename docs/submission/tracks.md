@@ -77,7 +77,7 @@ Recommendation: **A or B** matches the strongest demo result (flood × permits) 
 
 **How it handles blocks, slowness and empty results (Bright Data's criteria):**
 - **Blocks:** Unlocker gets past Craigslist's bot wall.
-- **Slowness:** 25 s budgets; Apify calls are capped by `timeout`, `maxItems` and `maxTotalChargeUsd`, with no retries (each retry would be billed); Bright Data gets one retry.
+- **Slowness:** 20 s Apify / 25 s Bright Data budgets, all under the orchestrator's 30 s per-agent limit; Apify calls are capped by `timeout`, `maxItems` and `maxTotalChargeUsd`, with no retries (each retry would be billed); Bright Data gets one retry.
 - **Empty results:** an empty Google Maps result becomes a finding ("no direct competition"). Parsers return `[]` on layout changes instead of inventing data.
 - **Repeat runs:** results are cached for 6 h, so a repeated demo run doesn't re-bill.
 
@@ -88,8 +88,8 @@ Recommendation: **A or B** matches the strongest demo result (flood × permits) 
 **Still missing**
 - [ ] Keys in `web/.env.local` and on Vercel: `BRIGHTDATA_API_TOKEN`, `BRIGHTDATA_UNLOCKER_ZONE`, `BRIGHTDATA_SERP_ZONE`, `APIFY_TOKEN`, `APIFY_PLANNING_ACTOR` (see [web/README.md](../../web/README.md#sponsor-data-workers-bright-data--apify)).
 - [ ] `npm run apify:login && npm run apify:push` (from `web/`). Then make the Actor public in Apify Console with its README, which Best Actor judges will look at.
-- [ ] The planner must skip workers whose keys are missing (`missingEnv()` in `web/src/lib/sponsors/keys.ts`); this is an orchestrator change. Optionally add keyword regexes and add the new ids to Storefront Scout's `defaultAgents`.
-- [ ] One live rehearsal with keys: check the Craigslist parse (`rent.ts`) and that the Google Maps Actor finishes within the 25 s budget (raise `TIMEOUT_S` if it returns few places).
+- [x] ~~The planner must skip workers whose keys are missing~~: done (`hasKeys` filter in `run.ts`, also applied to hand-added agents).
+- [ ] One live rehearsal with keys: check the Craigslist parse (`rent.ts`) and that the Google Maps Actor finishes within the 20 s budget. If it returns few places, raising `TIMEOUT_S` above 20 also means raising `WORKER_TIMEOUT_MS` in `run.ts`.
 - [ ] Devpost: list both tracks only once the demo shows their pins live.
 
 ## Best Planet-First Hack (Cal Hacks general prize)

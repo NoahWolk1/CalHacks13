@@ -72,6 +72,96 @@ describe("crossReference: city-data and hazard joins", () => {
     expect(titles([area("sf-transit", "transit", { transitScore: 0.2, lines: [] }), growing]).some((t) => t.includes("transit"))).toBe(false);
   });
 
+  it("flags permits in the ≤2.5 ft sea-level-rise extent and counts those also on liquefiable fill", () => {
+    const slr = box("sea-level-rise", "slr", -122.40, 37.77, { scenarioCm: 75, scenarioFt: 2.5 });
+    const liq = box("cgs-ground-hazards", "liquefaction", -122.40, 37.77);
+    const permit = pt("sf-permits", "permit", -122.40, 37.77, {}, "1 Bay St: new construction");
+    const l = crossReference([slr, liq, permit]).find((x) => x.title.includes("sea-level rise"));
+    expect(l?.title).toBe("1 permitted project floods with 2.5 ft of sea-level rise");
+    expect(l?.body).toContain("1 of them is also in a liquefaction zone");
+    expect(l?.findingIds).toEqual([permit.id, slr.id]);
+    // Higher scenarios are out of scope.
+    expect(titles([box("sea-level-rise", "slr", -122.40, 37.77, { scenarioCm: 150, scenarioFt: 4.9 }), permit]).some((t) => t.includes("sea-level rise"))).toBe(false);
+  });
+
+  it("joins severe/fatal crashes to schools within 150 m, ignoring minor crashes", () => {
+    const school = pt("ca-schools", "school", -122.4100, 37.7600, { name: "Mission High" });
+    const crash = pt("sf-crashes", "crash", -122.4102, 37.7602, { severity: "Fatal", mode: "Pedestrian" }); // ~30 m
+    const l = crossReference([school, crash]).find((x) => x.title.includes("of a school"));
+    expect(l?.title).toBe("1 severe or fatal crash within 150 m of a school");
+    expect(l?.body).toContain("1 fatal, 1 involving a pedestrian or cyclist, near Mission High");
+    expect(l?.findingIds).toEqual([crash.id, school.id]);
+    const minor = pt("sf-crashes", "crash", -122.4102, 37.7602, { severity: "Complaint of pain" });
+    expect(titles([school, minor]).some((t) => t.includes("of a school"))).toBe(false);
+  });
+
+  it("pairs no-fault evictions with an entire-home Airbnb market, only above the thresholds", () => {
+    const ev = area("sf-evictions", "eviction", { total: 20, noFault: 8, ellis: 3, ownerMoveIn: 2 });
+    const str = area("sf-str", "str", { listings: 50, entireHomeShare: 0.6 });
+    const notice = pt("sf-evictions", "eviction", -122.4100, 37.7600, { noFault: true });
+    const listing = pt("sf-str", "str", -122.4101, 37.7601, { roomType: "Entire home/apt" }); // ~15 m
+    const l = crossReference([ev, str, notice, listing]).find((x) => x.title.includes("Airbnbs"));
+    expect(l?.kind).toBe("conflict");
+    expect(l?.body).toContain("60% of the 50 Airbnb listings");
+    expect(l?.body).toContain("1 eviction notice is within 75 m of one");
+    expect(l?.findingIds).toEqual([ev.id, str.id, notice.id]);
+    expect(titles([ev, area("sf-str", "str", { listings: 50, entireHomeShare: 0.3 })]).some((t) => t.includes("Airbnbs"))).toBe(false);
+  });
+
+  it("flags displacement pressure when sale prices outrun the assessed roll", () => {
+    const ev = area("sf-evictions", "eviction", { total: 30, noFault: 12 });
+    const sales = area("sf-property", "property", { salesProxy: true, medianSalePerSqft: 1200 });
+    const roll = area("sf-property", "property", { medianAssessedPerSqft: 400 });
+    const l = crossReference([ev, sales, roll]).find((x) => x.title.startsWith("Displacement pressure"));
+    expect(l?.body).toContain("3.0×");
+    expect(l?.findingIds).toEqual([ev.id, sales.id, roll.id]);
+    const cheap = area("sf-property", "property", { salesProxy: true, medianSalePerSqft: 480 }); // 1.2×
+    expect(titles([ev, cheap, roll]).some((t) => t.startsWith("Displacement pressure"))).toBe(false);
+  });
+
+  it("flags active street digs in front of new storefronts, skipping moratorium blocks", () => {
+    const shop = pt("sf-business", "business", -122.4100, 37.7600, { event: "opened" }, "Opened Sep 2026: Tartine (Food Services), 600 Guerrero St");
+    const dig = pt("sf-street-work", "street_work", -122.4101, 37.7601, { active: true, contractor: "PG&E", end: "2026-12-01" }); // ~15 m
+    const l = crossReference([shop, dig]).find((x) => x.title.includes("street work"));
+    expect(l?.title).toBe("1 new storefront with active street work out front");
+    expect(l?.body).toContain("Tartine");
+    expect(l?.body).toContain("(PG&E), running until 2026-12-01");
+    expect(l?.findingIds).toEqual([shop.id, dig.id]);
+    const moratorium = pt("sf-street-work", "street_work", -122.4101, 37.7601, { active: true, moratorium: true });
+    expect(titles([shop, moratorium]).some((t) => t.includes("street work"))).toBe(false);
+  });
+
+  it("counts new homes in top-quartile CalEnviroScreen tracts only", () => {
+    const tract = box("calenviroscreen", "env_burden", -122.40, 37.77, { ciPercentile: 82, dieselP: 70, asthmaP: 88 });
+    const homes = pt("sf-permits", "permit", -122.40, 37.77, { units: 12 });
+    const l = crossReference([tract, homes]).find((x) => x.title.includes("pollution-burden"));
+    expect(l?.title).toBe("12 new homes planned in top-quartile pollution-burden tracts");
+    expect(l?.body).toContain("82nd percentile");
+    expect(l?.findingIds).toEqual([homes.id, tract.id]);
+    expect(titles([box("calenviroscreen", "env_burden", -122.40, 37.77, { ciPercentile: 60 }), homes]).some((t) => t.includes("pollution-burden"))).toBe(false);
+  });
+
+  it("flags K-12 schools in top-10% diesel tracts, not OSM-tagged sites", () => {
+    const tract = box("calenviroscreen", "env_burden", -122.40, 37.77, { ciPercentile: 50, dieselP: 95 });
+    const school = { ...pt("ca-schools", "school", -122.40, 37.77, { name: "Bessie Carmichael" }), source_type: "cde_schools" };
+    const l = crossReference([tract, school]).find((x) => x.title.includes("diesel"));
+    expect(l?.title).toBe("1 school in tracts with top-10% diesel exposure");
+    expect(l?.findingIds).toEqual([school.id, tract.id]);
+    const osmTag = pt("ca-schools", "school", -122.40, 37.77, { name: "Arts Foundation" });
+    expect(titles([tract, osmTag]).some((t) => t.includes("diesel"))).toBe(false);
+  });
+
+  it("names a historic landmark in each hazard zone it falls in", () => {
+    const liq = box("cgs-ground-hazards", "liquefaction", -122.40, 37.77);
+    const tsu = box("cgs-ground-hazards", "tsunami", -122.40, 37.77);
+    const lm = pt("sf-landmarks", "landmark", -122.40, 37.77, { historic: true, title: "Ferry Building" });
+    const l = crossReference([liq, tsu, lm]).find((x) => x.findingIds.includes(lm.id));
+    expect(l?.title).toBe("Historic Ferry Building sits in a liquefaction + tsunami zone");
+    expect(l?.findingIds).toEqual([lm.id, liq.id, tsu.id]);
+    const plain = pt("sf-landmarks", "landmark", -122.40, 37.77, { title: "Some Shed" });
+    expect(titles([liq, plain]).some((t) => t.includes("Some Shed"))).toBe(false);
+  });
+
   it("caps the number of links and keeps the most severe", () => {
     const zone = box("cgs-ground-hazards", "liquefaction", -122.40, 37.77);
     const permits = Array.from({ length: 6 }, (_, i) => pt("sf-permits", "permit", -122.40, 37.77, { units: 30 }, `${i} A St: new`));

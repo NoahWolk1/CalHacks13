@@ -1,6 +1,6 @@
 import type { Worker } from "@/lib/types";
 import { touchesSF } from "@/lib/geo";
-import { clamp01, datasetUrl, daysAgo, fmt, month, num, pt, ratioText, recordUrl, soda, title, vsCity, within } from "./sfdata";
+import { clamp01, datasetUrl, day, daysAgo, fmt, month, num, pt, ratioText, recordUrl, soda, sodaUrl, title, todayIso, vsCity, within } from "./sfdata";
 
 // SFPD Incident Reports, 2018 to present (DataSF). Updated daily, ~1 day lag.
 // One incident can have several rows (one per offense code), so counts use count(distinct incident_id).
@@ -49,7 +49,7 @@ export const crimeWorker: Worker = {
     const top = cats.filter((c) => c.incident_category && !/non-criminal|other|lost property|case closure|courtesy/i.test(c.incident_category)).slice(0, 4);
     emit({
       claim: `${fmt(total)} SFPD incidents in the last 90 days (${fmt(cmp.perKm2)}/km², ${ratioText(cmp.ratio)}): ${fmt(violent)} violent, ${fmt(property)} property. Top: ${top.map((c) => `${c.incident_category} (${c.n})`).join(", ")}`,
-      geometry: pt(...r.center), source_url: datasetUrl(ID), source_type: "sfpd_incident_aggregate", observed_at: day(),
+      geometry: pt(...r.center), source_url: datasetUrl(ID), source_type: "sfpd_incident_aggregate", observed_at: day(todayIso()),
       confidence: 0.85, category: "crime", severity: clamp01(0.2 + 0.25 * cmp.ratio),
       props: { areaLevel: true, total, violent, property, perKm2: Math.round(cmp.perKm2), cityPerKm2: Math.round(cmp.cityPerKm2), ratioVsCity: +cmp.ratio.toFixed(2), windowDays: 90, breakdown: Object.fromEntries(cats.slice(0, 12).map((c) => [c.incident_category ?? "Unknown", num(c.n)])) },
     });
@@ -58,8 +58,8 @@ export const crimeWorker: Worker = {
       const n = num(h.n);
       if (n < 3 || !num(h.lat)) continue;
       emit({
-        claim: `Crime hotspot: ${title(h.intersection?.replace(/\s*\\\s*/g, " & "))}, ${n} violent/property incidents in 90 days`,
-        geometry: pt(h.lng, h.lat), source_url: sodaUrl90(h.intersection ?? "", since), source_type: "sfpd_hotspot", observed_at: day(),
+        claim: `Crime hotspot: ${street(h.intersection)}, ${n} violent/property incidents in 90 days`,
+        geometry: pt(h.lng, h.lat), source_url: sodaUrl90(h.intersection ?? "", since), source_type: "sfpd_hotspot", observed_at: day(todayIso()),
         confidence: 0.8, category: "crime", severity: clamp01(0.3 + n / 80), props: { hotspot: true, intersection: h.intersection, incidents90d: n },
       });
     }
@@ -70,7 +70,7 @@ export const crimeWorker: Worker = {
       seen.add(x.incident_id);
       const sev = /Homicide|Rape|Robbery|Weapons/.test(x.incident_category ?? "") ? 0.75 : /Aggravated/.test(x.incident_subcategory ?? "") ? 0.65 : 0.45;
       emit({
-        claim: `${x.incident_category}${x.incident_description ? ` (${x.incident_description})` : ""} at ${title(x.intersection?.replace(/\s*\\\s*/g, " & ")) || "nearby"}, ${month(x.incident_datetime)}`,
+        claim: `${x.incident_category}${x.incident_description ? ` (${x.incident_description})` : ""} at ${street(x.intersection) || "nearby"}, ${month(x.incident_datetime)}`,
         geometry: pt(x.longitude!, x.latitude!), source_url: recordUrl(ID, "incident_id", x.incident_id), source_type: "sfpd_incident",
         observed_at: day(x.incident_datetime), confidence: 0.85, category: "crime", severity: sev,
         props: { violent: true, category: x.incident_category, subcategory: x.incident_subcategory, resolution: x.resolution, neighborhood: x.analysis_neighborhood },
@@ -79,6 +79,7 @@ export const crimeWorker: Worker = {
   },
 };
 
-const day = (s?: string) => (s ?? new Date().toISOString()).slice(0, 10);
+/** SFPD writes intersections as "MARKET ST \ 5TH ST". */
+const street = (s?: string) => title(s?.replace(/\s*\\\s*/g, " & "));
 const sodaUrl90 = (intersection: string, since: string) =>
-  `https://data.sf.gov/resource/${ID}.json?${new URLSearchParams({ $where: `intersection='${intersection.replace(/'/g, "''")}' AND incident_datetime > '${since}'` })}`;
+  sodaUrl(ID, { $where: `intersection='${intersection.replace(/'/g, "''")}' AND incident_datetime > '${since}'` });

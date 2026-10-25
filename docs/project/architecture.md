@@ -11,7 +11,7 @@
 - It receives the user's area + question (or an Insights request), decides which worker agents are relevant, dispatches them, and combines their output into insights and an answer. One shared loop runs every profile (`lib/orchestrator/run.ts`).
 
 ### Worker agents: simple, reusable data gatherers
-- Narrow agents that each pull one kind of data. Built: 13 workers covering FEMA flood zones, the SFPUC storm flood map, elevation, SF permits, SF 311, OSM places, USGS quakes, NWS alerts/air quality, news, census, Sentinel-2/Landsat imagery, satellite orbit passes and NASA EONET events (`lib/agents/workers/`). Built-in workers are plain code and don't call an LLM.
+- Narrow agents that each pull one kind of data. Built: 36 workers (`lib/agents/workers/`). The original 13 cover FEMA flood zones, the SFPUC storm flood map, elevation, SF permits, SF 311, OSM places, USGS quakes, NWS alerts/air quality, news, census, Sentinel-2/Landsat imagery, satellite orbit passes and NASA EONET events; PR #7 added 10 DataSF city-data agents, 9 hazard/context agents (CGS zones, sea-level rise, CAL FIRE, weather, Wikipedia, Inside Airbnb, schools, CalEnviroScreen, OpenFEMA) and 4 Bright Data/Apify sponsor agents. Agents whose API keys are missing sit out of every plan. Built-in workers are plain code and don't call an LLM.
 - Workers are **generic and shared across orchestrators**. Storefront Scout and Site Risk Analyst both use the permits worker.
 
 ### How agents work together
@@ -43,7 +43,7 @@ If it just concatenates worker outputs, judges will see a prompt chain. It does 
 | Responsibility | What it means | Built |
 |---|---|---|
 | **Plan** | Decide *which* workers to call based on the question and area, rather than calling all of them every time. | Ask mode: Claude structured plan (keyword heuristic without a key). Insights mode: the profile's `defaultAgents`. SF-only workers dropped outside SF. |
-| **Cross-reference** | Combine findings from *different* workers into an insight none could produce alone. **Powers Insights mode.** | 6 Turf spatial-join rules (`crossref.ts`) feed Claude, which writes 3–6 insights citing finding ids. Without a key the joins are the insights. |
+| **Cross-reference** | Combine findings from *different* workers into an insight none could produce alone. **Powers Insights mode.** | 18 Turf spatial-join rules (`crossref.ts`; the strongest 12 links by severity are kept) feed Claude, which writes 3–6 insights citing finding ids. Without a key the joins are the insights. |
 | **Reconcile** | When two workers disagree about the same place, flag the conflict and explain which source it trusts and why. | One rule (FEMA "no hazard" vs. 311 flood reports / low ground) plus Claude `conflict` insights weighing recency and authority. |
 | **Re-dispatch** | Spot gaps or follow-ups and send a worker back out with a narrower task. | One fixed rule: Terrain Scanner to up to 12 permit parcels (skipped for Storefront Scout). |
 | **Spawn** | When no existing worker can fill a gap, create a new one instead of giving up. | Planner gaps + one post-sweep coverage check (Ask mode only). |
