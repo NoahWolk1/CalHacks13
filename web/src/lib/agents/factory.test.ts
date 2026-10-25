@@ -54,6 +54,34 @@ describe("draftAgent", () => {
   });
 });
 
+describe("draftAgent advanced", () => {
+  const advanced = {
+    name: "Permit Hawk", coverage: "Oakland", tools: ["scrape" as const], vehicle: "drone" as const, color: "#123456",
+    dataSources: ["https://data.oaklandca.gov/permits"], criteria: "Only permits over $1M", forceNew: true,
+  };
+
+  it("passes the requirements to the generator", async () => {
+    const generate = vi.fn(async () => created());
+    await draftAgent({ ...spec, advanced }, { registry, generate });
+    const request = (generate.mock.calls[0] as unknown[])[0] as string;
+    expect(request).toContain("Only permits over $1M");
+    expect(request).toContain("https://data.oaklandca.gov/permits");
+  });
+
+  it("overrides the generator with the user's hard choices", async () => {
+    const out = await draftAgent({ ...spec, advanced }, { registry, generate: async () => created() });
+    if (out?.kind !== "new") throw new Error("expected new");
+    expect(out.config).toMatchObject({ name: "Permit Hawk", coverage: "Oakland", vehicle: "drone", color: "#123456" });
+    expect(out.config.tools).toEqual(["scrape", "geocode", "llm"]);
+    expect(out.config.dataSources[0]).toBe("https://data.oaklandca.gov/permits");
+  });
+
+  it("creates even when the generator wants to reuse, if forceNew", async () => {
+    const out = await draftAgent({ ...spec, advanced }, { registry, generate: async () => created({ decision: "reuse", reuse_id: "sf-311" }) });
+    expect(out?.kind).toBe("new");
+  });
+});
+
 describe("requestSpawn", () => {
   it("registers a new agent as temporary", async () => {
     const out = await requestSpawn(spec, 0, { registry, generate: async () => created() });

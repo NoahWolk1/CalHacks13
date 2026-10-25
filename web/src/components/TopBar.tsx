@@ -2,15 +2,16 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Hand, BoxSelect, Pentagon, MapPin, Users, Search, PanelRightClose, PanelRightOpen } from "lucide-react";
+import { Hand, BoxSelect, Pentagon, MapPin, Users, Search, PanelRightClose, PanelRightOpen, CircleHelp } from "lucide-react";
 import { useLayout } from "@/lib/client/layout";
 import { useStore, type Tool } from "@/lib/client/store";
 import { useIsDesktop } from "@/lib/client/useMedia";
 import { APP_NAME } from "@/lib/brand";
 import PlaceSearch from "./PlaceSearch";
+import { startTour } from "./Tour";
 
 export const TOOLS: { id: Tool; label: string; icon: typeof Hand; hint: string; touchHint: string }[] = [
-  { id: "pan", label: "Pan", icon: Hand, hint: "Drag to orbit · scroll to zoom", touchHint: "Drag to pan · pinch to zoom" },
+  { id: "pan", label: "Pan", icon: Hand, hint: "Drag to orbit. Scroll to zoom.", touchHint: "Drag to pan · pinch to zoom" },
   { id: "box", label: "Box", icon: BoxSelect, hint: "Drag to draw a box", touchHint: "Drag a finger to draw a box" },
   { id: "polygon", label: "Polygon", icon: Pentagon, hint: "Click points, click first point or press Enter to close", touchHint: "Tap corners to outline" },
   { id: "pin", label: "Pin", icon: MapPin, hint: "Click to drop a pin", touchHint: "Tap to drop a pin" },
@@ -80,7 +81,7 @@ function DesktopTopBar() {
           {TOOLS.map(({ id, label, icon: Icon }) => {
             const on = tool === id;
             return (
-              <button key={id} onClick={() => set({ tool: id })} disabled={running} title={label} aria-label={label} aria-pressed={on}
+              <button key={id} onClick={() => set({ tool: id })} disabled={running} title={label} aria-label={label} aria-pressed={on} data-tour={`tool-${id}`}
                 className={`flex h-full items-center gap-1.5 rounded-[4px] px-2.5 text-[12.5px] transition-colors disabled:cursor-not-allowed @max-[600px]:px-2 ${on ? "bg-active text-fg1 shadow-[inset_0_0_0_1px_var(--line-strong)]" : "text-fg2 hover:text-fg1"}`}>
                 <Icon size={14} strokeWidth={1.5} />
                 <span className="@max-[600px]:hidden">{label}</span>
@@ -125,7 +126,11 @@ function DesktopTopBar() {
           <span className={`h-1.5 w-1.5 rounded-full ${llm ? "bg-ok" : "bg-[#d2c162]"}`} />
           {llm ? "Claude online" : "Heuristic mode"}
         </span>
-        <Link href="/agents"
+        <button onClick={startTour} title="Take the tour" aria-label="Take the tour"
+          className="grid h-7 w-7 shrink-0 place-items-center rounded-[4px] text-fg3 transition-colors hover:bg-raised hover:text-fg1">
+          <CircleHelp size={15} strokeWidth={1.5} />
+        </button>
+        <Link href="/agents" data-tour="agents"
           className="flex h-[30px] shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-line-strong px-3 text-[12.5px] text-fg1 transition-colors hover:bg-raised">
           Agents
           <span className="num text-[11.5px] text-fg3">{agents.length}</span>
