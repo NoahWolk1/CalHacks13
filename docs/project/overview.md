@@ -17,7 +17,7 @@ The UI currently brands the app **GeoSwarm** (`web/src/lib/brand.ts`); the proje
    - **Insights:** no question needed. The orchestrator's default survey team scans the area, and the orchestrator looks for findings that *combine* into something notable (risks, opportunities, contradictions).
 3. **Watch agents work.** Each agent drives/flies onto the map as a vehicle and shows in the side panel with its status and log; its findings drop onto the map as they arrive.
 4. **Get the answer / insights.** The orchestrator returns ranked insights (and, in Ask mode, a streamed written answer), each citing the findings it rests on.
-5. **Missing an agent?** Open the **Agent Hub**, describe the agent you need in plain English, review the draft, and save it to the library. In Ask mode the **orchestrator also creates agents itself** mid-run when nothing in the library fits; after the run you **Keep** or **Discard** them (see [architecture.md](architecture.md#agents-can-create-agents)).
+5. **Missing an agent?** Open the **Agents** page (`/agents`, top-right), describe the agent you need in plain English, review the draft, and save it to the library. In Ask mode the **orchestrator also creates agents itself** mid-run when nothing in the library fits; after the run you **Keep** or **Discard** them (see [architecture.md](architecture.md#agents-can-create-agents)).
 
 ## Orchestrators (user types)
 

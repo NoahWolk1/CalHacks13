@@ -9,7 +9,7 @@
 - [ ] `ANTHROPIC_API_KEY` set (the LLM badge shows on). The heuristic fallback still works without it.
 - [ ] **Run the demo mission once that morning** in the exact Mission District box. Save its `/?run=<id>` link and open it in a second tab. That's the fallback.
 - [ ] A phone open to a past run's share link on the same Wi-Fi (`http://<laptop-ip>:<port>/?run=<id>`), or the deployed app (SpacetimeDB maincloud) if off-LAN.
-- [ ] Map pre-zoomed to the Mission, with Site Risk Analyst + Insights already selected. Close the Agent Hub panel.
+- [ ] Map pre-zoomed to the Mission, with Site Risk Analyst + Insights already selected. Be on the map page, not `/agents`.
 - [ ] Know the numbers: **~124 findings, ~10 s, 6 permits in the SFPUC 100-year storm zone, ≈$3.1M, 6 on filled-in former water.** Re-check them against the morning run and use whatever it shows.
 
 ## The demo spot

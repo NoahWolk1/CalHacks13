@@ -53,7 +53,6 @@ interface State {
   hoveredInsight: string | null;
   selectedInsight: string | null;
   rightTab: "agents" | "insights" | "answer" | "findings";
-  hubOpen: boolean;
 
   set: (p: Partial<State>) => void;
   resetRun: () => void;
@@ -70,7 +69,7 @@ export const useStore = create<State>((set, get) => ({
   agents: [], profiles: [], llm: false, live: null,
   runId: null, tool: "box", pinRadius: 450, region: null, profileId: "site-risk", mode: "insights", question: "",
   ...emptyRun,
-  rightTab: "agents", hubOpen: false,
+  rightTab: "agents",
 
   set: (p) => set(p),
   resetRun: () => set({ ...emptyRun }),

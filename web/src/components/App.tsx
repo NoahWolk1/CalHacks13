@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { useEffect } from "react";
+import { usePathname } from "next/navigation";
 import { useStore } from "@/lib/client/store";
 import { loadCatalog } from "@/lib/client/runClient";
 import CommandPanel, { useRegionLabel } from "./CommandPanel";
@@ -12,7 +13,6 @@ import RightPanel from "./RightPanel";
 import { LeftRail, RightRail } from "./Rail";
 import TopBar from "./TopBar";
 import StatusBar from "./StatusBar";
-import AgentHub from "./AgentHub";
 import ConvexClientProvider from "./ConvexClientProvider";
 import ConvexRunSync from "./ConvexRunSync";
 import { ConvexMissionHistory } from "./MissionHistory";
@@ -21,7 +21,7 @@ import { DemoSpotChips } from "./PlaceSearch";
 const MapView = dynamic(() => import("./MapView"), { ssr: false });
 const SpacetimeLive = dynamic(() => import("./SpacetimeLive"), { ssr: false });
 
-export default function App() {
+export default function App({ children }: { children?: React.ReactNode }) {
   const region = useStore((s) => s.region);
   const error = useStore((s) => s.error);
   const desktop = useIsDesktop();
@@ -31,9 +31,11 @@ export default function App() {
   useEffect(() => { loadCatalog(); }, []);
   useRegionLabel();
   useLayoutSync();
+  // Other pages (e.g. /agents) cover the map; keep it mounted but out of focus/tab order.
+  const covered = usePathname() !== "/";
   return (
     <ConvexClientProvider>
-    <main className="relative h-screen w-screen overflow-hidden bg-bg max-lg:h-[100dvh]">
+    <main inert={covered} aria-hidden={covered} className="relative h-screen w-screen overflow-hidden bg-bg max-lg:h-[100dvh]">
       <MapView />
       <TopBar />
       {desktop ? <><LeftRail /><RightRail /><CommandPanel /><RightPanel /></> : <MobileSheet />}
@@ -52,11 +54,11 @@ export default function App() {
           style={desktop ? undefined : { bottom: `calc(${SHEET_PEEK + 16}px + var(--safe-bottom))` }}><span className="h-1.5 w-1.5 shrink-0 rounded-full bg-risk" />{error}</div>
       )}
       </div>
-      <AgentHub />
       {/* Live shared mission state: SpacetimeDB (primary) or Convex (fallback), as /api/agents reports. */}
       {live?.backend === "spacetime" && stHost && stDb && <SpacetimeLive host={stHost} db={stDb} />}
       {live?.backend === "convex" && process.env.NEXT_PUBLIC_CONVEX_URL && <><ConvexRunSync /><ConvexMissionHistory /></>}
     </main>
+    {children}
     </ConvexClientProvider>
   );
 }

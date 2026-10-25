@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { Hand, BoxSelect, Pentagon, MapPin, Users, Search, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useLayout } from "@/lib/client/layout";
 import { useStore, type Tool } from "@/lib/client/store";
@@ -127,11 +128,11 @@ function DesktopTopBar() {
           <span className={`h-1.5 w-1.5 rounded-full ${llm ? "bg-ok" : "bg-[#d2c162]"}`} />
           {llm ? "Claude online" : "Heuristic mode"}
         </span>
-        <button onClick={() => set({ hubOpen: true })}
+        <Link href="/agents"
           className="flex h-[30px] shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-line-strong px-3 text-[12.5px] text-fg1 transition-colors hover:bg-raised">
-          Agent hub
+          Agents
           <span className="num text-[11.5px] text-fg3">{agents.length}</span>
-        </button>
+        </Link>
         <PanelToggle side="right" />
       </div>
     </header>
@@ -158,10 +159,10 @@ function MobileTopBar() {
             </div>
             <div className="flex-1" />
             <button onClick={() => setSearching(true)} className={btn} aria-label="Search a place"><Search size={17} strokeWidth={1.5} /></button>
-            <button onClick={() => set({ hubOpen: true })} className={`${btn} relative`} aria-label="Agent Hub">
+            <Link href="/agents" className={`${btn} relative`} aria-label="Agents">
               <Users size={17} strokeWidth={1.5} />
               <span className="num absolute -right-1 -top-1 min-w-[18px] rounded-[4px] border border-line-strong bg-panel px-1 text-center text-[10px] leading-[16px] text-fg2">{agents.length}</span>
-            </button>
+            </Link>
           </>
         )}
       </header>

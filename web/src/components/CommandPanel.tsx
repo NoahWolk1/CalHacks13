@@ -7,6 +7,7 @@ import { startRun, stopRun } from "@/lib/client/runClient";
 import { regionAreaKm2 } from "@/lib/geo";
 import { reverseLabel } from "@/lib/client/geocode";
 import { motion } from "framer-motion";
+import Link from "next/link";
 import { useLayout, dragPanel, GUTTER, LOG_MIN } from "@/lib/client/layout";
 import { VehicleGlyph } from "./ui";
 import Sash from "./Sash";
@@ -71,31 +72,27 @@ export function MissionControls({ className = "" }: { className?: string }) {
 
   return (
       <div className={className}>
-        {/* Orchestrator */}
+        {/* Orchestrator: names only; the selected one shows its tagline. Teams live on /agents. */}
         <div className="p-4">
-          <div className="mb-2 text-[12px] text-fg3">Orchestrator</div>
+          <div className="mb-2 flex items-center text-[12px] text-fg3">
+            <span className="flex-1">Orchestrator</span>
+            <Link href="/agents" className="text-fg3 underline-offset-2 transition-colors hover:text-fg1 hover:underline">View agents</Link>
+          </div>
           <div role="radiogroup" aria-label="Orchestrator" className="overflow-hidden rounded-md border border-line">
             {profiles.map((p, i) => {
               const on = p.id === profileId;
-              const team = p.defaultAgents.map((id) => agentById(id)).filter(Boolean);
               return (
                 <button key={p.id} role="radio" aria-checked={on} onClick={() => set({ profileId: p.id })} disabled={running}
-                  className={`flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition-colors disabled:cursor-not-allowed ${i ? "border-t border-line" : ""} ${on ? "bg-raised" : "hover:bg-raised/60"} ${running && !on ? "opacity-50" : ""}`}>
+                  className={`flex w-full items-start gap-2.5 px-3 py-2 text-left transition-colors disabled:cursor-not-allowed ${i ? "border-t border-line" : ""} ${on ? "bg-raised" : "hover:bg-raised/60"} ${running && !on ? "opacity-50" : ""}`}>
                   <span className={`mt-[3px] h-3 w-3 shrink-0 rounded-full border ${on ? "border-[4px] border-fg1" : "border-line-strong"}`} />
                   <span className="min-w-0 flex-1">
                     <span className="block text-[13px] font-medium text-fg1">{p.name}</span>
-                    <span className="block text-[12px] leading-snug text-fg3">{p.tagline}</span>
-                    {team.length > 0 && (
-                      <span className="mt-1.5 flex gap-[3px]" aria-hidden>
-                        {team.map((a) => <span key={a!.id} title={a!.name} className="h-1.5 w-1.5 rounded-[1.5px]" style={{ background: a!.color }} />)}
-                      </span>
-                    )}
+                    {on && <span className="block text-[12px] leading-snug text-fg3">{p.tagline}</span>}
                   </span>
                 </button>
               );
             })}
           </div>
-          {profile?.persona && <p className="mt-2 text-[12px] leading-snug text-fg3">For {profile.persona.replace(/^./, (c) => c.toLowerCase())}</p>}
         </div>
 
         {/* Mode */}
