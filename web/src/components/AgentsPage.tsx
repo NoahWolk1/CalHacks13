@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { motion, useReducedMotion, type Variants } from "framer-motion";
 import { ArrowLeft, Lock, Check, Loader2, Trash2 } from "lucide-react";
 import { useStore } from "@/lib/client/store";
 import { deleteAgent, draftAgent, saveAgent } from "@/lib/client/runClient";
@@ -128,51 +129,77 @@ function CreateCard() {
   );
 }
 
+const EASE = [0.22, 1, 0.36, 1] as const;
+
 /** Full-page agent library: create workers, browse the library, see which orchestrators use them. */
 export default function AgentsPage() {
   const { agents, profiles, runId } = useStore();
   const router = useRouter();
+  const still = useReducedMotion();
   // Back to the map, keeping a shared/live mission in the URL.
   const back = runId ? `/?run=${encodeURIComponent(runId)}` : "/";
+  // The map stays mounted underneath, so fading this page in/out crossfades with it.
+  // Leaving plays the fade first, then navigates.
+  const [leaving, setLeaving] = useState(false);
+  const leave = () => setLeaving(true);
+  const onBackClick = (e: React.MouseEvent) => {
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return; // let new-tab clicks through
+    e.preventDefault();
+    leave();
+  };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
-      if (e.key === "Escape" && tag !== "INPUT" && tag !== "TEXTAREA") router.push(back);
+      if (e.key === "Escape" && tag !== "INPUT" && tag !== "TEXTAREA") setLeaving(true);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [router, back]);
+  }, []);
+
+  const page: Variants = {
+    hidden: { opacity: 0 },
+    in: { opacity: 1, transition: { duration: 0.22, ease: "easeOut" } },
+    out: { opacity: 0, transition: { duration: 0.18, ease: "easeIn" } },
+  };
+  // Sections rise in one after another once the page starts fading in.
+  const stagger: Variants = { in: { transition: { delayChildren: 0.06, staggerChildren: still ? 0 : 0.06 } } };
+  const rise: Variants = {
+    hidden: { opacity: 0, y: still ? 0 : 14 },
+    in: { opacity: 1, y: 0, transition: { duration: 0.32, ease: EASE } },
+  };
 
   const usage = (id: string) => profiles.filter((p) => p.defaultAgents.includes(id)).length;
   const library = agents.filter((a) => !a.temporary);
 
   return (
-    <div className="scroll-thin fixed inset-0 z-50 overflow-y-auto bg-bg">
+    <motion.div className="scroll-thin fixed inset-0 z-50 overflow-y-auto bg-bg"
+      variants={page} initial="hidden" animate={leaving ? "out" : "in"}
+      onAnimationComplete={(def) => { if (def === "out") router.push(back); }}>
       <header className="dock sticky top-0 z-10 box-content flex h-12 items-center gap-3 border-b border-line px-4" style={{ paddingTop: "env(safe-area-inset-top)" }}>
-        <Link href={back} className="flex items-center gap-2.5" aria-label={`${APP_NAME} home`}>
+        <Link href={back} onClick={onBackClick} className="flex items-center gap-2.5" aria-label={`${APP_NAME} home`}>
           <SwarmMark />
           <span className="text-[14px] font-semibold tracking-[-0.01em] text-fg1">{APP_NAME}</span>
         </Link>
         <div className="flex-1" />
-        <Link href={back}
+        <Link href={back} onClick={onBackClick}
           className="flex h-[30px] items-center gap-1.5 rounded-md border border-line-strong px-3 text-[12.5px] text-fg1 transition-colors hover:bg-raised">
           <ArrowLeft size={13} strokeWidth={1.5} /> Back to map
         </Link>
       </header>
 
-      <div className="mx-auto max-w-[1080px] space-y-8 px-5 py-8 max-lg:px-4 max-lg:py-6">
-        <div>
+      <motion.div variants={stagger} className="mx-auto max-w-[1080px] space-y-8 px-5 py-8 max-lg:px-4 max-lg:py-6">
+        <motion.div variants={rise}>
           <h1 className="text-[20px] font-semibold tracking-[-0.015em] text-fg1">Agents</h1>
           <p className="mt-1 text-[13px] text-fg3">Workers are reusable building blocks. Orchestrators combine them into a survey team.</p>
-        </div>
+        </motion.div>
 
-        <section>
+        <motion.section variants={rise}>
           <SectionLabel>Create a worker</SectionLabel>
           <CreateCard />
-        </section>
+        </motion.section>
 
-        <section>
+        <motion.section variants={rise}>
           <SectionLabel right={<span className="num text-[11.5px]">{library.length}</span>}>Worker library</SectionLabel>
           <div className="grid gap-px overflow-hidden rounded-md border border-line bg-line sm:grid-cols-2 lg:grid-cols-3">
             {library.map((a) => (
@@ -180,9 +207,9 @@ export default function AgentsPage() {
                 onDelete={a.builtin ? undefined : () => { if (confirm(`Delete "${a.name}" from the library?`)) deleteAgent(a.id).catch((e: Error) => alert(e.message)); }} />
             ))}
           </div>
-        </section>
+        </motion.section>
 
-        <section>
+        <motion.section variants={rise}>
           <SectionLabel right={<span className="num text-[11.5px]">{profiles.length}</span>}>Orchestrators</SectionLabel>
           <div className="grid gap-px overflow-hidden rounded-md border border-line bg-line sm:grid-cols-2 lg:grid-cols-3">
             {profiles.map((p) => {
@@ -200,8 +227,8 @@ export default function AgentsPage() {
               );
             })}
           </div>
-        </section>
-      </div>
-    </div>
+        </motion.section>
+      </motion.div>
+    </motion.div>
   );
 }
