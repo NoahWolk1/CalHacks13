@@ -1,6 +1,6 @@
 import { parseCone } from "@/lib/sky/geom";
 import { runSkyAgents } from "@/lib/sky/run";
-import { skySummary } from "@/lib/sky/summary";
+import { cleanQuestion, skySummary } from "@/lib/sky/summary";
 import type { SkyEvent } from "@/lib/sky/types";
 import { liveStore } from "@/lib/server/liveRun";
 import { decideLlm } from "@/lib/server/llmQuota";
@@ -9,10 +9,12 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-// POST {ra, dec, radius} (degrees). Streams NDJSON SkyEvents: "results" as soon as every sky agent
+// POST {ra, dec, radius, question?} (degrees; an optional question turns the summary into a cited answer). Streams NDJSON SkyEvents: "results" as soon as every sky agent
 // has answered (or failed), then "summary" (null without a key or over the hourly Claude cap).
 export async function POST(req: Request) {
-  const cone = parseCone(await req.json().catch(() => null));
+  const body = await req.json().catch(() => null);
+  const cone = parseCone(body);
+  const question = cleanQuestion((body as { question?: unknown } | null)?.question);
   if (!cone) return Response.json({ error: "body must be {ra, dec, radius} in degrees" }, { status: 400 });
 
   const ctl = new AbortController();
@@ -40,7 +42,7 @@ export async function POST(req: Request) {
           return;
         }
         try {
-          send({ type: "summary", summary: await skySummary(cone, objects, sources, ctl.signal), ms: Date.now() - t0 });
+          send({ type: "summary", summary: await skySummary(cone, objects, sources, ctl.signal, question), ms: Date.now() - t0 });
         } catch (e) {
           console.warn("[sky] summary failed:", (e as Error).message);
           send({ type: "summary", summary: null, note: "Claude summary failed: showing raw results.", ms: Date.now() - t0 });

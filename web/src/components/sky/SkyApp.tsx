@@ -27,6 +27,8 @@ export const SAMPLES: { name: string; note: string; cone: Cone }[] = [
   { name: "Jupiter now", note: "Live position", cone: jupiterNow() },
 ];
 
+const QUESTIONS = ["What's the most interesting thing here?", "Are there any planets here?", "How far away are these objects?"];
+
 type Status = "idle" | "running" | "summarising" | "done" | "error";
 
 export default function SkyApp() {
@@ -43,6 +45,7 @@ export default function SkyApp() {
   const [timing, setTiming] = useState<{ results?: number; summary?: number }>({});
   const [survey, setSurvey] = useState<string>(SURVEYS[0].id);
   const [drawing, setDrawing] = useState(false);
+  const [question, setQuestion] = useState("");
   const api = useRef<AtlasApi | null>(null);
   const abort = useRef<AbortController | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -55,13 +58,13 @@ export default function SkyApp() {
     if (move) api.current?.goto(n);
   }, []);
 
-  const research = useCallback(async (c: Cone) => {
+  const research = useCallback(async (c: Cone, q = "") => {
     abort.current?.abort();
     const ctl = new AbortController();
     abort.current = ctl;
     setStatus("running"); setObjects([]); setSources([]); setSummary(null); setNote(null); setError(null); setSelected(null); setTiming({});
     try {
-      const res = await fetch("/api/sky/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(c), signal: ctl.signal });
+      const res = await fetch("/api/sky/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...c, question: q.trim() || undefined }), signal: ctl.signal });
       if (!res.ok || !res.body) throw new Error(`${res.status} ${res.statusText}`);
       const reader = res.body.getReader();
       const dec = new TextDecoder();
@@ -88,12 +91,12 @@ export default function SkyApp() {
     }
   }, []);
 
-  const pickSample = (c: Cone) => { applyCone(c, true); void research(c); };
+  const pickSample = (c: Cone) => { applyCone(c, true); void research(c, question); };
   const runDraft = () => {
     const c = parseCone({ ra: draft.ra, dec: draft.dec, radius: draft.radius });
     if (!c) { setError("Enter RA 0–360°, Dec −90…90°, radius > 0"); return; }
     applyCone(c, true);
-    void research(c);
+    void research(c, question);
   };
   const useView = () => { const v = api.current?.view(); if (v) applyCone(v); };
   const draw = () => {
@@ -166,6 +169,20 @@ export default function SkyApp() {
               ))}
             </div>
             <div className="num mt-1.5 text-[11.5px] text-fg4">{formatRa(cone.ra)} {formatDec(cone.dec)} · r {cone.radius.toFixed(3)}°</div>
+
+            <div className="mb-2 mt-4 text-[11.5px] uppercase tracking-[0.06em] text-fg3">Question (optional)</div>
+            <textarea value={question} onChange={(e) => setQuestion(e.target.value)} rows={2} maxLength={300} disabled={busy}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); runDraft(); } }}
+              placeholder="Ask about this region, e.g. Are there planets here? Leave empty for a briefing."
+              className="w-full resize-none rounded-md border border-line bg-bg px-2 py-1.5 text-[12.5px] leading-snug text-fg1 outline-none placeholder:text-fg4 focus:border-line-strong disabled:opacity-60" />
+            <div className="mt-1.5 flex flex-wrap gap-1">
+              {QUESTIONS.map((q) => (
+                <button key={q} onClick={() => setQuestion(q)} disabled={busy}
+                  className="rounded-[4px] border border-line px-1.5 py-0.5 text-[11.5px] text-fg3 transition-colors hover:border-line-strong hover:text-fg1 disabled:opacity-50">
+                  {q}
+                </button>
+              ))}
+            </div>
             <div className="mt-3 flex gap-1.5">
               <button onClick={draw} disabled={busy || !!atlasError} className="flex h-[30px] items-center gap-1.5 rounded-md border border-line px-2.5 text-[12.5px] text-fg2 hover:text-fg1 disabled:opacity-50">
                 <CircleDashed size={13} strokeWidth={1.5} /> Draw circle
@@ -204,12 +221,13 @@ export default function SkyApp() {
           {(status === "summarising" || summary || note) && (
             <section className="border-b border-line p-4">
               <div className="mb-2 flex items-baseline justify-between text-[11.5px] uppercase tracking-[0.06em] text-fg3">
-                <span>Claude summary</span>
+                <span>{summary?.question ? "Answer" : "Claude summary"}</span>
                 {timing.summary != null && summary && <span className="num normal-case tracking-normal text-fg4">{(timing.summary / 1000).toFixed(1)}s</span>}
               </div>
               {status === "summarising" && <div className="caret text-[12.5px] text-fg3">Reading {objects.length} results</div>}
               {summary && (
                 <>
+                  {summary.question && <p className="mb-1.5 text-[12px] italic text-fg3">“{summary.question}”</p>}
                   <p className="text-[13.5px] leading-snug text-fg1">{summary.headline}</p>
                   <ul className="mt-2 space-y-2">
                     {summary.bullets.map((b, i) => (

@@ -22,3 +22,13 @@ describe("parseSesame", () => {
     expect(parseSesame("# xyzzy\t#Q1\n#! *** Nothing found *** \n", "xyzzy")).toBeNull();
   });
 });
+
+describe("cleanQuestion", () => {
+  it("trims, collapses whitespace and caps length; non-strings mean no question", async () => {
+    const { cleanQuestion } = await import("./summary");
+    expect(cleanQuestion("  Are there\n planets   here? ")).toBe("Are there planets here?");
+    expect(cleanQuestion("x".repeat(500))).toHaveLength(300);
+    expect(cleanQuestion(42)).toBe("");
+    expect(cleanQuestion(undefined)).toBe("");
+  });
+});

@@ -6,7 +6,7 @@ export const EXO_TAP = "https://exoplanetarchive.ipac.caltech.edu/TAP/sync";
 export const EXO_CAP = 50;
 
 export function exoQuery(c: Cone, cap = EXO_CAP) {
-  return `select top ${cap} pl_name,hostname,ra,dec,sy_dist,sy_pnum,pl_rade,pl_bmasse,pl_orbper,pl_eqt,disc_year,discoverymethod,st_spectype `
+  return `select top ${cap} pl_name,hostname,ra,dec,sy_dist,sy_pnum,pl_rade,pl_bmasse,pl_orbper,pl_eqt,pl_insol,disc_year,discoverymethod,st_spectype `
     + `from pscomppars where contains(point('icrs',ra,dec),circle('icrs',${adqlNum(c.ra)},${adqlNum(c.dec)},${adqlNum(c.radius)}))=1 order by sy_dist asc`;
 }
 
@@ -32,7 +32,7 @@ export function parseExoplanets(json: unknown): SkyObject[] {
     if (host) props["host star"] = host;
     const entries: [string, unknown, number?][] = [
       ["distance (pc)", r.sy_dist], ["planets in system", r.sy_pnum], ["radius (Earth = 1)", r.pl_rade], ["mass (Earth = 1)", r.pl_bmasse],
-      ["orbital period (days)", r.pl_orbper, 4], ["equilibrium temp (K)", r.pl_eqt], ["discovered", r.disc_year, 4],
+      ["orbital period (days)", r.pl_orbper, 4], ["equilibrium temp (K)", r.pl_eqt], ["stellar flux (Earth = 1)", r.pl_insol, 3], ["discovered", r.disc_year, 4],
     ];
     for (const [k, v, d] of entries) { const n = num(v, d); if (n !== undefined) props[k] = n; }
     if (typeof r.discoverymethod === "string") props.method = r.discoverymethod;

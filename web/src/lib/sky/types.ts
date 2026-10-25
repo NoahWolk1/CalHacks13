@@ -29,7 +29,7 @@ export type SkySourceReport = {
   error?: string;
 };
 
-export type SkySummary = { headline: string; bullets: { text: string; ids: string[] }[]; dropped: number };
+export type SkySummary = { headline: string; bullets: { text: string; ids: string[] }[]; dropped: number; question?: string };
 
 export type SkyEvent =
   | { type: "results"; cone: Cone; objects: SkyObject[]; sources: SkySourceReport[]; ms: number }

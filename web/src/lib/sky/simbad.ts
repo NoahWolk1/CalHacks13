@@ -20,7 +20,7 @@ export const LABEL: Record<string, string> = {
   "*": "Star", "**": "Double star", "SB*": "Spectroscopic binary", "EB*": "Eclipsing binary", "V*": "Variable star", "Be*": "Be star", "WR*": "Wolf-Rayet star",
   "C*": "Carbon star", "PM*": "High proper-motion star", "Em*": "Emission-line star", "Ae*": "Herbig Ae/Be star", "Or*": "Orion variable", "RG*": "Red giant",
   "s*r": "Red supergiant", "s*b": "Blue supergiant", "s*y": "Yellow supergiant", "LP*": "Long-period variable", "Ce*": "Cepheid", "BY*": "BY Draconis variable",
-  "RS*": "RS CVn variable", "Pu*": "Pulsating star", "SN*": "Supernova", "WD*": "White dwarf", "HB*": "Horizontal-branch star", "No*": "Nova", "Psr": "Pulsar",
+  "RS*": "RS CVn variable", "dS*": "Delta Scuti variable", "Y*O": "Young stellar object", "TT*": "T Tauri star", "Mi*": "Mira variable", "BD*": "Brown dwarf", "LM*": "Low-mass star", "MS*": "Main-sequence star", "Al*": "Algol-type binary", "El*": "Ellipsoidal variable", "Ir*": "Irregular variable", "RR*": "RR Lyrae variable", "bC*": "Beta Cephei variable", "a2*": "Alpha2 CVn variable", "gD*": "Gamma Doradus variable", "Ro*": "Rotating variable", "Er*": "Eruptive variable", "Fl*": "Flare star", "Pe*": "Peculiar star", "HS*": "Hot subdwarf", "sg*": "Supergiant", "s?r": "Red supergiant candidate", "AB*": "Asymptotic giant branch star", "Ae?": "Herbig Ae/Be candidate", "X": "X-ray source", "Rad": "Radio source", "IR": "Infrared source", "UV": "UV source", "Pu*": "Pulsating star", "SN*": "Supernova", "WD*": "White dwarf", "HB*": "Horizontal-branch star", "No*": "Nova", "Psr": "Pulsar",
 };
 
 export function categoryOf(otype: string): SkyCategory {
