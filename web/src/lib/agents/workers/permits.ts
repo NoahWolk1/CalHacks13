@@ -17,7 +17,7 @@ export const permitsWorker: Worker = {
   name: "Permit Patrol",
   description: "Finds recent building permits (new construction, major additions, demolitions) and what's planned, with cost, stories and units. San Francisco only.",
   vehicle: "car",
-  color: "#f59e0b",
+  color: "#d2c162",
   tools: ["http_get"],
   dataSources: ["SF Dept. of Building Inspection permits (DataSF)"],
   coverage: "San Francisco",

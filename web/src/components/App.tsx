@@ -7,7 +7,9 @@ import { convexEnabled, loadCatalog } from "@/lib/client/runClient";
 import CommandPanel, { useRegionLabel } from "./CommandPanel";
 import MobileSheet, { SHEET_PEEK } from "./MobileSheet";
 import { useIsDesktop } from "@/lib/client/useMedia";
+import { useLayoutSync } from "@/lib/client/layout";
 import RightPanel from "./RightPanel";
+import { LeftRail, RightRail } from "./Rail";
 import TopBar from "./TopBar";
 import StatusBar from "./StatusBar";
 import AgentHub from "./AgentHub";
@@ -24,24 +26,28 @@ export default function App() {
   const desktop = useIsDesktop();
   useEffect(() => { loadCatalog(); }, []);
   useRegionLabel();
+  useLayoutSync();
   return (
     <ConvexClientProvider>
-    <main className="relative h-screen w-screen overflow-hidden bg-[#060a11] max-lg:h-[100dvh]">
+    <main className="relative h-screen w-screen overflow-hidden bg-bg max-lg:h-[100dvh]">
       <MapView />
       <TopBar />
-      {desktop ? <><CommandPanel /><RightPanel /><StatusBar /></> : <MobileSheet />}
+      {desktop ? <><LeftRail /><RightRail /><CommandPanel /><RightPanel /></> : <MobileSheet />}
+      {/* Visible map strip between the panels (full screen on mobile): overlays center here. */}
+      <div className="gs-frame gs-follow">
+      {desktop && <StatusBar />}
       {!region && (
-        <div className="pointer-events-none absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 text-center max-lg:w-[calc(100%-32px)] max-lg:rounded-3xl max-lg:bg-[radial-gradient(closest-side,rgba(6,10,17,0.85),transparent)] max-lg:py-10">
-          <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-teal-300/80">Awaiting area of operations</div>
-          <div className="text-glow mt-2 text-2xl font-semibold text-white max-lg:text-xl">{desktop ? "Drag a box over any neighborhood" : "Pick any neighborhood"}</div>
-          <div className="mt-1 text-sm text-slate-400">{desktop ? "…then deploy the swarm." : "Tap a demo spot, or draw an area."}</div>
+        <div className="pointer-events-none absolute left-1/2 top-1/2 z-10 w-max max-w-[calc(100%-32px)] -translate-x-1/2 -translate-y-1/2 text-center max-lg:w-[calc(100%-32px)] max-lg:rounded-xl max-lg:bg-[radial-gradient(closest-side,rgba(14,14,13,0.9),transparent)] max-lg:py-10">
+          <div className="text-[22px] font-semibold tracking-[-0.015em] text-fg1 [text-shadow:0_1px_12px_var(--bg)] max-lg:text-xl">{desktop ? "Drag a box over any neighborhood" : "Pick any neighborhood"}</div>
+          <div className="mt-1 text-[13.5px] text-fg2 [text-shadow:0_1px_8px_var(--bg)]">{desktop ? "Then deploy the swarm to research it." : "Tap a demo area, or draw your own."}</div>
           {!desktop && <DemoSpotChips className="pointer-events-auto mx-auto mt-4 max-w-[320px] justify-center gap-1.5" />}
         </div>
       )}
       {error && (
-        <div className="glass absolute bottom-20 left-1/2 z-30 -translate-x-1/2 rounded-xl px-4 py-2 text-xs text-rose-300 max-lg:w-max max-lg:max-w-[calc(100%-32px)]"
-          style={desktop ? undefined : { bottom: `calc(${SHEET_PEEK + 16}px + var(--safe-bottom))` }}>{error}</div>
+        <div className="glass pointer-events-auto absolute bottom-16 left-1/2 z-30 flex w-max max-w-[calc(100%-32px)] -translate-x-1/2 items-center gap-2 rounded-md px-3 py-2 text-[12.5px] text-fg1"
+          style={desktop ? undefined : { bottom: `calc(${SHEET_PEEK + 16}px + var(--safe-bottom))` }}><span className="h-1.5 w-1.5 shrink-0 rounded-full bg-risk" />{error}</div>
       )}
+      </div>
       <AgentHub />
       {convexEnabled && <><ConvexRunSync /><MissionHistory /></>}
     </main>

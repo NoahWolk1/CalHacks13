@@ -183,6 +183,9 @@ const KEYWORDS: Record<string, RegExp> = {
   "live-conditions": /\b(now|current|today|alert|fire|smoke|air\b|air quality|weather|heat|situation)/i,
   "local-news": /\b(news|happen|recent|story|event|council|protest|situation|why)/i,
   "census-demographics": /\b(income|demograph|people|who\b|live|rent|population|customer|afford)/i,
+  "sentinel-imagery": /\b(satellite|imagery|image|photo|aerial|from (space|above)|sentinel|landsat|vegetation|green|land ?cover|space)/i,
+  "orbit-passes": /\b(orbit|satellite pass|overpass|next (image|pass)|revisit|iss\b|space station|tle\b|space)/i,
+  "nasa-eonet": /\b(fire|wildfire|smoke|burn|storm|hurricane|cyclone|volcan|landslide|disaster|natural event|nasa|flood)/i,
 };
 
 function heuristicPlan(req: RunRequest, workers: Worker[]): { steps: PlanStep[]; rationale: string } {

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Search, MapPin, Loader2, Sparkles, X } from "lucide-react";
+import { Search, MapPin, Loader2, X } from "lucide-react";
 import { useStore } from "@/lib/client/store";
 import { flyTo, fitBox } from "@/lib/client/camera";
 import { searchPlaces, type Place } from "@/lib/client/geocode";
@@ -22,19 +22,21 @@ export function DemoSpotChips({ compact, className = "" }: { compact?: boolean; 
     <div className={`flex flex-wrap gap-1 ${compact ? "" : "mt-2"} ${className}`}>
       {DEMO_SPOTS.map((s) => (
         <button key={s.id} onClick={() => pickSpot(s)} disabled={running} title={s.blurb}
-          className="flex items-center gap-1 rounded-full border border-teal-300/20 bg-teal-300/[0.04] px-2 py-0.5 text-[11px] text-teal-100/80 transition max-lg:px-2.5 max-lg:py-1 max-lg:text-[12px] hover:border-teal-300/50 hover:bg-teal-300/10 hover:text-white disabled:opacity-40">
-          <Sparkles size={10} className="text-teal-300" />{s.short}
+          className="flex items-center rounded-[4px] border border-line-strong bg-raised/60 px-2 py-0.5 text-[12px] text-fg2 transition-colors max-lg:px-2.5 max-lg:py-1 hover:border-fg4 hover:text-fg1 disabled:opacity-40">
+          {s.short}
         </button>
       ))}
     </div>
   );
 }
 
-export default function PlaceSearch({ variant = "desktop", onClose }: { variant?: "desktop" | "mobile"; onClose?: () => void }) {
+export default function PlaceSearch({ variant = "desktop", onClose }: { variant?: "desktop" | "mobile" | "popover"; onClose?: () => void }) {
   const mobile = variant === "mobile";
+  /** Desktop top bar too narrow for the field: expands from an icon, closes on blur. */
+  const popover = variant === "popover";
   const running = useStore((s) => s.running);
   const [q, setQ] = useState("");
-  const [open, setOpen] = useState(mobile);
+  const [open, setOpen] = useState(mobile || popover);
   const [busy, setBusy] = useState(false);
   const [results, setResults] = useState<Place[]>([]);
   const [err, setErr] = useState<string | null>(null);
@@ -70,7 +72,7 @@ export default function PlaceSearch({ variant = "desktop", onClose }: { variant?
   }, [onClose]);
 
   // Mobile: the field only exists while expanded, so focus it right away.
-  useEffect(() => { if (mobile) input.current?.focus(); }, [mobile]);
+  useEffect(() => { if (mobile || popover) input.current?.focus(); }, [mobile, popover]);
 
   const go = (p: Place) => {
     if (p.bbox) fitBox(p.bbox, 16); else flyTo(p.center, 15.5);
@@ -82,8 +84,8 @@ export default function PlaceSearch({ variant = "desktop", onClose }: { variant?
 
   return (
     <div ref={wrap} className={`pointer-events-auto relative h-full ${mobile ? "flex-1" : ""}`}>
-      <div className={`glass flex h-full ${mobile ? "w-full rounded-2xl" : "w-[250px]"} items-center gap-2 rounded-full px-3.5 transition ${open ? "ring-1 ring-teal-300/40" : ""}`}>
-        {busy ? <Loader2 size={14} className="shrink-0 animate-spin text-teal-300" /> : <Search size={14} className="shrink-0 text-slate-400" />}
+      <div className={`flex h-full ${mobile ? "glass w-full rounded-lg" : popover ? "w-full rounded-md border bg-bg" : "w-[260px] rounded-md border bg-bg"} items-center gap-2 px-2.5 transition-colors ${open ? "border-fg4" : "border-line"}`}>
+        {busy ? <Loader2 size={14} strokeWidth={1.5} className="shrink-0 animate-spin text-fg3" /> : <Search size={14} strokeWidth={1.5} className="shrink-0 text-fg3" />}
         <input ref={input} value={q} onChange={(e) => { setQ(e.target.value); setOpen(true); }} onFocus={() => setOpen(true)}
           onKeyDown={(e) => {
             if (e.key === "Escape") { setOpen(false); input.current?.blur(); onClose?.(); }
@@ -91,52 +93,51 @@ export default function PlaceSearch({ variant = "desktop", onClose }: { variant?
             if (e.key === "ArrowUp") { e.preventDefault(); setActive((a) => Math.max(a - 1, 0)); }
             if (e.key === "Enter" && results[active]) go(results[active]);
           }}
-          placeholder="Search a place…" spellCheck={false}
-          className={`min-w-0 flex-1 bg-transparent ${mobile ? "text-base" : "text-xs"} text-white placeholder:text-slate-500 focus:outline-none`} />
+          placeholder="Search a place" spellCheck={false}
+          className={`min-w-0 flex-1 bg-transparent ${mobile ? "text-base" : "text-[12.5px]"} text-fg1 placeholder:text-fg4 focus:outline-none focus-visible:outline-none`} />
         {mobile ? (
-          <button onClick={() => { setOpen(false); onClose?.(); }} className="-mr-1 p-1.5 text-slate-400 hover:text-white" aria-label="Close search"><X size={16} /></button>
+          <button onClick={() => { setOpen(false); onClose?.(); }} className="-mr-1 p-1.5 text-fg3 hover:text-fg1" aria-label="Close search"><X size={16} strokeWidth={1.5} /></button>
         ) : q ? (
-          <button onClick={() => { setQ(""); input.current?.focus(); }} className="text-slate-500 hover:text-white"><X size={13} /></button>
+          <button onClick={() => { setQ(""); input.current?.focus(); }} className="text-fg3 hover:text-fg1" aria-label="Clear"><X size={13} strokeWidth={1.5} /></button>
         ) : (
-          <kbd className="rounded border border-white/10 px-1 font-mono text-[9px] text-slate-500">/</kbd>
+          <kbd className="rounded-[3px] border border-line px-1 font-mono text-[10.5px] text-fg3">/</kbd>
         )}
       </div>
 
       <AnimatePresence>
         {open && (
           <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.15 }}
-            style={mobile ? { background: "rgba(8, 12, 20, 0.97)" } : undefined}
-            className={`glass absolute right-0 top-full z-40 mt-2 overflow-hidden rounded-xl p-1.5 ${mobile ? "left-0" : "w-[320px]"}`}>
+            className={`glass absolute right-0 top-full z-40 mt-2 overflow-hidden rounded-lg p-1 ${mobile ? "left-0" : "w-[320px]"}`}>
             {showResults ? (
               <>
-                <div className="px-2 pb-1 pt-1 font-mono text-[10px] uppercase tracking-[0.18em] text-slate-500">Places</div>
+                <div className="px-2 pb-1 pt-1.5 text-[12px] text-fg3">Places</div>
                 {results.map((p, i) => (
                   <button key={`${p.center.join()}-${i}`} onMouseEnter={() => setActive(i)} onClick={() => go(p)}
-                    className={`flex w-full items-start gap-2 rounded-lg px-2 ${mobile ? "py-2.5" : "py-1.5"} text-left transition ${i === active ? "bg-white/[0.06]" : ""}`}>
-                    <MapPin size={13} className="mt-0.5 shrink-0 text-teal-300" />
+                    className={`flex w-full items-start gap-2 rounded-[4px] px-2 ${mobile ? "py-2.5" : "py-1.5"} text-left ${i === active ? "bg-raised" : ""}`}>
+                    <MapPin size={13} strokeWidth={1.5} className="mt-0.5 shrink-0 text-fg3" />
                     <span className="min-w-0">
-                      <span className="block truncate text-xs text-slate-100">{p.name}</span>
-                      <span className="block truncate text-[11px] text-slate-500">{p.detail}</span>
+                      <span className="block truncate text-[13px] text-fg1">{p.name}</span>
+                      <span className="block truncate text-[12px] text-fg3">{p.detail}</span>
                     </span>
                   </button>
                 ))}
-                {!results.length && <div className="px-2 py-2 text-xs text-slate-500">{busy ? "Searching…" : err ?? "Searching…"}</div>}
+                {!results.length && <div className="px-2 py-2 text-[12.5px] text-fg3">{busy ? "Searching…" : err ?? "Searching…"}</div>}
               </>
             ) : (
               <>
-                <div className="px-2 pb-1 pt-1 font-mono text-[10px] uppercase tracking-[0.18em] text-slate-500">Demo spots</div>
+                <div className="px-2 pb-1 pt-1.5 text-[12px] text-fg3">Demo spots</div>
                 {DEMO_SPOTS.map((s) => (
                   <button key={s.id} disabled={running} onClick={() => { pickSpot(s); setOpen(false); onClose?.(); }}
-                    className={`flex w-full items-center gap-2 rounded-lg px-2 ${mobile ? "py-2.5" : "py-1.5"} text-left transition hover:bg-white/[0.06] disabled:opacity-40`}>
-                    <Sparkles size={13} className="shrink-0 text-teal-300" />
+                    className={`group flex w-full items-center gap-2 rounded-[4px] px-2 ${mobile ? "py-2.5" : "py-1.5"} text-left hover:bg-raised disabled:opacity-40`}>
+                    <span className="h-2 w-2 shrink-0 rounded-[2px] border border-accent" />
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-xs text-slate-100">{s.short}</span>
-                      <span className="block truncate text-[11px] text-slate-500">{s.blurb}</span>
+                      <span className="block truncate text-[13px] text-fg1">{s.short}</span>
+                      <span className="block truncate text-[12px] text-fg3">{s.blurb}</span>
                     </span>
-                    <span className="font-mono text-[9px] uppercase tracking-wider text-teal-300/70">Set area</span>
+                    <span className="text-[12px] text-fg4 group-hover:text-fg2">Set area</span>
                   </button>
                 ))}
-                <div className="px-2 pb-1 pt-1.5 text-[10.5px] text-slate-600">Type 3+ letters to search anywhere.</div>
+                <div className="border-t border-line px-2 pb-1 pt-1.5 text-[12px] text-fg4">Type 3+ letters to search anywhere.</div>
               </>
             )}
           </motion.div>

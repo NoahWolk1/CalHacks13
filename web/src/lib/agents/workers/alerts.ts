@@ -7,7 +7,7 @@ export const alertsWorker: Worker = {
   name: "Sky Sentinel",
   description: "Checks live conditions right now: active National Weather Service alerts (fire, flood, heat, wind) and current air quality.",
   vehicle: "drone",
-  color: "#fbbf24",
+  color: "#a9cbe8",
   tools: ["http_get"],
   dataSources: ["NWS Alerts API", "Open-Meteo Air Quality"],
   coverage: "US alerts, global air quality",

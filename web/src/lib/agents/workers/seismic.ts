@@ -8,7 +8,7 @@ export const seismicWorker: Worker = {
   name: "Quake Watch",
   description: "Pulls 25 years of USGS earthquake history (M2.5+) within 40 km and summarizes seismic exposure and recent activity.",
   vehicle: "satellite",
-  color: "#f87171",
+  color: "#e2715f",
   tools: ["http_get"],
   dataSources: ["USGS Earthquake Catalog"],
   coverage: "Global",

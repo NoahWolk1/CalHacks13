@@ -29,7 +29,7 @@ export const placesWorker: Worker = {
   name: "Street Scout",
   description: "Inventories businesses and amenities (cafés, restaurants, shops, schools, transit, parks) to measure competition, foot-traffic anchors and services.",
   vehicle: "rover",
-  color: "#34d399",
+  color: "#8cc27c",
   tools: ["http_get"],
   dataSources: ["OpenStreetMap via OpenFreeMap vector tiles"],
   coverage: "Global",

@@ -9,7 +9,7 @@ export const terrainWorker: Worker = {
   name: "Terrain Scanner",
   description: "Samples ground elevation across the area to find low-lying spots exposed to sea-level rise and ponding; can inspect specific parcels.",
   vehicle: "drone",
-  color: "#a78bfa",
+  color: "#bd9c7b",
   tools: ["http_get"],
   dataSources: ["Open-Meteo Elevation API (Copernicus DEM)"],
   coverage: "Global",

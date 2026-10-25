@@ -8,7 +8,7 @@ export const PROFILES: OrchestratorProfile[] = [
     persona: "Planners, developers, homebuyers and insurers vetting where to build or buy",
     tagline: "Is it safe and smart to build here?",
     icon: "ShieldAlert",
-    defaultAgents: ["fema-flood", "sf-stormwater", "terrain-elevation", "sf-permits", "usgs-seismic", "sf-311", "live-conditions", "local-news"],
+    defaultAgents: ["fema-flood", "sf-stormwater", "terrain-elevation", "sf-permits", "usgs-seismic", "sf-311", "live-conditions", "local-news", "sentinel-imagery"],
     domainPrompt:
       "You advise on development and property risk. You care most about physical hazards (flood zones, low elevation/sea-level rise, seismic exposure) " +
       "colliding with human investment (new construction, added units/stories). A permitted building inside a flood zone or on ground ≤5 m is a headline risk. " +
@@ -34,10 +34,11 @@ export const PROFILES: OrchestratorProfile[] = [
     persona: "Relief coordinators and insurance adjusters",
     tagline: "What's happening on the ground right now?",
     icon: "Siren",
-    defaultAgents: ["live-conditions", "local-news", "sf-311", "fema-flood", "sf-stormwater", "usgs-seismic", "osm-places"],
+    defaultAgents: ["live-conditions", "local-news", "sf-311", "fema-flood", "sf-stormwater", "usgs-seismic", "osm-places", "nasa-eonet", "sentinel-imagery", "orbit-passes"],
     domainPrompt:
       "You support emergency responders. Prioritize live alerts, recent news, and fresh 311 reports. Map critical facilities (hospitals, schools, fire stations) " +
-      "against hazard zones. Be explicit about recency: anything older than a week is background, not situation.",
+      "against hazard zones. Be explicit about recency: anything older than a week is background, not situation. " +
+      "NASA EONET events show regional fire/storm/flood activity; the latest Sentinel-2/Landsat scene date and the next predicted imaging pass tell you how fresh the overhead picture is.",
     sampleQuestions: ["What's the current situation here?", "Which critical facilities sit in hazard zones?", "Where are people reporting problems?"],
   },
 ];

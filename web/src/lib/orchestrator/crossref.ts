@@ -120,6 +120,59 @@ export function crossReference(findings: Finding[]): Link[] {
     });
   }
 
+  // 7. Space: NASA EONET wildfires nearby × current air quality.
+  const events = findings.filter((f) => f.category === "earth_event" && !f.props?.areaLevel);
+  const fires = events.filter((f) => f.props?.eventCategory === "wildfires" && Number(f.props?.distanceKm) <= 150 && Number(f.props?.ageDays) <= 30);
+  const aq = findings.find((f) => f.source_type === "air_quality");
+  if (fires.length) {
+    const near = fires.reduce((m, f) => (Number(f.props?.distanceKm) < Number(m.props?.distanceKm) ? f : m));
+    links.push({
+      kind: "note",
+      title: `Satellite-tracked wildfire ${near.props?.distanceKm} km away this month`,
+      body: `NASA EONET logged ${fires.length} wildfire${fires.length > 1 ? "s" : ""} within 150 km in the last 30 days (nearest: ${near.claim.split(" (")[0].replace(/^Wildfires: /, "")}, ${near.observed_at}).${aq ? ` Current air quality: US AQI ${aq.props?.us_aqi}${Number(aq.props?.us_aqi) > 100 ? ", likely smoke-affected" : ", no smoke impact showing yet"}.` : ""}`,
+      severity: Math.min(0.75, 0.4 + 0.3 * (1 - Number(near.props?.distanceKm) / 150) + (near.props?.open ? 0.05 : 0)),
+      findingIds: [...fires.slice(0, 4).map((f) => f.id), ...(aq ? [aq.id] : [])],
+    });
+  }
+
+  // 8. Space: regional flood events on record × mapped flood zones here.
+  const floodEvents = events.filter((f) => f.props?.eventCategory === "floods" || f.props?.eventCategory === "severeStorms");
+  if (floodEvents.length && floodZones.length) {
+    links.push({
+      kind: "note",
+      title: "Regional flood/storm activity on record, and this area has mapped flood zones",
+      body: `NASA EONET tracked ${floodEvents.length} flood or severe-storm event${floodEvents.length > 1 ? "s" : ""} within ~150 km in the past year, and this area contains ${[...new Set(floodZones.map((z) => zoneName(z.props?.zone)))].join(" / ")} zones.`,
+      severity: 0.45,
+      findingIds: [...floodEvents.slice(0, 3).map((f) => f.id), ...floodZones.slice(0, 2).map((z) => z.id)],
+    });
+  }
+
+  // 9. Space: how fresh is the overhead picture, and when is the next one?
+  const lastImage = findings.find((f) => f.source_type === "sentinel2_stac" && f.props?.ageDays != null);
+  const nextPass = findings.find((f) => f.category === "orbit" && f.props?.areaLevel && f.props?.nextPass);
+  if (lastImage && nextPass) {
+    links.push({
+      kind: "note",
+      title: `Newest clear satellite image is ${lastImage.props?.ageDays} days old; next pass in ${Math.round(Number(nextPass.props?.hoursUntil))}h`,
+      body: `Last cloud-free Sentinel-2 view: ${String(lastImage.props?.acquired).slice(0, 10)} (${lastImage.props?.satellite}). Orbit propagation puts ${nextPass.props?.nextSatellite} over the area next, so fresh 10–30 m imagery is possible then, if skies are clear.`,
+      severity: 0.3,
+      findingIds: [lastImage.id, nextPass.id],
+    });
+  }
+
+  // 10. Space: coastal scene × coastal flood zones (scene-level water share, so stated as context only).
+  const scene = findings.find((f) => f.source_type === "sentinel2_scl");
+  const coastal = floodZones.filter((z) => String(z.props?.zone).startsWith("V"));
+  if (scene && Number(scene.props?.waterPct) >= 30 && coastal.length) {
+    links.push({
+      kind: "note",
+      title: "Satellite scene confirms open water next to coastal flood zones",
+      body: `${scene.props?.waterPct}% of the surrounding Sentinel-2 tile is open water, and the area includes FEMA coastal high-hazard (V) zones: exposure to bay/ocean surge, not just rainfall.`,
+      severity: 0.35,
+      findingIds: [scene.id, ...coastal.slice(0, 2).map((z) => z.id)],
+    });
+  }
+
   return links.sort((a, b) => b.severity - a.severity);
 }
 

@@ -9,10 +9,13 @@ import { alertsWorker } from "./workers/alerts";
 import { newsWorker } from "./workers/news";
 import { demographicsWorker } from "./workers/demographics";
 import { stormwaterWorker } from "./workers/stormwater";
+import { sentinelWorker } from "./workers/sentinel";
+import { orbitWorker } from "./workers/orbit";
+import { eonetWorker } from "./workers/eonet";
 
 export const BUILTIN_WORKERS: Worker[] = [
   floodWorker, stormwaterWorker, terrainWorker, permitsWorker, complaintsWorker, placesWorker,
-  seismicWorker, alertsWorker, newsWorker, demographicsWorker,
+  seismicWorker, alertsWorker, newsWorker, demographicsWorker, sentinelWorker, orbitWorker, eonetWorker,
 ];
 
 // Custom (generated) agents live here at runtime. The Agent Hub's create flow (see ./factory.ts)

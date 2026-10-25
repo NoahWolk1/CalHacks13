@@ -12,7 +12,7 @@ export const complaintsWorker: Worker = {
   name: "Street Pulse",
   description: "Reads the last 90 days of 311 service requests (noise, sewer backups/flooding, encampments, street defects) to gauge street-level conditions. San Francisco only.",
   vehicle: "car",
-  color: "#f472b6",
+  color: "#e48bb0",
   tools: ["http_get"],
   dataSources: ["SF 311 Cases (DataSF)"],
   coverage: "San Francisco",

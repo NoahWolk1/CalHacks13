@@ -8,7 +8,7 @@ export const newsWorker: Worker = {
   name: "News Uplink",
   description: "Searches recent local news coverage about the area (development fights, closures, crime, disasters, openings).",
   vehicle: "satellite",
-  color: "#e879f9",
+  color: "#a28be6",
   tools: ["search"],
   dataSources: ["Google News RSS"],
   coverage: "Global",
