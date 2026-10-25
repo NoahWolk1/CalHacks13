@@ -60,7 +60,7 @@ export function useRunFeed(fresh: boolean, run: RunMeta | null | undefined, even
       return;
     }
     st.resetRun();
-    st.set({ region: run.region as Region, profileId: run.profileId, mode: run.mode as RunMode, question: run.question ?? "", rightTab: "agents" });
+    st.set({ region: run.region as Region, profileId: run.profileId, mode: run.mode as RunMode, question: run.question ?? "" });
     replay.current = true;
     setReady(true);
   }, [fresh, run, ready]); // eslint-disable-line react-hooks/exhaustive-deps

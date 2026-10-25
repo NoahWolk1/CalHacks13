@@ -52,8 +52,6 @@ interface State {
   selectedFinding: string | null;
   hoveredInsight: string | null;
   selectedInsight: string | null;
-  rightTab: "agents" | "insights" | "answer" | "findings";
-  hubOpen: boolean;
 
   set: (p: Partial<State>) => void;
   resetRun: () => void;
@@ -70,7 +68,6 @@ export const useStore = create<State>((set, get) => ({
   agents: [], profiles: [], llm: false, live: null,
   runId: null, tool: "box", pinRadius: 450, region: null, profileId: "site-risk", mode: "insights", question: "",
   ...emptyRun,
-  rightTab: "agents", hubOpen: false,
 
   set: (p) => set(p),
   resetRun: () => set({ ...emptyRun }),
@@ -102,8 +99,8 @@ export const useStore = create<State>((set, get) => ({
           agentState: { ...s.agentState, [e.finding.worker_id]: { ...prev, findings: prev.findings + 1 } },
         };
       }
-      case "insight": return { insights: [...s.insights, e.insight], rightTab: s.rightTab === "agents" && s.insights.length === 0 ? "insights" : s.rightTab };
-      case "answer_delta": return { answer: s.answer + e.text, rightTab: s.answer ? s.rightTab : "answer" };
+      case "insight": return { insights: [...s.insights, e.insight] };
+      case "answer_delta": return { answer: s.answer + e.text };
       case "run_done": return { running: false, runDurationMs: e.durationMs };
       case "error": return { running: false, error: e.message };
     }

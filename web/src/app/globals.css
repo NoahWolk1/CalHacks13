@@ -77,18 +77,15 @@ input[type="range"] { accent-color: var(--fg1); }
 
 /* ── Resizable layout (src/lib/client/layout.ts writes the --gs-* vars) ─────── */
 :root {
-  --gs-lw: 360px; --gs-rw: 400px; --gs-le: 360px; --gs-re: 400px; --gs-mw: calc(100vw - 760px);
-  --gs-tlw: 360px; --gs-trw: 400px; --gs-log: 42%;
+  --gs-rw: 400px; --gs-le: 0px; --gs-re: 400px; --gs-mw: calc(100vw - 400px);
+  --gs-trw: 400px;
 }
 /* Elements that track the panels glide when a panel toggles, but follow the pointer 1:1 while dragging. */
 .gs-follow { transition: left 320ms cubic-bezier(0.22, 1, 0.36, 1), right 320ms cubic-bezier(0.22, 1, 0.36, 1), width 320ms cubic-bezier(0.22, 1, 0.36, 1), max-width 320ms cubic-bezier(0.22, 1, 0.36, 1); }
 html[data-gs-drag] .gs-follow { transition: none !important; }
 html[data-gs-drag], html[data-gs-drag] * { user-select: none !important; -webkit-user-select: none !important; }
 html[data-gs-drag="x"] * { cursor: col-resize !important; }
-html[data-gs-drag="y"] * { cursor: row-resize !important; }
-html[data-gs-sash="left"] [data-sash="left"] .gs-sash-line,
-html[data-gs-sash="right"] [data-sash="right"] .gs-sash-line,
-html[data-gs-sash="log"] [data-sash="log"] .gs-sash-line { opacity: 1; transition-delay: 0ms; }
+html[data-gs-sash="right"] [data-sash="right"] .gs-sash-line { opacity: 1; transition-delay: 0ms; }
 
 /* The visible map strip between the panels: hero, status bar and toasts center in it. */
 .gs-frame { position: absolute; inset: 0; pointer-events: none; container-type: inline-size; }
