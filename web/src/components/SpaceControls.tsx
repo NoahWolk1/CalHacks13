@@ -59,7 +59,7 @@ export default function SpaceControls() {
               ))}
             </div>
           )}
-          {open && !city && <div className="px-2.5 pb-2 text-fg3">Zoom in to a city to see what's overhead</div>}
+          {open && !city && <div className="px-2.5 pb-2 text-fg3">Zoom in to a city to see what&apos;s overhead</div>}
         </div>
       )}
     </div>
