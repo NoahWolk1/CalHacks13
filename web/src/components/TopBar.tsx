@@ -126,6 +126,7 @@ function DesktopTopBar() {
           <span className={`h-1.5 w-1.5 rounded-full ${llm ? "bg-ok" : "bg-[#d2c162]"}`} />
           {llm ? "Claude online" : "Heuristic mode"}
         </span>
+        <Link href="/sky" title="Research a region of space" className="shrink-0 text-[12.5px] text-fg3 transition-colors hover:text-fg1">Sky</Link>
         <button onClick={startTour} title="Take the tour" aria-label="Take the tour"
           className="grid h-7 w-7 shrink-0 place-items-center rounded-[4px] text-fg3 transition-colors hover:bg-raised hover:text-fg1">
           <CircleHelp size={15} strokeWidth={1.5} />

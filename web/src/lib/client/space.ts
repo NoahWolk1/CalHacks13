@@ -9,6 +9,7 @@ import { create } from "zustand";
 import type { FeatureCollection, LineString, Point } from "geojson";
 import { useStore } from "./store";
 import { UI } from "./theme";
+import { installSky, SKY_ENABLED } from "./sky";
 import { loadSats, positions, groundTrack, overhead, splitAntimeridian, type Sat, type Overhead, type LL } from "./orbit";
 
 /** Globe while zoomed out, flat mercator from GLOBE_END up. deck.gl (overlaid mode) only knows
@@ -49,6 +50,7 @@ const EMPTY: FeatureCollection = { type: "FeatureCollection", features: [] };
 export function installSpace(map: MLMap): () => void {
   let sats: Sat[] = [];
   let buildingOpacity: unknown;
+  const uninstallSky = SKY_ENABLED ? installSky(map) : () => {};
   const timers: ReturnType<typeof setInterval>[] = [];
 
   try {
@@ -222,7 +224,7 @@ export function installSpace(map: MLMap): () => void {
 
   return () => {
     timers.forEach(clearInterval);
-    unsubImagery(); unsubStore();
+    unsubImagery(); unsubStore(); uninstallSky();
     map.off("style.load", setup); map.off("zoom", onZoom);
     interactions.forEach((e) => map.getCanvasContainer().removeEventListener(e, cancelIntro));
   };
