@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { useStore } from "@/lib/client/store";
 import { useLayout } from "@/lib/client/layout";
+import type { RunMode } from "@/lib/types";
 
 /**
  * Desktop guided tour: rings the element each step is about (found by its `data-tour` attribute) and
@@ -21,12 +22,22 @@ type Step = {
   body: string;
 };
 
+/** The research mode before the tour switched it, so leaving the tour early can put it back. */
+let modeBefore: RunMode | null = null;
+const setMode = (mode: RunMode) => {
+  const s = useStore.getState();
+  modeBefore ??= s.mode;
+  s.set({ mode });
+};
+
 export const TOUR: Step[] = [
-  { target: "tool-box", side: "below", waitFor: "region", onEnter: () => useStore.getState().set({ tool: "pan" }),
+  // Select Box so dragging draws instead of orbiting (unless the user already picked a drawing tool).
+  { target: "tool-box", side: "below", waitFor: "region", onEnter: () => { if (useStore.getState().tool === "pan") useStore.getState().set({ tool: "box" }); },
     title: "Pick an area", body: "Drag over any neighborhood on the map." },
-  { target: "mode-ask", side: "left", onEnter: () => useStore.getState().set({ mode: "ask" }),
+  { target: "mode-ask", side: "left", onEnter: () => setMode("ask"),
     title: "Ask a question.", body: "We'll find the right agents to answer it." },
-  { target: "mode-insights", side: "left",
+  // Back to Insights, so the Run button on step 5 works without a typed question.
+  { target: "mode-insights", side: "left", onEnter: () => setMode("insights"),
     title: "Just exploring?", body: "Let our agents run a general analysis of the area." },
   { target: "focus", side: "left",
     title: "Choose a lens", body: "Site Risk Analyst, Storefront Scout and the others each send a different team of agents." },
@@ -43,12 +54,25 @@ const GAP = 12;
 const EDGE = 12;
 
 function finish() {
-  useStore.getState().set({ tour: null });
+  const s = useStore.getState();
+  // Leaving before the run step: put back the mode the tour switched away from.
+  if (modeBefore && s.tour != null && s.tour <= TOUR.findIndex((t) => t.waitFor === "run") && !s.running) s.set({ mode: modeBefore });
+  modeBefore = null;
+  s.set({ tour: null });
   try { localStorage.setItem(DONE_KEY, "1"); } catch { /* private mode */ }
 }
 
-function go(i: number) {
+/** A step to pass over: its target isn't on the page (e.g. results showing instead of the form), or going forward, what it waits for already happened. */
+function skip(t: Step, forward: boolean) {
+  const s = useStore.getState();
+  if (forward && ((t.waitFor === "region" && s.region) || (t.waitFor === "run" && s.running))) return true;
+  return !document.querySelector(`[data-tour="${t.target}"]`);
+}
+
+function go(i: number, dir: 1 | -1 = 1) {
+  while (i >= 0 && i < TOUR.length && skip(TOUR[i], dir === 1)) i += dir;
   if (i >= TOUR.length) return finish();
+  if (i < 0) return; // Back with nothing earlier to show: stay put.
   // Panel steps need the research panel open.
   if (TOUR[i].side === "left") useLayout.getState().set({ rightOpen: true });
   TOUR[i].onEnter?.();
@@ -65,11 +89,18 @@ function useTargetBox(name: string | undefined) {
   const [box, setBox] = useState<Box | null>(null);
   useEffect(() => {
     if (!name) { setBox(null); return; }
+    // Scroll a target in the research panel into view, so the ring isn't drawn off-screen.
+    const el0 = document.querySelector(`[data-tour="${name}"]`);
+    const sc = el0?.closest<HTMLElement>(".overflow-y-auto");
+    if (el0 && sc) {
+      const r = el0.getBoundingClientRect(), p = sc.getBoundingClientRect();
+      if (r.top < p.top || r.bottom > p.bottom) sc.scrollTop += r.top - p.top - 16;
+    }
     const measure = () => {
       const el = document.querySelector(`[data-tour="${name}"]`);
       const r = el?.getBoundingClientRect();
       const edge = el?.closest("aside")?.getBoundingClientRect().left ?? r?.left ?? 0;
-      const next = r && r.width > 0 && r.right > 0 && r.left < window.innerWidth ? { top: r.top, left: r.left, width: r.width, height: r.height, edge } : null;
+      const next = r && r.width > 0 && r.right > 0 && r.left < window.innerWidth && r.bottom > 0 && r.top < window.innerHeight ?{ top: r.top, left: r.left, width: r.width, height: r.height, edge } : null;
       setBox((cur) => (cur && next && cur.top === next.top && cur.left === next.left && cur.width === next.width && cur.height === next.height && cur.edge === next.edge ? cur : next));
     };
     measure();
@@ -97,14 +128,26 @@ export default function Tour() {
   const card = useRef<HTMLDivElement>(null);
   const [cardH, setCardH] = useState(160);
 
-  // First visit: let the Pan hint show for a moment, then start.
+  // First visit: let the Pan hint show for a moment, then start. Not on a shared run link (`?run=`).
+  // Unmounting (e.g. resizing to phone width) ends the tour without marking it done.
   useEffect(() => {
     let seen = false;
     try { seen = localStorage.getItem(DONE_KEY) === "1"; } catch { /* private mode: show it */ }
-    if (seen) return;
+    if (seen || new URL(window.location.href).searchParams.has("run")) return () => useStore.getState().set({ tour: null });
     const t = setTimeout(() => { if (useStore.getState().tour == null) go(0); }, START_DELAY);
-    return () => clearTimeout(t);
+    return () => { clearTimeout(t); useStore.getState().set({ tour: null }); };
   }, []);
+
+  // Escape closes the tour (unless typing in a field).
+  useEffect(() => {
+    if (step == null) return;
+    const key = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (e.key === "Escape" && tag !== "INPUT" && tag !== "TEXTAREA") finish();
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [step]);
 
   // Steps that wait on the user move on by themselves.
   useEffect(() => useStore.subscribe((s, prev) => {
@@ -155,7 +198,7 @@ export default function Tour() {
             {last ? "Close" : "Skip tour"}
           </button>
           {step! > 0 && (
-            <button onClick={() => go(step! - 1)} className="h-7 rounded-md border border-line px-2.5 text-[12px] text-fg2 transition-colors hover:bg-raised hover:text-fg1">Back</button>
+            <button onClick={() => go(step! - 1, -1)} className="h-7 rounded-md border border-line px-2.5 text-[12px] text-fg2 transition-colors hover:bg-raised hover:text-fg1">Back</button>
           )}
           <button onClick={() => go(step! + 1)} className="h-7 rounded-md bg-fg1 px-3 text-[12px] font-medium text-bg transition-colors hover:bg-white">
             {last ? "Done" : "Next"}
