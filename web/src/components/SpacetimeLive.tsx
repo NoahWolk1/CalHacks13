@@ -23,17 +23,18 @@ function SpacetimeMissionHistory() {
   // (append_events does since the routing change), so also read the routed events themselves.
   const [routedRows] = useTable(tables.events.where((r) => r.type.eq("routed")));
   const routedTo = useMemo(() => {
-    const m = new Map<string, string>();
+    const m = new Map<string, { profileId: string; auto: boolean }>();
     for (const e of routedRows) {
-      try { m.set(e.runId, (JSON.parse(e.eventJson) as { profileId: string }).profileId); } catch { /* skip */ }
+      try { m.set(e.runId, JSON.parse(e.eventJson) as { profileId: string; auto: boolean }); } catch { /* skip */ }
     }
     return m;
   }, [routedRows]);
   const recent = useMemo<RecentRun[] | undefined>(() => {
     if (!ready && !rows.length) return undefined;
     return [...rows].sort((a, b) => b.startedAtMs - a.startedAtMs).slice(0, 10).map((r) => ({
-      id: r.runId, label: r.label, status: r.status, startedAt: r.startedAtMs, profileId: r.profileId === "auto" ? routedTo.get(r.runId) ?? "auto" : r.profileId,
-      auto: r.profileId === "auto", mode: r.mode, question: r.question, findingCount: r.findingCount,
+      id: r.runId, label: r.label, status: r.status, startedAt: r.startedAtMs, profileId: routedTo.get(r.runId)?.profileId ?? r.profileId,
+      // Read "auto" off the routed event: once append_events copies the routed profile onto the row, the row alone can't tell.
+      auto: routedTo.get(r.runId)?.auto ?? r.profileId === "auto", mode: r.mode, question: r.question, findingCount: r.findingCount,
     }));
   }, [rows, ready, routedTo]);
   return <MissionHistory backend="SpacetimeDB" recent={recent} />;

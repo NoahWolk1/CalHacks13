@@ -19,6 +19,46 @@ export interface AgentSpec {
   prompt: string;
   createdBy: string; // "user" or parent agent id
   depth: number;
+  /** Advanced create (Agent Hub): requirements the user spelled out. Set fields override the generator. */
+  advanced?: AdvancedSpec;
+}
+
+export const GEN_TOOLS = ["search", "scrape", "http_get"] as const;
+
+export const AdvancedSpecSchema = z.object({
+  name: z.string().max(LIMITS.name).optional(),
+  coverage: z.string().max(80).optional(),
+  /** Sources, URLs or API endpoints the agent must use, one per entry. */
+  dataSources: z.array(z.string().max(300)).max(8).optional(),
+  /** Restrict the agent to these tools (geocode/llm are always on). Empty or missing: generator picks. */
+  tools: z.array(z.enum(GEN_TOOLS)).optional(),
+  /** What makes a finding worth pinning, and what to skip. */
+  criteria: z.string().max(1000).optional(),
+  /** What each finding should report (fields, units, dates). */
+  output: z.string().max(1000).optional(),
+  /** Anything else: constraints, rate limits, examples. */
+  notes: z.string().max(1000).optional(),
+  vehicle: z.enum(VEHICLES).optional(),
+  color: z.string().regex(HEX_COLOR).optional(),
+  /** Skip the library check and always draft a new agent. */
+  forceNew: z.boolean().optional(),
+});
+export type AdvancedSpec = z.infer<typeof AdvancedSpecSchema>;
+
+/** The user's advanced requirements as a block the generator reads after the request. */
+export function requirementsText(a: AdvancedSpec | undefined) {
+  if (!a) return "";
+  const lines = [
+    a.name?.trim() && `Name: ${a.name.trim()}`,
+    a.coverage?.trim() && `Coverage: ${a.coverage.trim()}`,
+    a.dataSources?.length && `Must use these sources (list them first in data_sources and name them in the prompt):\n${a.dataSources.map((d) => `  - ${d}`).join("\n")}`,
+    a.tools?.length && `Allowed tools (use only these): ${a.tools.join(", ")}`,
+    a.criteria?.trim() && `What makes a finding notable / what to skip:\n${a.criteria.trim()}`,
+    a.output?.trim() && `Each finding should report:\n${a.output.trim()}`,
+    a.notes?.trim() && `Other instructions:\n${a.notes.trim()}`,
+    a.forceNew && "Always create a new agent; do not reuse.",
+  ].filter(Boolean);
+  return lines.length ? `\n\nUser requirements (follow exactly; fold them into the prompt brief):\n${lines.join("\n")}` : "";
 }
 
 export const SPAWN_LIMITS = { maxDepth: 2, maxPerRun: 4 };
@@ -30,7 +70,7 @@ const GeneratedSchema = z.object({
   reuse_id: z.string(),
   name: z.string(),
   description: z.string(),
-  tools: z.array(z.enum(["search", "scrape", "http_get"])),
+  tools: z.array(z.enum(GEN_TOOLS)),
   data_sources: z.array(z.string()),
   coverage: z.string(),
   vehicle: z.enum(VEHICLES),
@@ -84,25 +124,29 @@ export type Draft = { kind: "reuse"; worker: Worker } | { kind: "new"; config: A
 export async function draftAgent(spec: AgentSpec, deps: FactoryDeps = defaultDeps()): Promise<Draft | null> {
   const { registry, generate } = deps;
   const roster = registry.allWorkers().map((w) => `- ${w.id} | ${w.name} | ${w.coverage} | ${w.description}`).join("\n");
-  const g = await generate(spec.prompt, roster);
+  const adv = spec.advanced ?? {};
+  const g = await generate(spec.prompt + requirementsText(spec.advanced), roster);
   if (!g) return null;
 
-  const existing = g.decision === "reuse" ? registry.getWorker(g.reuse_id) : undefined;
+  const existing = g.decision === "reuse" && !adv.forceNew ? registry.getWorker(g.reuse_id) : undefined;
   if (existing) return { kind: "reuse", worker: existing };
 
-  const name = g.name.trim().slice(0, LIMITS.name) || "Custom Agent";
-  const tools: ToolPrimitive[] = [...new Set<ToolPrimitive>([...g.tools, "geocode", "llm"])];
+  const name = (adv.name?.trim() || g.name.trim()).slice(0, LIMITS.name) || "Custom Agent";
+  const picked = adv.tools?.length ? adv.tools : g.tools;
+  const tools: ToolPrimitive[] = [...new Set<ToolPrimitive>([...picked, "geocode", "llm"])];
+  const userSources = (adv.dataSources ?? []).map((d) => d.trim()).filter(Boolean);
+  const color = adv.color ?? g.color;
   return {
     kind: "new",
     config: {
       id: freshId(name, registry),
       name,
       description: g.description.trim().slice(0, LIMITS.description) || spec.prompt.slice(0, LIMITS.description),
-      vehicle: g.vehicle,
-      color: HEX_COLOR.test(g.color) ? g.color : PALETTE[name.length % PALETTE.length],
+      vehicle: adv.vehicle ?? g.vehicle,
+      color: HEX_COLOR.test(color) ? color : PALETTE[name.length % PALETTE.length],
       tools,
-      dataSources: g.data_sources.slice(0, 5),
-      coverage: g.coverage || "Global",
+      dataSources: [...new Set([...userSources, ...g.data_sources])].slice(0, Math.max(5, userSources.length)),
+      coverage: adv.coverage?.trim() || g.coverage || "Global",
       builtin: false,
       prompt: g.prompt.trim() || spec.prompt,
       createdBy: spec.createdBy,

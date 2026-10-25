@@ -185,11 +185,11 @@ Live public-web data from scrapers. Code: `lib/sponsors/` (API clients, key gati
 
 | Worker | Calls | Cost per run (approx.) | Budget |
 |---|---|---|---|
-| **Review Radar** `apify-reviews` | `POST api.apify.com/v2/acts/compass~crawler-google-places/run-sync-get-dataset-items` with `searchStringsArray: [<category from question>]`, `customGeolocation: <drawn polygon>`, `maxCrawledPlacesPerSearch: 30`, no detail pages | ≤30 places × $0.0015 + actor start ≈ **$0.05**; capped by `maxTotalChargeUsd=0.25` | 25 s run timeout, no retry |
+| **Review Radar** `apify-reviews` | `POST api.apify.com/v2/acts/compass~crawler-google-places/run-sync-get-dataset-items` with `searchStringsArray: [<category from question>]`, `customGeolocation: <drawn polygon>`, `maxCrawledPlacesPerSearch: 30`, no detail pages | ≤30 places × $0.0015 + actor start ≈ **$0.05**; capped by `maxTotalChargeUsd=0.25` | 20 s run timeout, no retry |
 | **Rent Scout** `brightdata-rent` | `POST api.brightdata.com/request` `{zone: UNLOCKER, url: <metro>.craigslist.org/search/apa?lat&lon&search_distance, format: "raw"}`; parses JSON-LD (coords, beds) + list (price, link) | 1 Unlocker request ≈ **$0.0015** | 25 s, 1 retry |
 | **Local Pulse** `brightdata-pulse` | 2 × `POST api.brightdata.com/request` `{zone: SERP, url: google.com/search?q=…&brd_json=1, data_format: "parsed_light"}` (topic query, past year; plus a Reddit/Nextdoor-only query) | 2 SERP requests ≈ **$0.003** | 25 s |
 | Generated agents' `scrape` tool | When Unlocker is configured, Claude's server-side `web_fetch` is replaced by a client-side `fetch_page` tool → Unlocker `data_format: "markdown"` (`lib/agents/runtime.ts`). `urlGuard` still applies; on a Bright Data error it fetches directly. | ≈ $0.0015 per page, ≤ a few per agent | 45 s agent budget |
-| **Hearing Watch** `apify-planning-notices` | Our Actor (`apify/actors/sf-planning-notices`) via run-sync-get-dataset-items, input `{center, radiusKm, geocode: true}` | ~5 s at 256 MB ≈ **< $0.001** | 25 s, no retry |
+| **Hearing Watch** `apify-planning-notices` | Our Actor (`apify/actors/sf-planning-notices`) via run-sync-get-dataset-items, input `{center, radiusKm, geocode: true}` | ~5 s at 256 MB ≈ **< $0.001** | 20 s, no retry |
 
 Prices are list rates as of 2026-10-25. Check your plan.
 
@@ -200,7 +200,7 @@ Prices are list rates as of 2026-10-25. Check your plan.
 3. **Our Actor (Best Actor award):** from `web/`, run `npm run apify:login` (paste the token), then `npm run apify:push`. Set `APIFY_PLANNING_ACTOR=<your-apify-username>/sf-planning-notices`, then restart `npm run dev`. To try it locally without the platform, run `npm run apify:run:local`; input comes from `apify/actors/sf-planning-notices/storage/key_value_stores/default/INPUT.json`. Make it public in Console (Publication tab) so judges can open it.
 4. Add the same env vars on Vercel and redeploy.
 
-**Check:** `npm test` (parsers + key gating). With keys set, open a run with `includeAgents: ["apify-reviews","brightdata-rent","brightdata-pulse","apify-planning-notices"]`. New built-ins only appear after restarting `npm run dev`: the registry lives on `globalThis`, so hot reload keeps the old list.
+**Check:** `npm test` (parsers + key gating). With keys set, open a run with `includeAgents: ["apify-reviews","brightdata-rent","brightdata-pulse","apify-planning-notices"]`. New built-ins show up on hot reload (only spawned temporary agents are cached on `globalThis`).
 
 ## RunEvent protocol
 
@@ -226,7 +226,8 @@ Prices are list rates as of 2026-10-25. Check your plan.
 
 1. Create `lib/agents/workers/<name>.ts` exporting a `Worker` (`AgentConfig` + `run(ctx)`, see `lib/types.ts`). Give it an `id`, `name`, one-line `description` (the planner reads it), `vehicle`, `color`, `tools`, `dataSources`, `coverage` (`"San Francisco"` means it's skipped outside SF), `builtin: true`.
 2. In `run`, read `ctx.task.region` (plus optional `focus` / `targets` / `question`), fetch with `getJson`/`getText` from `lib/http.ts` passing `ctx.signal`, and call `ctx.emit({ claim, geometry, source_url, source_type, confidence, category, severity, props })` per finding. Use `ctx.log` for progress. Throwing marks the agent as `error`.
-3. Add it to `BUILTIN_WORKERS` in `lib/agents/registry.ts`.
+3. Add it to `BUILTIN_WORKERS` in `lib/agents/registry.ts`. If it needs an API key, add its id to `REQUIRES` in `lib/sponsors/keys.ts` so the planner skips it while the key is unset, and check `missingEnv` at the top of `run` (see `reviews.ts`).
+   Keep total run time under `WORKER_TIMEOUT_MS` (30 s, `lib/orchestrator/run.ts`); a slower worker is cut off with no findings.
 4. Optional: add a keyword regex to `KEYWORDS` in `lib/orchestrator/run.ts` (heuristic planner), add its id to a profile's `defaultAgents`, and add a join in `lib/orchestrator/crossref.ts` if its `category` should combine with others.
 
 ---

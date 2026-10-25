@@ -42,24 +42,34 @@ export const seaLevelWorker: Worker = {
       const counts = await Promise.all(SCENARIOS.map((s) => arcgisCount(`${MTC}/${s.layer}`, r.bbox, signal).catch(() => -1)));
       const wet = SCENARIOS.filter((_, i) => counts[i] > 0);
       if (counts.every((n) => n < 0)) log("Inundation service unreachable.");
+      // A failed count or geometry request is unknown, never a zero-flood scenario.
+      const completed = new Set(SCENARIOS.filter((_, i) => counts[i] === 0).map((s) => s.cm));
       const clipped = new Map<number, Poly>();
       await Promise.all(wet.map(async (s) => {
-        const feats = await arcgisQuery<Poly>(`${MTC}/${s.layer}`, r.bbox, { outFields: "FID", signal, timeoutMs: 25_000 }).catch((e) => { log(`${s.cm} cm layer: ${(e as Error).message}`); return []; });
+        const feats = await arcgisQuery<Poly>(`${MTC}/${s.layer}`, r.bbox, { outFields: "FID", signal, timeoutMs: 25_000 }).catch((e) => { log(`${s.cm} cm layer: ${(e as Error).message}`); return null; });
+        if (!feats?.length) return; // a positive count without geometry cannot establish absence
         const parts: Position[][][] = [];
         for (const f of feats) {
           const g = f.geometry ? clipToRegion(r, f.geometry) : null;
           if (g) parts.push(...polysOf(g));
         }
         if (parts.length) clipped.set(s.cm, parts.length === 1 ? { type: "Polygon", coordinates: parts[0] } : { type: "MultiPolygon", coordinates: parts });
+        completed.add(s.cm);
       }));
+      const checked = SCENARIOS.filter((s) => completed.has(s.cm));
+      const unavailable = SCENARIOS.filter((s) => !completed.has(s.cm));
+      const missingNote = unavailable.length ? ` Unavailable scenarios: ${unavailable.map((s) => `${s.ft} ft`).join(", ")}; flooding at these levels is unknown.` : "";
+      if (unavailable.length) log(missingNote.trim());
 
       if (!clipped.size) {
-        if (counts.some((n) => n >= 0)) {
+        if (checked.length) {
           emit({
-            claim: "No sea-level-rise inundation mapped in this area even at 4.9 ft (150 cm) of rise: ground is above the Bay Area shoreline flood extents",
+            claim: unavailable.length
+              ? `No sea-level-rise inundation mapped in the successfully checked scenarios (${checked.map((s) => `${s.ft} ft`).join(", ")}).${missingNote}`
+              : "No sea-level-rise inundation mapped in this area even at 4.9 ft (150 cm) of rise: ground is above the Bay Area shoreline flood extents",
             geometry: { type: "Point", coordinates: center },
             source_url: "https://www.adaptingtorisingtides.org/maps-and-data-products/", source_type: "bay_slr_inundation", confidence: 0.85,
-            category: "slr", severity: 0.05, props: { areaLevel: true, scenariosFlooded: [], landShare: { 50: 0, 75: 0, 150: 0 } },
+            category: "slr", severity: 0.05, props: { areaLevel: true, scenariosFlooded: [], landShare: Object.fromEntries(checked.map((s) => [s.cm, 0])), unavailableScenariosCm: unavailable.map((s) => s.cm) },
           });
         }
       } else {
@@ -71,7 +81,7 @@ export const seaLevelWorker: Worker = {
         const grid = sampleGrid(r, 400);
         const land = grid.filter((p) => !onWater(p));
         const landShare: Record<number, number> = {};
-        for (const s of SCENARIOS) {
+        for (const s of checked) {
           const g = clipped.get(s.cm);
           landShare[s.cm] = g && land.length ? land.filter((p) => turf.booleanPointInPolygon(p, g)).length / land.length : 0;
         }
@@ -114,15 +124,18 @@ export const seaLevelWorker: Worker = {
             });
           }
         }
-        const first = SCENARIOS.find((s) => landShare[s.cm] > 0.01);
+        const first = checked.find((s) => landShare[s.cm] > 0.01);
+        const shares = checked.map((s) => `${s.ft} ft ${Math.round(landShare[s.cm] * 100)}%`).join(", ");
         emit({
-          claim: first
-            ? `Sea-level rise exposure: land starts flooding at ${first.ft} ft of rise. Share of land flooded: ${SCENARIOS.map((s) => `${s.ft} ft ${Math.round(landShare[s.cm] * 100)}%`).join(", ")}${placesWet.length ? `. Places in the ${pick!.ft} ft zone include ${placesWet.slice(0, 4).join(", ")}` : ""}`
-            : `Sea-level rise reaches only the water's edge here; under 1% of the ~${landKm2.toFixed(2)} km² of land floods even at 4.9 ft`,
+          claim: (first
+            ? `Sea-level rise exposure: land floods in the ${first.ft} ft mapped scenario. Share of land flooded: ${shares}${placesWet.length ? `. Places in the ${pick!.ft} ft zone include ${placesWet.slice(0, 4).join(", ")}` : ""}`
+            : unavailable.length
+              ? `Share of land flooded in the successfully checked scenarios: ${shares}.`
+              : `Sea-level rise reaches only the water's edge here; under 1% of the ~${landKm2.toFixed(2)} km² of land floods even at 4.9 ft`) + missingNote,
           geometry: { type: "Point", coordinates: center },
           source_url: "https://www.adaptingtorisingtides.org/maps-and-data-products/", source_type: "bay_slr_inundation", confidence: 0.8,
           category: "slr", severity: first ? +(first.sev * Math.min(1, 0.4 + Math.max(...Object.values(landShare)) * 1.5)).toFixed(2) : 0.15,
-          props: { areaLevel: true, firstFloodFt: first?.ft ?? null, landShare, placesAtRisk: placesWet.slice(0, 20) },
+          props: { areaLevel: true, firstFloodFt: first && !unavailable.some((s) => s.cm < first.cm) ? first.ft : null, landShare, unavailableScenariosCm: unavailable.map((s) => s.cm), placesAtRisk: placesWet.slice(0, 20) },
         });
       }
     } else {

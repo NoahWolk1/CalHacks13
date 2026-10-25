@@ -10,7 +10,7 @@ import { requestSpawn, SPAWN_LIMITS } from "@/lib/agents/factory";
 import { hasKeys } from "@/lib/sponsors/keys";
 import { RUNTIME_LIMITS } from "@/lib/agents/runtime";
 import { getProfile, PROFILES } from "./profiles";
-import { AUTO, DEFAULT_PROFILE, normalizeProfileId, routeByKeywords } from "./route";
+import { AUTO, DEFAULT_PROFILE, isProfileId, normalizeProfileId, routeByKeywords } from "./route";
 import { crossReference, redispatchTargets, type Link } from "./crossref";
 import { llm, MODEL, FALLBACK } from "@/lib/llm";
 
@@ -56,7 +56,7 @@ export async function runOrchestrator(input: RunRequest, emitRaw: (e: RunEvent) 
   think(`Area: ${region.label ?? "unnamed area"} · ${regionAreaKm2(region).toFixed(2)} km²${touchesSF(region) ? " · SF city feeds available" : ""}`);
 
   // ── 1. Plan ───────────────────────────────────────────────────────────────
-  // Agents whose API keys aren't set sit out of every plan (the Hub still lists them as "Needs key").
+  // Agents whose API keys aren't set sit out of every plan (the Agents page still lists them as "Needs key").
   const workers = allWorkers().filter(hasKeys);
   let steps: PlanStep[];
   let rationale: string;
@@ -97,7 +97,12 @@ export async function runOrchestrator(input: RunRequest, emitRaw: (e: RunEvent) 
   const skipped = steps.filter((s) => getWorker(s.agentId) && !covered(getWorker(s.agentId)!));
   steps = steps.filter((s) => getWorker(s.agentId) && covered(getWorker(s.agentId)!));
   if (skipped.length) rationale += ` Skipping ${skipped.map((s) => getWorker(s.agentId)!.name).join(", ")}: no coverage here.`;
-  for (const extra of req.includeAgents ?? []) if (!steps.some((s) => s.agentId === extra) && allWorkers().some((w) => w.id === extra)) steps.push({ agentId: extra, reason: "Added by you" });
+  for (const extra of req.includeAgents ?? []) {
+    if (steps.some((s) => s.agentId === extra)) continue;
+    // Hand-picked agents still need their keys: say so instead of dispatching one that can only log "needs KEY".
+    if (workers.some((w) => w.id === extra)) steps.push({ agentId: extra, reason: "Added by you" });
+    else if (getWorker(extra)) rationale += ` ${getWorker(extra)!.name} needs an API key, so it sits out.`;
+  }
   emit({ type: "plan", steps, rationale });
   think(rationale);
 
@@ -366,7 +371,7 @@ async function llmPlan(req: RunRequest, workers: Worker[]) {
   });
   const out = res.parsed_output as (z.infer<typeof PlanSchema> & Partial<z.infer<typeof RoutedPlanSchema>>) | null;
   if (!out) throw new Error(`planner returned no parse (${res.stop_reason})`);
-  const routedId = auto && out.profileId && PROFILES.some((p) => p.id === out.profileId) ? out.profileId : null;
+  const routedId = auto && isProfileId(out.profileId) ? out.profileId : null;
   return {
     steps: out.steps.filter((s) => workers.some((w) => w.id === s.agentId)).map((s) => ({ ...s, focus: s.focus || undefined })),
     rationale: out.rationale,

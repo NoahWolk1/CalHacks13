@@ -9,7 +9,8 @@ import { businessCategory, median } from "@/lib/sponsors/topic";
 // Search-results only by default (no detail pages): fast and ~$0.0015/place, capped at 30 places.
 const ACTOR = () => process.env.APIFY_MAPS_ACTOR?.trim() || "compass/crawler-google-places";
 const MAX_PLACES = 30;
-const TIMEOUT_S = 25;
+// Actor timeout + apify.ts's 8 s HTTP margin must stay under run.ts WORKER_TIMEOUT_MS (30 s).
+const TIMEOUT_S = 20;
 
 export interface MapsPlace {
   title?: string;

@@ -10,7 +10,7 @@ export const apifyToken = () => process.env.APIFY_TOKEN?.trim() || undefined;
 
 export interface ActorRunOpts {
   signal?: AbortSignal;
-  /** Actor run timeout (s). The HTTP wait gets +8 s on top. */
+  /** Actor run timeout (s). The HTTP wait gets +8 s on top, so keep it ≤ 20 to fit run.ts WORKER_TIMEOUT_MS. */
   timeoutSec: number;
   memoryMb?: number;
   /** Cost caps for pay-per-result / pay-per-event actors. */

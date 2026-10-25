@@ -1,5 +1,5 @@
-// Which sponsor-backed workers are usable right now. The planner should leave a worker out of its
-// roster while missingEnv(w) is non-empty (the worker itself also logs "needs <KEY>" and returns).
+// Which key-gated workers are usable right now. The planner leaves a worker out of its roster while
+// missingEnv(w) is non-empty (the worker itself also logs "needs <KEY>" and returns).
 
 import type { AgentConfig } from "@/lib/types";
 import { brightDataMissing } from "./brightdata";
