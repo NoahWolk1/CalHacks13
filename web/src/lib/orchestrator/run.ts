@@ -10,14 +10,16 @@ import { getProfile } from "./profiles";
 import { crossReference, redispatchTargets, type Link } from "./crossref";
 import { llm, MODEL } from "@/lib/llm";
 import { getJson, sleep } from "@/lib/http";
-import { regionAreaKm2, touchesSF } from "@/lib/geo";
+import { regionAreaKm2, touchesSF, touchesUS } from "@/lib/geo";
 
 const ORCH = "orchestrator";
 const WORKER_TIMEOUT_MS = 30_000;
 const FALLBACK = { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const };
 
-export async function runOrchestrator(req: RunRequest, emit: (e: RunEvent) => void, signal: AbortSignal) {
+export async function runOrchestrator(req: RunRequest, emitRaw: (e: RunEvent) => void, signal: AbortSignal) {
   const t0 = Date.now();
+  // Once the user recalls the agents nothing more goes out (the caller ends the run for viewers).
+  const emit = (e: RunEvent) => { if (!signal.aborted) emitRaw(e); };
   const profile = getProfile(req.profileId);
   const region = req.region;
   const client = llm();
@@ -28,7 +30,8 @@ export async function runOrchestrator(req: RunRequest, emit: (e: RunEvent) => vo
   emit({ type: "run_started", runId: crypto.randomUUID(), mode: req.mode, profileId: profile.id, region, question: req.question, llm: !!client });
 
   // ── 0. Where are we? ──────────────────────────────────────────────────────
-  region.label = await reverseGeocode(region.center).catch(() => undefined);
+  region.label = await reverseGeocode(region.center, regionAreaKm2(region)).catch(() => undefined);
+  if (signal.aborted) return;
   if (region.label) emit({ type: "region_labeled", label: region.label });
   think(`Area: ${region.label ?? "unnamed area"} · ${regionAreaKm2(region).toFixed(2)} km²${touchesSF(region) ? " · SF city feeds available" : ""}`);
 
@@ -48,8 +51,13 @@ export async function runOrchestrator(req: RunRequest, emit: (e: RunEvent) => vo
   } else {
     ({ steps, rationale } = heuristicPlan(req, workers));
   }
-  // Drop SF-only agents outside SF rather than dispatching them to do nothing.
-  steps = steps.filter((s) => getWorker(s.agentId) && (getWorker(s.agentId)!.coverage !== "San Francisco" || touchesSF(region)));
+  if (signal.aborted) return;
+  // Drop SF-only / US-only agents outside their coverage rather than dispatching them to do nothing
+  // (or worse, to report "no FEMA flood zone" in London).
+  const covered = (w: Worker) => (w.coverage !== "San Francisco" || touchesSF(region)) && (w.coverage !== "US" || touchesUS(region));
+  const skipped = steps.filter((s) => getWorker(s.agentId) && !covered(getWorker(s.agentId)!));
+  steps = steps.filter((s) => getWorker(s.agentId) && covered(getWorker(s.agentId)!));
+  if (skipped.length) rationale += ` Skipping ${skipped.map((s) => getWorker(s.agentId)!.name).join(", ")}: no coverage here.`;
   for (const extra of req.includeAgents ?? []) if (!steps.some((s) => s.agentId === extra) && getWorker(extra)) steps.push({ agentId: extra, reason: "Added by you" });
   emit({ type: "plan", steps, rationale });
   think(rationale);
@@ -73,6 +81,7 @@ export async function runOrchestrator(req: RunRequest, emit: (e: RunEvent) => vo
     await sleep(delayMs);
     emit({ type: "agent_status", agentId: w.id, status: "deploying", dispatchId, focus: task.focus, targets: task.targets });
     await sleep(700); // let the vehicle visibly travel in before results land
+    if (signal.aborted) return;
     emit({ type: "agent_status", agentId: w.id, status: "scanning", dispatchId });
     let n = 0;
     // Hard per-worker timeout: one hung API can't stall the mission. The worker's own signal is
@@ -121,6 +130,7 @@ export async function runOrchestrator(req: RunRequest, emit: (e: RunEvent) => vo
   if (terrain && targets.length && profile.id !== "storefront") {
     think(`Re-dispatching ${terrain.name} to measure ground elevation at ${targets.length} permitted parcels.`);
     await dispatch(terrain, { ...baseTask, targets, focus: `Check elevation at ${targets.length} permitted parcels` });
+    if (signal.aborted) return;
   }
 
   // ── 4. Cross-reference → insights ─────────────────────────────────────────
@@ -135,13 +145,14 @@ export async function runOrchestrator(req: RunRequest, emit: (e: RunEvent) => vo
     }
   }
   if (!insights.length) insights = links.map((l, i) => ({ ...l, id: `I${i + 1}` }));
+  if (signal.aborted) return;
   for (const ins of insights) { emit({ type: "insight", insight: ins }); await sleep(250); }
 
   // ── 5. Answer (Ask mode) ──────────────────────────────────────────────────
   if (req.mode === "ask" && req.question) {
     if (client) {
       try { await llmAnswer(req, findings, insights, (t) => emit({ type: "answer_delta", text: t })); }
-      catch (e) { emit({ type: "answer_delta", text: fallbackAnswer(findings, insights) + `\n\n_(LLM error: ${(e as Error).message.slice(0, 100)})_` }); }
+      catch (e) { emit({ type: "answer_delta", text: fallbackAnswer(findings, insights) + `\n\n(LLM error: ${(e as Error).message.slice(0, 100)})` }); }
     } else emit({ type: "answer_delta", text: fallbackAnswer(findings, insights) });
   }
 
@@ -150,39 +161,53 @@ export async function runOrchestrator(req: RunRequest, emit: (e: RunEvent) => vo
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
-async function reverseGeocode([lng, lat]: [number, number]) {
-  const r = await getJson<{ address?: Record<string, string> }>(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&zoom=16`, { timeoutMs: 6000 });
+async function reverseGeocode([lng, lat]: [number, number], areaKm2: number) {
+  // A whole-city selection shouldn't be named after the block at its centroid.
+  const zoom = areaKm2 > 40 ? 10 : areaKm2 > 8 ? 13 : 16;
+  const r = await getJson<{ address?: Record<string, string> }>(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&zoom=${zoom}`, { timeoutMs: 6000 });
   const a = r.address ?? {};
   const local = a.neighbourhood ?? a.suburb ?? a.quarter ?? a.city_district ?? a.road;
   const city = a.city ?? a.town ?? a.village ?? a.county;
   return [local, city].filter(Boolean).join(", ") || undefined;
 }
 
+// Leading \b so "know" doesn't match /now/, "current" doesn't match /rent/, "follow" doesn't match /low/.
 const KEYWORDS: Record<string, RegExp> = {
-  "fema-flood": /flood|water|storm|rain|surge|sea|insur|hazard|risk|safe|build|develop/i,
-  "sf-stormwater": /flood|storm|rain|water|creek|drain|sewer|risk|build|develop|insur/i,
-  "terrain-elevation": /flood|sea.?level|elevation|low|surge|climate|risk|build/i,
-  "sf-permits": /build|construct|develop|permit|housing|units|project|new|zoning|invest/i,
-  "sf-311": /noise|complain|clean|safe|crime|encamp|street|homeless|condition|foot|flood/i,
-  "osm-places": /shop|store|cafe|coffee|restaurant|business|competit|amenit|school|transit|park|retail|open/i,
-  "usgs-seismic": /quake|earthquake|seismic|fault|shak|risk|hazard|safe|insur/i,
-  "live-conditions": /now|current|today|alert|fire|smoke|air|weather|heat|situation/i,
-  "local-news": /news|happen|recent|story|event|council|protest|situation|why/i,
-  "census-demographics": /income|demograph|people|who|live|rent|population|customer|afford/i,
+  "fema-flood": /\b(flood|water|storm|rain|surge|sea\b|insur|hazard|risk|safe|build|develop)/i,
+  "sf-stormwater": /\b(flood|storm|rain|water|creek|drain|sewer|risk|build|develop|insur)/i,
+  "terrain-elevation": /\b(flood|sea.?level|elevation|low\b|low-?lying|surge|climate|risk|build)/i,
+  "sf-permits": /\b(build|construct|develop|permit|housing|units|project|new\b|zoning|invest)/i,
+  "sf-311": /\b(noise|complain|report|problem|clean|safe|crime|encamp|street|homeless|condition|foot|flood)/i,
+  "osm-places": /\b(shop|store|cafe|café|coffee|restaurant|food|drink|bar\b|saturat|business|competit|amenit|school|hospital|facilit|transit|park|retail|open)/i,
+  "usgs-seismic": /\b(quake|earthquake|seismic|fault|shak|risk|hazard|safe|insur)/i,
+  "live-conditions": /\b(now|current|today|alert|fire|smoke|air\b|air quality|weather|heat|situation)/i,
+  "local-news": /\b(news|happen|recent|story|event|council|protest|situation|why)/i,
+  "census-demographics": /\b(income|demograph|people|who\b|live|rent|population|customer|afford)/i,
 };
 
 function heuristicPlan(req: RunRequest, workers: Worker[]): { steps: PlanStep[]; rationale: string } {
   const profile = getProfile(req.profileId);
+  const core = profile.defaultAgents.filter((id) => workers.some((w) => w.id === id));
   if (req.mode === "insights" || !req.question) {
     return {
-      steps: profile.defaultAgents.filter((id) => workers.some((w) => w.id === id)).map((id) => ({ agentId: id, reason: `Core ${profile.name} survey` })),
+      steps: core.map((id) => ({ agentId: id, reason: `Core ${profile.name} survey` })),
       rationale: `Insights mode: sending the full ${profile.name} survey team and looking for findings that combine.`,
     };
   }
   const q = req.question;
-  let steps = workers.filter((w) => KEYWORDS[w.id]?.test(q)).map((w) => ({ agentId: w.id, reason: `Question mentions ${q.match(KEYWORDS[w.id])?.[0]}` }));
-  if (steps.length < 2) steps = profile.defaultAgents.slice(0, 4).map((id) => ({ agentId: id, reason: `${profile.name} default` }));
-  return { steps, rationale: `Matched the question to ${steps.length} agents.` };
+  const steps = workers.filter((w) => KEYWORDS[w.id]?.test(q)).map((w) => ({ agentId: w.id, reason: `Question mentions "${q.match(KEYWORDS[w.id])?.[0]}"` }));
+  const matched = steps.length;
+  // Few keyword hits: top up with this orchestrator's core team so a vague question still gets a real survey.
+  for (const id of core) {
+    if (steps.length >= 4) break;
+    if (!steps.some((s) => s.agentId === id)) steps.push({ agentId: id, reason: `${profile.name} core agent` });
+  }
+  return {
+    steps,
+    rationale: matched
+      ? `Matched the question to ${matched} agent${matched === 1 ? "" : "s"}${steps.length > matched ? `, plus ${steps.length - matched} from the ${profile.name} core team` : ""}.`
+      : `No specific keywords; sending the ${profile.name} core team.`,
+  };
 }
 
 const PlanSchema = z.object({
@@ -266,7 +291,15 @@ async function llmAnswer(req: RunRequest, findings: Finding[], insights: Insight
 }
 
 function fallbackAnswer(findings: Finding[], insights: Insight[]) {
+  // Plain text: the panel's mini-markdown renders **bold** and bullets, not _italics_.
+  const note = "Heuristic mode: set ANTHROPIC_API_KEY for a reasoned answer from the orchestrator.";
+  if (!findings.length) return `**No findings came back for this area.** The agents that cover it had nothing to report; city feeds (permits, 311, storm flooding) only cover San Francisco.\n\n${note}`;
   const top = insights.slice(0, 3).map((i) => `- **${i.title}**: ${i.body} ${i.findingIds.slice(0, 3).map((x) => `[${x}]`).join("")}`).join("\n");
-  const areaLevel = findings.filter((f) => f.props?.areaLevel).slice(0, 4).map((f) => `- ${f.claim} [${f.id}]`).join("\n");
-  return `**${findings.length} findings collected.**${top ? `\n\n${top}` : ""}${areaLevel ? `\n\n${areaLevel}` : ""}\n\n_Set ANTHROPIC_API_KEY for a reasoned answer from the orchestrator._`;
+  const areaLevel = findings.filter((f) => f.props?.areaLevel).slice(0, 4);
+  // No cross-agent insight: surface the most notable pinned findings instead.
+  const notable = insights.length ? [] : findings.filter((f) => !f.props?.areaLevel && !f.props?.offRegion)
+    .sort((a, b) => (b.severity ?? 0) - (a.severity ?? 0)).slice(0, 3);
+  const list = [...areaLevel, ...notable].map((f) => `- ${f.claim} [${f.id}]`).join("\n");
+  const agents = new Set(findings.map((f) => f.worker_id)).size;
+  return `**${findings.length} findings from ${agents} agent${agents === 1 ? "" : "s"}.**${top ? `\n\n${top}` : ""}${list ? `\n\n${list}` : ""}\n\n${note}`;
 }

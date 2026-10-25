@@ -17,6 +17,7 @@ export default defineSchema({
     findingCount: v.optional(v.number()),
     insightCount: v.optional(v.number()),
     error: v.optional(v.string()),
+    stopRequested: v.optional(v.boolean()), // set by /api/run/stop; the orchestrator polls it (works across serverless instances)
   }).index("by_startedAt", ["startedAt"]),
 
   // Append-only event log per run; seq is assigned by the server in emit order.

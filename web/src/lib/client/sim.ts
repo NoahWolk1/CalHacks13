@@ -9,6 +9,7 @@ import { anchorOf } from "@/lib/geo";
 
 type LL = [number, number];
 type Mode = "staged" | "deploying" | "patrol" | "parked";
+const STALE_S = 8;
 
 export interface Vehicle {
   id: string;
@@ -21,7 +22,7 @@ export interface Vehicle {
   done: boolean;
   error: boolean;
   waypoints: LL[];
-  queue: { id: string; at: LL; instant?: boolean }[];
+  queue: { id: string; at: LL; instant?: boolean; t: number }[];
   trail: { path: [number, number][]; ts: number[] };
   beams: { from: LL; to: LL; until: number; color: [number, number, number] }[];
   lastTrail: number;
@@ -43,6 +44,9 @@ export class Fleet {
 
   // ── setup ────────────────────────────────────────────────────────────────
   setRegion(r: Region | null) {
+    // Region swapped mid-run: findings still waiting for their vehicle would otherwise never appear.
+    // (Not on a same-region reset at run start: those ids belong to the previous run.)
+    if (r?.bbox.join() !== this.region?.bbox.join()) for (const v of this.vehicles.values()) v.queue.forEach((q) => this.reveal(q.id));
     this.vehicles.clear();
     this.roads = null;
     this.region = r;
@@ -119,10 +123,11 @@ export class Fleet {
     const at = anchorOf(f.geometry);
     const areaLevel = !!f.props?.areaLevel;
     if (!v) { this.reveal(f.id); return; }
+    const t = performance.now() / 1000;
     if (areaLevel || f.props?.offRegion || !this.region) {
       // Not a place to fly to: reveal with a beam from wherever the agent is.
-      v.queue.push({ id: f.id, at, instant: true });
-    } else v.queue.push({ id: f.id, at });
+      v.queue.push({ id: f.id, at, instant: true, t });
+    } else v.queue.push({ id: f.id, at, t });
   }
 
   // ── simulation ───────────────────────────────────────────────────────────
@@ -132,6 +137,14 @@ export class Fleet {
 
   private step(v: Vehicle, now: number, dt: number) {
     v.beams = v.beams.filter((b) => b.until > now);
+
+    // Wall-clock backstop: dt is capped per frame, so on a slow GPU (or a tab that was hidden) the
+    // fleet crawls; never let a finding wait more than STALE_S of real time to appear.
+    if (v.queue.length && now - v.queue[0].t > STALE_S) {
+      const stale = v.queue.filter((q) => now - q.t > STALE_S);
+      v.queue = v.queue.filter((q) => now - q.t <= STALE_S);
+      stale.forEach((q, i) => (i < 3 ? this.drop(v, q, now) : this.reveal(q.id)));
+    }
 
     // Instant reveals (area-level findings) fire as soon as the agent is on station, staggered.
     if (v.mode !== "staged" && v.mode !== "deploying") {

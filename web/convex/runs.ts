@@ -27,6 +27,24 @@ export const finish = mutation({
   },
 });
 
+/** Ask the orchestrator (whichever server instance runs it) to stop; it polls `stopRequested`. */
+export const requestStop = mutation({
+  args: { runId: v.string() },
+  handler: async (ctx, { runId }) => {
+    const id = ctx.db.normalizeId("runs", runId);
+    const run = id ? await ctx.db.get(id) : null;
+    if (!id || !run || run.status !== "running") return false;
+    await ctx.db.patch(id, { stopRequested: true });
+    return true;
+  },
+});
+
+/** Cheap poll for the running orchestrator. */
+export const stopRequested = query({
+  args: { runId: v.id("runs") },
+  handler: async (ctx, { runId }) => !!(await ctx.db.get(runId))?.stopRequested,
+});
+
 /** Accepts any string (e.g. straight from a ?run= URL) and returns null for unknown ids. */
 export const get = query({
   args: { runId: v.string() },

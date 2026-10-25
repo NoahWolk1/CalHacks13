@@ -13,6 +13,7 @@
 - **2026-10-24: Backend = Convex (live shared mission state; SSE fallback).** Every run, its ordered RunEvent log and its findings live in Convex; browsers subscribe reactively, so a `/?run=<id>` link streams the same mission live on any device and replays finished ones. Without `NEXT_PUBLIC_CONVEX_URL` the app streams over SSE (in-memory per run) as before. See [web/README.md](../../web/README.md#convex-live-shared-mission-state).
 - **2026-10-24: Map stack is MapLibre GL + deck.gl** on OpenFreeMap tiles, with Turf.js for geometry and the cross-reference spatial joins. deck.gl draws the animated agent fleet, trails, beams and insight arcs.
 - **2026-10-24: LLM is Claude** via the Anthropic SDK for planning, insights and answers; falls back to heuristics when no API key is set. Built-in workers don't call an LLM.
+- **2026-10-24: Hosting = Vercel (Root Directory `web`) + Convex cloud prod.** The build runs `npx convex deploy --cmd 'npm run build'` when `CONVEX_DEPLOY_KEY` is set (`web/vercel.json`, `npm run build:vercel`). Background orchestrator work runs in `after()`, stop goes through a Convex `stopRequested` flag so it works across instances, and the disk cache lives in `/tmp` on Vercel. Runs are capped at 300 s on Hobby. Steps: [web/README.md](../../web/README.md#deploy-to-vercel).
 
 ## Open
 

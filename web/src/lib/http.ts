@@ -10,7 +10,9 @@ import path from "node:path";
 const cache = new Map<string, { at: number; data: unknown }>();
 const TTL = 10 * 60_000;
 const DISK_FRESH = 6 * 60 * 60_000;
-const DISK_DIR = path.join(process.cwd(), ".cache", "http");
+// Vercel's filesystem is read-only except /tmp (per-instance, ephemeral: still saves repeat fetches).
+const DISK_DIR = process.env.VERCEL ? path.join("/tmp", "geoswarm-cache", "http") : path.join(process.cwd(), ".cache", "http");
+let diskWarned = false;
 
 const UA = "GeoAgents/0.1 (CalHacks 13 hackathon project)";
 
@@ -66,7 +68,10 @@ async function live(url: string, opts: Opts, read: (r: Response) => Promise<unkn
         if (res.status >= 500 && attempt < 2) throw Object.assign(err, { retry: true });
         throw err;
       }
-      return await read(res);
+      const data = await read(res);
+      // An empty 200 (e.g. a tile CDN path that doesn't exist) must not be cached as a real answer.
+      if (data instanceof ArrayBuffer && !data.byteLength) throw new Error(`empty response from ${new URL(url).host}`);
+      return data;
     } catch (e) {
       const retryable = (e as { retry?: boolean }).retry || e instanceof TypeError || (e as Error).name === "AbortError";
       if (opts.signal?.aborted || !retryable || attempt >= 2) throw e;
@@ -106,7 +111,8 @@ async function diskWrite(key: string, kind: Kind, data: unknown) {
     else await writeFile(tmp, JSON.stringify({ at: Date.now(), url: key.slice(0, 500), data }));
     await rename(tmp, file);
   } catch (e) {
-    console.warn("[http] disk cache write failed:", (e as Error).message);
+    if (!diskWarned) console.warn("[http] disk cache write failed (further failures silenced):", (e as Error).message);
+    diskWarned = true;
   }
 }
 

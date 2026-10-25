@@ -2,6 +2,7 @@
 // (profile site-risk) over every demo spot in src/lib/client/demoSpots.ts, one at a time.
 // Usage: npm run warm            (dev server on :3005)
 //        BASE_URL=http://localhost:3000 npm run warm
+//        BASE_URL=https://<app>.vercel.app CONVEX_URL=https://<name>.convex.cloud npm run warm   (prod)
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { ConvexHttpClient } from "convex/browser";
