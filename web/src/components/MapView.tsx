@@ -1,14 +1,15 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import maplibregl, { type Map as MLMap, type MapMouseEvent } from "maplibre-gl";
+import maplibregl, { type Map as MLMap, type MapMouseEvent, type MapTouchEvent } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { MapboxOverlay } from "@deck.gl/mapbox";
 import { ScatterplotLayer, PathLayer, SolidPolygonLayer, IconLayer, LineLayer, TextLayer, ArcLayer } from "@deck.gl/layers";
 import { TripsLayer } from "@deck.gl/geo-layers";
+import { PathStyleExtension } from "@deck.gl/extensions";
 import type { Layer, PickingInfo } from "@deck.gl/core";
 import * as turf from "@turf/turf";
-import type { Feature, Polygon, MultiPolygon } from "geojson";
+import type { Feature, Polygon, MultiPolygon, MultiLineString } from "geojson";
 import { useStore, agentById } from "@/lib/client/store";
 import { onRunEvent } from "@/lib/client/runClient";
 import { Fleet, type Vehicle } from "@/lib/client/sim";
@@ -16,12 +17,15 @@ import { STYLE_URL, applyTheme, extractRoads } from "@/lib/client/mapStyle";
 import { VEHICLE_ICON, ALTITUDE, hexToRgb } from "@/lib/client/icons";
 import { regionFromBox, regionFromPin, regionFromPolygon, anchorOf } from "@/lib/geo";
 import type { Finding } from "@/lib/types";
+import { registerMap, fitBox, panelPadding, panelOffset } from "@/lib/client/camera";
+import FindingInspector from "./FindingInspector";
 
 type LL = [number, number];
 const ACCENT: [number, number, number] = [94, 234, 212];
 // Flat overlay layers all sit at z=0; skip depth testing so they never z-fight each other or the region fill.
 const FLAT = { parameters: { depthCompare: "always" as const, depthWriteEnabled: false } };
-const FLOOD_COLORS: Record<string, [number, number, number]> = { VE: [37, 99, 235], V: [37, 99, 235], AE: [56, 189, 248], A: [56, 189, 248], AO: [125, 211, 252], AH: [125, 211, 252], X: [100, 116, 139] };
+const FLOOD_COLORS: Record<string, [number, number, number]> = { VE: [37, 99, 235], V: [37, 99, 235], AE: [56, 189, 248], A: [56, 189, 248], AO: [125, 211, 252], AH: [125, 211, 252], X: [100, 116, 139], STORM100: [20, 184, 166], FILL: [217, 169, 99] };
+const DASH = new PathStyleExtension({ dash: true });
 
 export default function MapView() {
   const el = useRef<HTMLDivElement>(null);
@@ -44,6 +48,7 @@ export default function MapView() {
       maxPitch: 75,
     });
     mapRef.current = map;
+    registerMap(map);
     const fleet = (fleetRef.current = new Fleet((id) => useStore.getState().reveal(id)));
     const overlay = new MapboxOverlay({ interleaved: false, layers: [] });
     map.addControl(overlay as never);
@@ -59,11 +64,11 @@ export default function MapView() {
       overlay.setProps({
         layers: buildLayers(now, fleet, draft.current),
         onHover: (info: PickingInfo) => {
-          const f = info.object as Finding | undefined;
+          const f = pickedFinding(info);
           setHover(f && "claim" in f ? { x: info.x, y: info.y, f } : null);
         },
         onClick: (info: PickingInfo) => {
-          const f = info.object as Finding | undefined;
+          const f = pickedFinding(info);
           if (f && "claim" in f) useStore.getState().set({ selectedFinding: f.id, rightTab: "findings" });
         },
         getCursor: ({ isHovering }: { isHovering: boolean }) => (isHovering ? "pointer" : useStore.getState().tool === "pan" ? "grab" : "crosshair"),
@@ -81,7 +86,7 @@ export default function MapView() {
     });
     const loadRoads = () => map.once("idle", () => fleet.setRoads(extractRoads(map)));
 
-    return () => { cancelAnimationFrame(raf); off(); map.remove(); };
+    return () => { cancelAnimationFrame(raf); off(); registerMap(null); map.remove(); };
   }, []);
 
   // ── fly to region when it changes ─────────────────────────────────────────
@@ -91,12 +96,21 @@ export default function MapView() {
     if (s.region && s.region !== prev.region && s.region.bbox !== prev.region?.bbox) {
       fleetRef.current?.setRegion(s.region);
       const [a, b, c, d] = s.region.bbox;
-      map.fitBounds([[a, b], [c, d]], { padding: { top: 140, bottom: 120, left: 420, right: 440 }, pitch: 55, bearing: map.getBearing(), duration: 1400, maxZoom: 16.5 });
+      map.fitBounds([[a, b], [c, d]], { padding: panelPadding(), pitch: 55, bearing: map.getBearing(), duration: 1400, maxZoom: 16.5 });
       map.once("moveend", () => map.once("idle", () => fleetRef.current?.setRoads(extractRoads(map))));
     }
     if (s.selectedFinding && s.selectedFinding !== prev.selectedFinding) {
       const f = s.findings[s.selectedFinding];
-      if (f && !f.props?.areaLevel) map.easeTo({ center: anchorOf(f.geometry), zoom: Math.max(map.getZoom(), 15.5), duration: 900 });
+      if (f && !f.props?.areaLevel) map.easeTo({ center: anchorOf(f.geometry), zoom: Math.max(map.getZoom(), 15.5), duration: 900, offset: panelOffset() });
+    }
+    if (s.selectedInsight && s.selectedInsight !== prev.selectedInsight) {
+      const ins = s.insights.find((i) => i.id === s.selectedInsight);
+      const fs = (ins?.findingIds ?? []).map((id) => s.findings[id]).filter((f) => f && !f.props?.areaLevel && !f.props?.offRegion);
+      // Prefer the pinpoint findings: a large flood polygon would otherwise blow the frame out to the whole region.
+      const pts = fs.filter((f) => f.geometry.type === "Point");
+      const geoms = (pts.length >= 2 ? pts : fs).map((f) => ({ type: "Feature" as const, geometry: f.geometry, properties: {} }));
+      if (geoms.length) fitBox(turf.bbox(turf.featureCollection(geoms)) as [number, number, number, number], 16.5);
+      else if (s.region) fitBox(s.region.bbox);
     }
   }), []);
 
@@ -104,7 +118,7 @@ export default function MapView() {
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    const ll = (e: MapMouseEvent): LL => [e.lngLat.lng, e.lngLat.lat];
+    const ll = (e: { lngLat: MapMouseEvent["lngLat"] }): LL => [e.lngLat.lng, e.lngLat.lat];
     const st = useStore.getState;
     if (tool === "pan") { map.dragPan.enable(); map.doubleClickZoom.enable(); return; }
     map.dragPan.disable();
@@ -130,7 +144,8 @@ export default function MapView() {
       if (tool !== "polygon") return;
       const pts = (draft.current.poly ??= []);
       const px = map.project(e.lngLat);
-      if (pts.length >= 3 && px.dist(map.project(pts[0])) < 14) return finishPoly();
+      const snap = window.matchMedia("(pointer: coarse)").matches ? 28 : 14; // fingers are less precise
+      if (pts.length >= 3 && px.dist(map.project(pts[0])) < snap) return finishPoly();
       pts.push(ll(e));
     };
     const finishPoly = () => {
@@ -143,11 +158,28 @@ export default function MapView() {
     const dbl = (e: MapMouseEvent) => { if (tool === "polygon") { e.preventDefault(); finishPoly(); } };
     const key = (e: KeyboardEvent) => { if (e.key === "Escape") { draft.current = {}; st().set({ tool: "pan" }); } if (e.key === "Enter" && tool === "polygon") finishPoly(); };
 
+    // Touch: one-finger drag draws the box (taps already arrive as clicks for pin/polygon).
+    const tdown = (e: MapTouchEvent) => {
+      if (tool !== "box" || e.points.length !== 1) return;
+      e.preventDefault();
+      draft.current = { box: [ll(e), ll(e)] };
+    };
+    const tmove = (e: MapTouchEvent) => {
+      if (tool !== "box" || !draft.current.box) return;
+      if (e.points.length !== 1) { draft.current = {}; return; } // pinch → cancel draft
+      e.preventDefault();
+      draft.current.box[1] = ll(e);
+    };
+
     map.on("mousedown", down); map.on("mousemove", move); map.on("mouseup", up); map.on("click", click); map.on("dblclick", dbl);
+    map.on("touchstart", tdown); map.on("touchmove", tmove); map.on("touchend", up);
     window.addEventListener("keydown", key);
+    window.addEventListener("gs:finish-polygon", finishPoly);
     return () => {
       map.off("mousedown", down); map.off("mousemove", move); map.off("mouseup", up); map.off("click", click); map.off("dblclick", dbl);
+      map.off("touchstart", tdown); map.off("touchmove", tmove); map.off("touchend", up);
       window.removeEventListener("keydown", key);
+      window.removeEventListener("gs:finish-polygon", finishPoly);
     };
   }, [tool]);
 
@@ -155,6 +187,7 @@ export default function MapView() {
     <div className="absolute inset-0">
       <div ref={el} className="h-full w-full" />
       <div className="pointer-events-none absolute inset-0 vignette" />
+      <FindingInspector />
       {hover && (
         <div className="pointer-events-none absolute z-30 max-w-xs glass rounded-lg px-3 py-2 text-xs" style={{ left: hover.x + 14, top: hover.y + 14 }}>
           <div className="mb-1 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-white/50">
@@ -166,6 +199,12 @@ export default function MapView() {
       )}
     </div>
   );
+}
+
+/** Point layers pick the Finding itself; polygon/line layers pick `{ f, ring|path }` wrappers. */
+function pickedFinding(info: PickingInfo): Finding | undefined {
+  const o = info.object as (Finding & { f?: Finding }) | undefined;
+  return o?.f ?? o;
 }
 
 let cinematic = true;
@@ -222,21 +261,54 @@ function buildLayers(now: number, fleet: Fleet, draft: { box?: [LL, LL]; poly?: 
 
   const polys = revealed.filter((f) => f.geometry.type === "Polygon" || f.geometry.type === "MultiPolygon");
   const polyRings = polys.flatMap((f) => (f.geometry.type === "Polygon" ? [f.geometry.coordinates] : (f.geometry as MultiPolygon).coordinates).map((p) => ({ f, ring: p[0] as LL[] })));
+  const isFill = (f: Finding) => f.props?.zone === "FILL";
+  const polyColor = (f: Finding) => FLOOD_COLORS[String(f.props?.zone)] ?? hexToRgb(agentById(f.worker_id)?.color ?? "#38bdf8");
+  const solidRings = polyRings.filter((d) => !isFill(d.f));
+  const fillRings = polyRings.filter((d) => isFill(d.f));
+  const fade = (f: Finding, base: number) => (dim && !highlight.has(f.id) ? base * 0.35 : base) * Math.min(1, (ms - (s.revealed[f.id] ?? ms)) / 900);
   layers.push(
+    // Historic fill: flat, faint sand wash with a dashed outline, drawn under everything else.
     new SolidPolygonLayer({
-      id: "finding-polys", data: polyRings, getPolygon: (d: { ring: LL[] }) => d.ring, extruded: true, getElevation: 6,
-      getFillColor: (d: { f: Finding }) => {
-        const c = FLOOD_COLORS[String(d.f.props?.zone)] ?? hexToRgb(agentById(d.f.worker_id)?.color ?? "#38bdf8");
-        const age = Math.min(1, (ms - (s.revealed[d.f.id] ?? ms)) / 900);
-        return [...c, (dim && !highlight.has(d.f.id) ? 40 : 110) * age] as [number, number, number, number];
-      },
+      ...FLAT, id: "finding-fill-polys", data: fillRings, getPolygon: (d: { ring: LL[] }) => d.ring, pickable: true,
+      getFillColor: (d: { f: Finding }) => [...polyColor(d.f), fade(d.f, 55)] as [number, number, number, number],
+      updateTriggers: { getFillColor: [ms] },
+    }),
+    new PathLayer({
+      ...FLAT, id: "finding-fill-lines", data: fillRings, getPath: (d: { ring: LL[] }) => d.ring, widthUnits: "pixels", getWidth: 1.4,
+      getColor: [...FLOOD_COLORS.FILL, 200], getDashArray: [4, 3], dashJustified: true, extensions: [DASH],
+    } as never),
+    new SolidPolygonLayer({
+      id: "finding-polys", data: solidRings, getPolygon: (d: { ring: LL[] }) => d.ring, extruded: true, getElevation: 6,
+      getFillColor: (d: { f: Finding }) => [...polyColor(d.f), fade(d.f, 110)] as [number, number, number, number],
       updateTriggers: { getFillColor: [ms] }, pickable: true,
     }),
     new PathLayer({
-      ...FLAT, id: "finding-poly-lines", data: polyRings, getPath: (d: { ring: LL[] }) => d.ring, widthUnits: "pixels", getWidth: 1.2,
+      ...FLAT, id: "finding-poly-lines", data: solidRings, getPath: (d: { ring: LL[] }) => d.ring, widthUnits: "pixels", getWidth: 1.2,
       getColor: (d: { f: Finding }) => [...(FLOOD_COLORS[String(d.f.props?.zone)] ?? [56, 189, 248]), 220] as [number, number, number, number],
     }),
   );
+
+  // Line findings (e.g. buried creeks): soft glow + crisp core in the agent's color.
+  const lines = revealed
+    .filter((f) => f.geometry.type === "LineString" || f.geometry.type === "MultiLineString")
+    .flatMap((f) => (f.geometry.type === "LineString" ? [f.geometry.coordinates] : (f.geometry as MultiLineString).coordinates).map((path) => ({ f, path: path as LL[] })));
+  if (lines.length) {
+    const lc = (f: Finding) => hexToRgb(agentById(f.worker_id)?.color ?? "#2dd4bf");
+    layers.push(
+      new PathLayer({
+        ...FLAT, id: "finding-lines-glow", data: lines, getPath: (d: { path: LL[] }) => d.path, widthUnits: "pixels", capRounded: true, jointRounded: true,
+        getWidth: (d: { f: Finding }) => (highlight.has(d.f.id) ? 14 : 10),
+        getColor: (d: { f: Finding }) => [...lc(d.f), fade(d.f, 60)] as [number, number, number, number],
+        updateTriggers: { getColor: [ms], getWidth: [s.selectedFinding, s.hoveredInsight, s.selectedInsight] },
+      }),
+      new PathLayer({
+        ...FLAT, id: "finding-lines", data: lines, getPath: (d: { path: LL[] }) => d.path, widthUnits: "pixels", capRounded: true, jointRounded: true, pickable: true,
+        getWidth: (d: { f: Finding }) => (highlight.has(d.f.id) ? 4 : 3),
+        getColor: (d: { f: Finding }) => [...lc(d.f).map((c) => Math.min(255, c + 30)), fade(d.f, 240)] as [number, number, number, number],
+        updateTriggers: { getColor: [ms], getWidth: [s.selectedFinding, s.hoveredInsight, s.selectedInsight] },
+      }),
+    );
+  }
 
   const pts = revealed.filter((f) => f.geometry.type === "Point" && !f.props?.areaLevel);
   const color = (f: Finding) => hexToRgb(agentById(f.worker_id)?.color ?? "#ffffff");
@@ -325,8 +397,8 @@ function buildLayers(now: number, fleet: Fleet, draft: { box?: [LL, LL]; poly?: 
       updateTriggers: { getPosition: [now], getAngle: [now], getColor: [now] },
     }),
     new TextLayer({
-      id: "vehicle-labels", data: vs.filter(live), getPosition: pos3, getText: (v: Vehicle) => v.name.toUpperCase(),
-      getSize: 10, getPixelOffset: [0, -26], getColor: (v: Vehicle) => [...v.color, 230] as [number, number, number, number],
+      id: "vehicle-labels", data: vs.filter((v) => live(v) && v.mode !== "parked"), getPosition: pos3, getText: (v: Vehicle) => v.name.toUpperCase(),
+      getSize: 9, getPixelOffset: [0, -26], getColor: (v: Vehicle) => [...v.color, 230] as [number, number, number, number],
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontWeight: 600, characterSet: "auto",
       outlineWidth: 3, outlineColor: [6, 10, 17, 220], fontSettings: { sdf: true },
       updateTriggers: { getPosition: [now] },

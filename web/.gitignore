@@ -40,3 +40,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# on-disk HTTP cache (src/lib/http.ts, npm run warm)
+/.cache/

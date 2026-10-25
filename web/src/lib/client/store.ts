@@ -29,6 +29,8 @@ interface State {
   mode: RunMode;
   question: string;
   // run
+  /** Convex run id of the mission on screen (null in SSE mode). */
+  runId: string | null;
   running: boolean;
   runStartedAt: number | null;
   runDurationMs: number | null;
@@ -61,7 +63,7 @@ const emptyRun = {
 
 export const useStore = create<State>((set, get) => ({
   agents: [], profiles: [], llm: false,
-  tool: "box", pinRadius: 450, region: null, profileId: "site-risk", mode: "insights", question: "",
+  runId: null, tool: "box", pinRadius: 450, region: null, profileId: "site-risk", mode: "insights", question: "",
   ...emptyRun,
   rightTab: "agents", hubOpen: false,
 

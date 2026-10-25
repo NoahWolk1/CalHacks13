@@ -13,6 +13,7 @@ import { getJson, sleep } from "@/lib/http";
 import { regionAreaKm2, touchesSF } from "@/lib/geo";
 
 const ORCH = "orchestrator";
+const WORKER_TIMEOUT_MS = 30_000;
 const FALLBACK = { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const };
 
 export async function runOrchestrator(req: RunRequest, emit: (e: RunEvent) => void, signal: AbortSignal) {
@@ -74,22 +75,38 @@ export async function runOrchestrator(req: RunRequest, emit: (e: RunEvent) => vo
     await sleep(700); // let the vehicle visibly travel in before results land
     emit({ type: "agent_status", agentId: w.id, status: "scanning", dispatchId });
     let n = 0;
+    // Hard per-worker timeout: one hung API can't stall the mission. The worker's own signal is
+    // aborted too so its in-flight fetches stop; late findings after the timeout are dropped.
+    const wctl = new AbortController();
+    const onAbort = () => wctl.abort();
+    signal.addEventListener("abort", onAbort);
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => { timedOut = true; wctl.abort(); reject(new Error(`timed out after ${WORKER_TIMEOUT_MS / 1000}s`)); }, WORKER_TIMEOUT_MS);
+    });
     try {
-      await w.run({
+      await Promise.race([timeout, w.run({
         task,
-        signal,
+        signal: wctl.signal,
         log: (text) => emit({ type: "agent_log", agentId: w.id, text }),
         emit: (f) => {
+          if (timedOut) return;
           const finding: Finding = { ...f, id: `F${++fid}`, worker_id: w.id };
           findings.push(finding);
           n++;
           emit({ type: "finding", finding, dispatchId });
         },
-      });
+      })]);
       emit({ type: "agent_status", agentId: w.id, status: "done", dispatchId, detail: `${n} finding${n === 1 ? "" : "s"}` });
     } catch (e) {
       if (signal.aborted) return;
-      emit({ type: "agent_status", agentId: w.id, status: "error", dispatchId, detail: (e as Error).message.slice(0, 140) });
+      const detail = timedOut ? `timed out after ${WORKER_TIMEOUT_MS / 1000}s${n ? ` (${n} finding${n === 1 ? "" : "s"} kept)` : ""}` : (e as Error).message.slice(0, 140);
+      if (timedOut) think(`${w.name} timed out; continuing without it.`);
+      emit({ type: "agent_status", agentId: w.id, status: "error", dispatchId, detail });
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
     }
   };
 
@@ -143,6 +160,7 @@ async function reverseGeocode([lng, lat]: [number, number]) {
 
 const KEYWORDS: Record<string, RegExp> = {
   "fema-flood": /flood|water|storm|rain|surge|sea|insur|hazard|risk|safe|build|develop/i,
+  "sf-stormwater": /flood|storm|rain|water|creek|drain|sewer|risk|build|develop|insur/i,
   "terrain-elevation": /flood|sea.?level|elevation|low|surge|climate|risk|build/i,
   "sf-permits": /build|construct|develop|permit|housing|units|project|new|zoning|invest/i,
   "sf-311": /noise|complain|clean|safe|crime|encamp|street|homeless|condition|foot|flood/i,

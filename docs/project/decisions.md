@@ -7,21 +7,21 @@
 - **2026-10-24: Pivot away from Hyphenate.** Earlier plan was a finance automation project for The Hyphenated Enterprise track (largest prize pool: $8k / $5k / $3k + expedited interviews for top 5). Dropped for Geo Research Agents; deliberate tradeoff, since the new idea doesn't fit that track.
 - **2026-10-24: Two-tier agent architecture**, shared finding schema, thin Agent Hub, agents can spawn agents with guardrails. See [architecture.md](architecture.md).
 - **2026-10-24: Depth over breadth.** One orchestrator end to end first.
-- **2026-10-24: Site Risk Analyst is the first orchestrator.** Storefront Scout and Disaster Response also exist and reuse the same workers (`web/src/lib/orchestrator/profiles.ts`).
-- **2026-10-24: Demo workers are FEMA NFHL flood zones + SF DBI permits**, plus 7 more (elevation, SF 311, OSM places, USGS quakes, NWS alerts/air quality, news, census). Table in `web/README.md`.
+- **2026-10-24: Site Risk Analyst is the first orchestrator.** Storefront Scout and Disaster Response also exist and reuse the same workers (`web/src/lib/orchestrator/profiles.ts`). Which named community we pitch for Anthropic/Microsoft is still open (see below).
+- **2026-10-24: Demo workers + sources.** Flood: FEMA NFHL + SFPUC 100-year storm flood map (FEMA only covers SF's shoreline; SFPUC covers inland, which is what makes "permits inside a flood zone" fire in the Mission). Development: SF DBI permits. Plus elevation, 311, OSM places, USGS, NWS/air quality, news, Census. All live public data. Table in `web/README.md`.
 - **2026-10-24: Insights mode uses a default worker set per orchestrator** (`defaultAgents` on each profile).
-- **2026-10-24: Findings store is in-memory per run**, streamed to the map over SSE. Swapping in Convex/Spacetime is still open (see below).
-- **2026-10-24: Map stack is MapLibre GL + deck.gl** on OpenFreeMap tiles, with Turf.js for geometry and the cross-reference spatial joins.
+- **2026-10-24: Backend = Convex (live shared mission state; SSE fallback).** Every run, its ordered RunEvent log and its findings live in Convex; browsers subscribe reactively, so a `/?run=<id>` link streams the same mission live on any device and replays finished ones. Without `NEXT_PUBLIC_CONVEX_URL` the app streams over SSE (in-memory per run) as before. See [web/README.md](../../web/README.md#convex-live-shared-mission-state).
+- **2026-10-24: Map stack is MapLibre GL + deck.gl** on OpenFreeMap tiles, with Turf.js for geometry and the cross-reference spatial joins. deck.gl draws the animated agent fleet, trails, beams and insight arcs.
 - **2026-10-24: LLM is Claude** via the Anthropic SDK for planning, insights and answers; falls back to heuristics when no API key is set. Built-in workers don't call an LLM.
 
 ## Open
 
+- [ ] **Named community for the pitch** (needed for Anthropic/Microsoft). Candidates in [submission/tracks.md](../submission/tracks.md).
 - [ ] Which tool primitives generated agents get, and which transcription service.
 - [ ] Limits for agents creating agents (depth, per-run cap) and whether spawning needs user approval. Owned by the agent-creation teammate; placeholder defaults are `maxDepth: 2, maxPerRun: 4` in `web/src/lib/agents/factory.ts`.
 - [ ] Which sponsor tracks we're targeting. Options and requirements: [tracks/shortlist.md](../tracks/shortlist.md). Notable findings:
   - Bright Data and Apify both reward our scraping workers; Bright Data **disqualifies mocked data in the demo**.
   - Fetch.ai requires the primary workflow to run in ASI:One chat with **no custom frontend**, which conflicts with the map UI.
   - Figma is a process track: only worth it if we start a stage log now.
-- [ ] Backend / findings store: Convex vs Spacetime (vs Elastic if their criteria fit). Pick one.
 - [ ] Project name.
 - [ ] Who presents the 2-minute pitch, who runs the live demo.

@@ -16,6 +16,36 @@ npm run dev                  # http://localhost:3000 (or pass -p <port>)
 | `ANTHROPIC_API_KEY` | Claude plans which agents to send, writes cross-reference insights and streams the answer. Without it the app runs end-to-end in **heuristic mode** (keyword planner, rule-based insights, templated answer). |
 | `CLAUDE_MODEL` | Optional override. Default `claude-opus-5-5` (`lib/llm.ts`). |
 | `CENSUS_API_KEY` | Free from [api.census.gov/data/key_signup.html](https://api.census.gov/data/key_signup.html). Enables Census Rover's income/rent stats. |
+| `NEXT_PUBLIC_CONVEX_URL` | Written by `npx convex dev`. Turns on Convex mode (shared live missions, history, share links). Blank → SSE fallback. |
+
+## Convex: live shared mission state
+
+Convex is the source of truth for missions. With `NEXT_PUBLIC_CONVEX_URL` set:
+
+1. `POST /api/run` creates a `runs` row and returns `{runId}` right away; the orchestrator keeps running in the background on the Node server.
+2. Every `RunEvent` is buffered and flushed to Convex every ~100 ms (`events.append`, batched, strictly increasing `seq`). Implemented in `src/lib/server/convexRun.ts`.
+3. The browser (`components/ConvexRunSync.tsx`) subscribes with `useQuery(api.events.since, {runId, afterSeq})` and pushes each new event through `dispatchRunEvent` (same path the SSE fallback uses: zustand store + map fleet sim).
+4. The URL becomes `/?run=<id>`. Opening it on another device (a judge's phone) loads the region/profile/question from the run row and streams the mission live; a finished mission replays with staggered events so the fleet animates. **Missions ▾** (top of the map) lists recent runs; **Share** copies the link.
+5. `POST /api/run/stop {runId}` recalls the agents (only the launching browser shows it as its own run).
+
+| Table | Contents |
+|---|---|
+| `runs` | mode, profileId, question, region (GeoJSON), label, status `running/done/error`, startedAt, durationMs, llm, findingCount, insightCount |
+| `events` | runId, seq, type, event (the raw `RunEvent`); index `by_run_seq` |
+| `findings` | denormalized per finding: runId, findingId, workerId, category, claim, confidence, severity, source, geometry; indexes `by_run`, `by_run_worker`, `by_run_category` |
+
+Functions live in `web/convex/`: `runs.create/finish/get/recent`, `events.append/since`, `findings.byRun({runId, workerId?, category?})`, `findings.countsByAgent`.
+
+**Running it (two terminals):**
+
+```bash
+cd web && npx convex dev          # terminal 1: keeps functions deployed + regenerates convex/_generated
+cd web && npm run dev -- -p 3005  # terminal 2: restart after .env.local changes
+```
+
+No account needed for a local backend: `CONVEX_AGENT_MODE=anonymous npx convex dev` runs one at `http://127.0.0.1:3210` and writes `.env.local`. The browser rewrites `127.0.0.1` to the page's host, so a phone on the same Wi-Fi can open `http://<laptop-ip>:3005/?run=<id>`. For a phone off the LAN, run `npx convex login` then `npx convex dev --configure` to get a cloud deployment.
+
+**Fallback:** no `NEXT_PUBLIC_CONVEX_URL` (or Convex unreachable when a run starts) → `/api/run` streams SSE exactly as before, and the mission bar is hidden.
 
 ## Architecture
 
@@ -43,7 +73,7 @@ npm run dev                  # http://localhost:3000 (or pass -p <port>)
 ```
 
 - **Orchestrator profiles** (`lib/orchestrator/profiles.ts`): Site Risk Analyst, Storefront Scout, Disaster Response. Each has a `domainPrompt` and the `defaultAgents` used in Insights mode. All share the same worker pool.
-- **Findings store** is in-memory per run (an array inside `runOrchestrator`) and streamed to the client as it grows. Nothing is persisted.
+- **Findings store**: in Convex mode every run, event and finding is persisted in Convex (see below). The orchestrator also keeps an in-memory array per run for cross-referencing.
 - SF-only workers are dropped from the plan when the region doesn't touch San Francisco. Re-dispatch is skipped for Storefront Scout.
 - Claude calls use structured outputs (zod schemas) for the plan and insights; any LLM failure falls back to the heuristic path.
 
@@ -63,9 +93,9 @@ Registered in `BUILTIN_WORKERS` (`lib/agents/registry.ts`). All use only the `ht
 | `local-news` | News Uplink | satellite | Google News RSS | Global | No |
 | `census-demographics` | Census Rover | rover | US Census Geocoder, ACS 5-year | US | `CENSUS_API_KEY` for stats (tract lookup works without) |
 
-## RunEvent protocol (SSE)
+## RunEvent protocol
 
-`POST /api/run` with a `RunRequest` (`mode`, `profileId`, `region`, optional `question`, optional `includeAgents`) returns `text/event-stream`; each message is `data: <JSON RunEvent>\n\n`. Types live in `lib/types.ts`.
+`POST /api/run` with a `RunRequest` (`mode`, `profileId`, `region`, optional `question`, optional `includeAgents`) returns `{runId}` in Convex mode (events land in the Convex `events` table), otherwise `text/event-stream`; each message is `data: <JSON RunEvent>\n\n`. Types live in `lib/types.ts`.
 
 | Event | Meaning |
 |---|---|

@@ -22,6 +22,14 @@ Read this first, then open only the docs your task needs. Each doc starts with i
 | [sources/figma-track.md](sources/figma-track.md) | Working on the Figma stage log / slides |
 | [sources/hive-starter-packs.md](sources/hive-starter-packs.md) | You need a sponsor's starter pack link (credits, API keys, docs) |
 
+## Submission: Devpost, pitch, track claims
+
+| Doc | Read when |
+|---|---|
+| [submission/devpost-draft.md](submission/devpost-draft.md) | Writing or pasting the Devpost sections (fill the `[BRACKETED]` placeholders) |
+| [submission/pitch.md](submission/pitch.md) | Rehearsing the 2-minute pitch, demo click path, Wi-Fi/API fallback, or judge Q&A |
+| [submission/tracks.md](submission/tracks.md) | Deciding which tracks to list, or closing a track's gaps (incl. picking the Anthropic named community) |
+
 ## Event: rules, deadlines, logistics
 
 | Doc | Read when |
@@ -32,5 +40,5 @@ Read this first, then open only the docs your task needs. Each doc starts with i
 ## Keeping it fresh
 
 - `sources/hive-*.md` are generated. Re-pull with `python scripts/pull_hive.py`; don't hand-edit them.
-- Curated docs (`project/`, `tracks/`, `event/`) are hand-maintained. If a re-pull changes a track's rules, update `tracks/shortlist.md`.
+- Curated docs (`project/`, `tracks/`, `event/`, `submission/`) are hand-maintained. If a re-pull changes a track's rules, update `tracks/shortlist.md`.
 - Originals not stored in the repo: the 13.0 Hacker Guide PDF and the Figma track PDF (both transcribed into the docs above).
