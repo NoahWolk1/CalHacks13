@@ -1,4 +1,4 @@
-// Convex is GeoSwarm's live shared mission state. The orchestrator (Next.js server) writes
+// Convex is Coordinate's live shared mission state. The orchestrator (Next.js server) writes
 // every RunEvent here; any browser holding the run id subscribes and replays them.
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";

@@ -82,7 +82,7 @@ npx vercel env add CENSUS_API_KEY production     # optional
 npx vercel env add CONVEX_DEPLOY_KEY production  # optional: keeps the Convex fallback deployed
 ```
 
-**Current setup:** the Vercel project `geoswarm` has Root Directory = `web` and is linked at the **repo root**, so run `npx vercel --prod` from the repo root (not from `web/`). Pushes to GitHub also build automatically (PRs → preview, `main` → production). Preview deploys without the SpacetimeDB vars fall back to Convex (if configured) or SSE.
+**Current setup:** the Vercel project `coordinate` has Root Directory = `web` and is linked at the **repo root**, so run `npx vercel --prod` from the repo root (not from `web/`). Pushes to GitHub also build automatically (PRs → preview, `main` → production). Preview deploys without the SpacetimeDB vars fall back to Convex (if configured) or SSE.
 
 **Post-deploy checklist:**
 

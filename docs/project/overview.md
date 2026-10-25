@@ -7,7 +7,7 @@
 
 A tool where you **drag/select a region on a map** (draw a box/polygon or drop a pin), **ask a question about that area**, and the **relevant agents spin up and work together** to answer it. Results stream back onto the map as pins/regions with sources attached, and an orchestrator agent synthesizes them into an answer. Even without a question, the agents can **generate insights** about the area by cross-referencing each other's findings (e.g. one agent finds the area is likely to flood, another finds new buildings planned there, and together they flag that building there may be a bad idea). There's also an **agent hub/library** where users can browse our built-in agents and **prompt the creation of new ones** for niche tasks our defaults don't cover (e.g. "health inspection scores for restaurants in SF", "scrape the listings at `<url>`").
 
-The UI currently brands the app **GeoSwarm** (`web/src/lib/brand.ts`); the project name is still open.
+The UI currently brands the app **Coordinate** (`web/src/lib/brand.ts`); the project name is still open.
 
 ## User flow
 
@@ -58,7 +58,7 @@ Status as of Sun 2026-10-25 early morning (from the code in `web/`).
 | 5 | Agent Hub + prompt-to-create, and agents creating agents mid-run | **Done** for the Hub and orchestrator spawns (planner gaps + one post-sweep check). Not built: transcription, workers spawning workers |
 | 6 | Conflict detection between sources | **Partial**: one rule (FEMA vs. ground truth) plus Claude-written `conflict` insights |
 | 7 | Second orchestrator reusing the same workers | **Done** (3 profiles) |
-| — | Convex as shared mission state + Vercel deploy | **Done**: share links, history, replay; live at https://geoswarm.vercel.app. Saved agents are not in Convex (per-instance `/tmp` on Vercel) |
+| — | Convex as shared mission state + Vercel deploy | **Done**: share links, history, replay; live at https://coordinate-agents.vercel.app. Saved agents are not in Convex (per-instance `/tmp` on Vercel) |
 | — | Sponsor integrations (Bright Data / Apify) | **Not started**: generated agents use Claude's `web_search` / `web_fetch` |
 
 **Steps 1–4 are the demo. Steps 5–7 are bonus.** What's left: rehearsing the demo (and the spawn beat, ideally locally, see [decisions.md](decisions.md)), the named community, and submitting the Devpost from [submission/devpost-draft.md](../submission/devpost-draft.md).

@@ -14,7 +14,7 @@ const DISK_FRESH = 6 * 60 * 60_000;
 const DISK_DIR = process.env.VERCEL ? path.join("/tmp", "geoswarm-cache", "http") : path.join(process.cwd(), ".cache", "http");
 let diskWarned = false;
 
-const UA = "GeoAgents/0.1 (CalHacks 13 hackathon project)";
+const UA = "Coordinate/0.1 (CalHacks 13 hackathon project)";
 
 type Kind = "json" | "text" | "bin";
 /** retries: extra attempts on network errors/5xx/timeouts (default 2). Use 0 for paid, non-idempotent calls. */

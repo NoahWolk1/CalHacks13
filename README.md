@@ -1,6 +1,6 @@
 # Geo Research Agents (working title)
 
-> **Status:** Deployed at https://geoswarm.vercel.app (Cal Hacks 13.0): map, 13 real-data workers, 3 orchestrators, Ask + Insights modes, Convex live shared missions, Agent Hub and agents creating agents. Status by step: [docs/project/overview.md](docs/project/overview.md#build-order).
+> **Status:** Deployed at https://coordinate-agents.vercel.app (Cal Hacks 13.0): map, 13 real-data workers, 3 orchestrators, Ask + Insights modes, Convex live shared missions, Agent Hub and agents creating agents. Status by step: [docs/project/overview.md](docs/project/overview.md#build-order).
 > **Deadline:** Devpost submission **Sunday 9:00 AM**. Nothing after that counts.
 
 Drag/select a region on a map, ask a question about it (or ask for **Insights**), and the relevant agents spin up and work together. Findings stream onto the map as pins with sources, and an orchestrator cross-references them into an answer, e.g. "3 approved developments sit inside a projected flood zone." An **Agent Hub** lets users (and agents) create new workers from a plain-English prompt.

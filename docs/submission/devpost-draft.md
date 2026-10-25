@@ -1,7 +1,7 @@
-# Devpost draft: GeoSwarm (working title)
+# Devpost draft: Coordinate (working title)
 
 > **Source:** codebase (`web/`), project docs, team test runs, Sat 2026-10-24; agent creation and worker list updated Sun 2026-10-25.  
-> **Summary:** Paste-ready text for each Devpost section. Numbers come from a real Mission District test run. Fill every `[BRACKETED]` placeholder before submitting (deadline Sun 9:00 AM PDT, aim for 8:45). Project name is still open in [decisions.md](../project/decisions.md); find/replace "GeoSwarm" if it changes.
+> **Summary:** Paste-ready text for each Devpost section. Numbers come from a real Mission District test run. Fill every `[BRACKETED]` placeholder before submitting (deadline Sun 9:00 AM PDT, aim for 8:45). Project name is still open in [decisions.md](../project/decisions.md); find/replace "Coordinate" if it changes.
 
 **Placeholders to fill:** [TEAM NAMES] · [DEMO VIDEO LINK] · [REPO LINK] · [SCREENSHOTS] · [TAGLINE, if renamed] · [NAMED COMMUNITY, see tracks.md]
 
@@ -91,7 +91,7 @@ Questions about a place, like "is it risky to build here?" or "is this a good bl
 - Regulatory maps lag. FEMA's maps are built for insurance, not for describing where stormwater actually floods. Showing that disagreement is useful in itself.
 - A reactive database as the event log made sharing, history and replay mostly a side effect rather than separate features.
 
-## What's next for GeoSwarm
+## What's next for Coordinate
 
 - **A shared agent library:** move saved agents into SpacetimeDB so the agents users and orchestrators create are shared across everyone, with usage counts.
 - **Beyond San Francisco:** about half the workers are already national or global (FEMA, USGS, NWS, Census, OSM, elevation, news). Adding a city means adding its permits, 311 and local flood-map agents. Socrata and ArcGIS cover a lot of US cities.
@@ -113,7 +113,7 @@ sentinel-2, landsat, celestrak, satellite.js, nasa-eonet, vercel
 
 ## Links
 
-- Live demo: https://geoswarm.vercel.app
+- Live demo: https://coordinate-agents.vercel.app
 - Demo video: [DEMO VIDEO LINK]
 - Repo: [REPO LINK]
 - Team: [TEAM NAMES]

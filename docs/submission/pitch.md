@@ -5,7 +5,7 @@
 
 ## Before judging (checklist)
 
-- [ ] App open at https://geoswarm.vercel.app (live backend: SpacetimeDB maincloud; `/api/agents` shows `live.backend: "spacetime"`). Hard-refresh once. Run `npm run warm` against the deployed site beforehand (see `web/README.md`).
+- [ ] App open at https://coordinate-agents.vercel.app (live backend: SpacetimeDB maincloud; `/api/agents` shows `live.backend: "spacetime"`). Hard-refresh once. Run `npm run warm` against the deployed site beforehand (see `web/README.md`).
 - [ ] `ANTHROPIC_API_KEY` set (the LLM badge shows on). The heuristic fallback still works without it.
 - [ ] **Run the demo mission once that morning** in the exact Mission District box. Save its `/?run=<id>` link and open it in a second tab. That's the fallback.
 - [ ] A phone open to a past run's share link on the same Wi-Fi (`http://<laptop-ip>:<port>/?run=<id>`), or the deployed app (SpacetimeDB maincloud) if off-LAN.
@@ -21,7 +21,7 @@
 | Time | Say | Do / point at |
 |---|---|---|
 | **0:00–0:15** | "If you're about to buy, build on, or insure a lot in San Francisco, the answer to 'is this a bad idea?' is spread across a dozen public datasets nobody reads together. FEMA's flood map doesn't even cover the Mission." | Map already on screen, Mission in view. |
-| **0:15–0:25** | "GeoSwarm: you draw an area, ask anything about it, and a team of AI agents goes and gets the live data." | **Draw the box** over the Mission demo spot. |
+| **0:15–0:25** | "Coordinate: you draw an area, ask anything about it, and a team of AI agents goes and gets the live data." | **Draw the box** over the Mission demo spot. |
 | **0:25–0:35** | "I'll ask for Insights, so no question needed: that sends the Site Risk Analyst's survey team. Claude plans which agents to send." | Confirm **Find insights** (Research focus stays on **Auto**), hit **Research this area**. Point at the live status line in the panel (the orchestrator's latest step) and the agents fanning out on the map. The full plan is behind **How this was researched** once results are in. |
 | **0:35–0:55** | "Nine agents, each one a live public source: FEMA, the city's storm flood map, building permits, 311, elevation, USGS, weather alerts, news, and Sentinel-2 satellite imagery. Each one flies to what it found before the pin drops. Every pin links to its source record." | Point at **drones/cars/rovers fanning out**. Click **one permit pin** to show the DBI source link. |
 | **0:55–1:10** | "This is the orchestrator doing more than summarizing. It saw permits that looked risky and sent the terrain drone back to measure the ground at those specific parcels." | Point at the **terrain drone re-dispatch** (thought line: "Re-dispatching Terrain Scanner…"). |

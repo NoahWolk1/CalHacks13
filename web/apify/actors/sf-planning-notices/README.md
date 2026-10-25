@@ -2,7 +2,7 @@
 
 Which projects near an address are about to go before San Francisco's Planning Commission? The answer sits in [one city page](https://sfplanning.org/page/public-notices-project-applications): a long HTML table with no API, no coordinates and no filters. This Actor turns that page into clean, geocoded JSON you can filter by neighborhood, bounding box or radius.
 
-Built at Cal Hacks 13.0 for **GeoSwarm**. Its "Hearing Watch" agent calls this Actor to pin upcoming hearings on the map.
+Built at Cal Hacks 13.0 for **Coordinate**. Its "Hearing Watch" agent calls this Actor to pin upcoming hearings on the map.
 
 ## What it does
 
@@ -52,4 +52,4 @@ npx -p apify-cli apify login         # paste your Apify API token
 npx -p apify-cli apify push          # builds on the Apify platform as <your-username>/sf-planning-notices
 ```
 
-The parsing helpers live in `src/parse.js` (no dependencies). GeoSwarm unit-tests them against a recorded copy of the page: `web/src/lib/sponsors/sponsors.test.ts`.
+The parsing helpers live in `src/parse.js` (no dependencies). Coordinate unit-tests them against a recorded copy of the page: `web/src/lib/sponsors/sponsors.test.ts`.
