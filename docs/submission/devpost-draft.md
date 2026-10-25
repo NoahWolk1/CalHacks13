@@ -1,119 +1,106 @@
-# Devpost draft: Coordinate (working title)
+# Devpost draft: Coordinate
 
-> **Source:** codebase (`web/`), project docs, team test runs, Sat 2026-10-24; agent creation and worker list updated Sun 2026-10-25.  
-> **Summary:** Paste-ready text for each Devpost section. Numbers come from a real Mission District test run. Fill every `[BRACKETED]` placeholder before submitting (deadline Sun 9:00 AM PDT, aim for 8:45). Project name is still open in [decisions.md](../project/decisions.md); find/replace "Coordinate" if it changes.
+> **Source:** codebase (`web/`), project docs, live runs on https://coordinate-agents.vercel.app, Sun 2026-10-25.  
+> **Summary:** Paste-ready text, one block per Devpost field, in the form's order. Numbers come from real runs on the Mission District. Fill every `[BRACKETED]` placeholder before submitting (deadline Sun 9:00 AM PDT, aim for 8:45).
 
-**Placeholders to fill:** [TEAM NAMES] · [DEMO VIDEO LINK] · [REPO LINK] · [SCREENSHOTS] · [TAGLINE, if renamed] · [NAMED COMMUNITY, see tracks.md]
+**Placeholders to fill:** [TEAM NAMES] · [DEMO VIDEO LINK] · [SCREENSHOTS] · [NAMED COMMUNITY, see tracks.md] · [TEAM: firsthand line in Inspiration]
 
 ---
 
-## Tagline (one line)
+## Project name
 
-Draw a box on a map of San Francisco and a team of AI agents pulls live public data on that block, cross-references it, and tells you what no single dataset shows.
+Coordinate
+
+## Elevator pitch (Devpost "tagline", ≤200 chars)
+
+Ask a question about any San Francisco block. A swarm of AI agents pulls live public data, cross-references it, and shows you what no single dataset can.
 
 ## Inspiration
 
-Questions about a place, like "is it risky to build here?" or "is this a good block for a coffee shop?", have answers spread across a dozen public datasets that nobody reads together. FEMA's flood map covers San Francisco's shoreline but not the inland neighborhoods that flood in heavy storms. The city's own 100-year storm flood map does cover them, but it sits in a separate ArcGIS viewer. Building permits are on DataSF. 311 sewer-backup reports are in yet another place. The useful finding is usually where two of these overlap, for example a newly permitted building sitting on a buried creek, and no single source will tell you that.
+Questions about a place, like "is it risky to build here?" or "is this a good block for a coffee shop?", have answers spread across dozens of public datasets that nobody reads together. FEMA's flood map covers San Francisco's shoreline but not the inland neighborhoods that flood in heavy storms; the city's own storm flood map does, but it lives in a separate viewer. Permits are on DataSF, liquefaction zones are on a state map, rents are on Craigslist, and what residents say is on Reddit. The useful finding is usually where two of these overlap, like a newly permitted building on liquefiable fill, and no single source will tell you that.
 
-[TEAM: one or two sentences on who you talked to or what you lived through. Anthropic judges want a firsthand problem. See tracks.md for candidate communities.]
+[TEAM: one or two sentences on who you talked to or what you lived through. See tracks.md for candidate communities.]
 
 ## What it does
 
-1. **Pick an area.** Draw a box or polygon, or drop a pin, on a 3D dark map of San Francisco.
-2. **Pick an orchestrator.** Site Risk Analyst ("is it safe and smart to build here?"), Storefront Scout ("where should I open my shop?"), or Disaster Response ("what's happening on the ground right now?"). Each one encodes a different user's priorities and uses the same pool of worker agents.
-3. **Pick a mode.** **Ask** a question, and the orchestrator sends only the agents that question needs. Or run **Insights**, where a broader survey looks for findings that combine into something notable.
-4. **Watch the agents work.** Up to 13 built-in worker agents appear as drones, cars, rovers and satellites. Each one flies to its finding before the pin drops, so you can see which agent found what. Every pin links to its source record.
-5. **The orchestrator reasons across agents.** It:
-   - **plans** which workers to send,
-   - **dispatches** them in parallel,
-   - **re-dispatches** the terrain drone to measure ground elevation at the specific permitted parcels that look risky,
-   - **cross-references** findings spatially (permits × flood zones × filled-in former water × 311 flooding reports × low elevation),
-   - **flags conflicts**, such as FEMA showing minimal hazard where residents keep reporting flooding,
-   - writes **insights that cite the finding ids they rest on**, then answers the question.
-6. **Missing an agent? It makes one.** Describe a data source in the Agent Hub and Claude drafts a new worker you can edit and save. In Ask mode the orchestrator does this itself when its planner finds a gap: the new agent runs immediately, is marked "created by" its parent, and after the run you keep it or discard it.
-7. **Share it live.** Every mission is stored in SpacetimeDB. A `/?run=<id>` link streams the same mission live on any device and replays finished ones.
+1. **Ask about a place.** Draw a box, polygon or pin on a 3D map (or pick a demo area) and type a question. Coordinate routes it to the right specialist automatically: Site Risk Analyst, Storefront Scout or Disaster Response. Or run **Insights** with no question at all.
+2. **Watch the agents work.** The orchestrator picks the agents that question needs from a library of **36**, and they appear as drones, cars, rovers and satellites that fly to each finding before its pin drops. Every pin links to its source record.
+3. **The orchestrator reasons across agents.** It plans, dispatches agents in parallel, **re-dispatches** the terrain drone to measure elevation at the specific permitted parcels that look risky, **cross-references** findings spatially, **flags conflicts** between sources, and writes insights that **cite the finding ids** they rest on, then streams an answer.
+4. **Missing an agent? It makes one.** Describe a data source and Claude drafts a new agent you can edit and save. In Ask mode the orchestrator does this itself when it finds a gap: asked whether a block is good for a café "factoring in health inspections", it spawned an *Inspection Scout* that pinned real restaurant inspection scores mid-run. You keep it or discard it afterwards.
+5. **Share it live.** Every mission lives in SpacetimeDB. A share link streams the same mission live on a judge's phone and replays finished ones.
 
-**Real result (Mission District, Site Risk Analyst, Insights):** about 124 findings in about 10 seconds, including:
-- "6 permitted projects inside a mapped flood zone (SFPUC 100-year storm), ≈$3.1M of permitted work"
-- "6 projects built on filled-in former water" (historical lagoon/creek fill, which brings settlement and liquefaction risk)
+**Real results (Mission District):**
+- Site Risk: "21 permitted projects in a state liquefaction zone", "6 permitted projects inside the SFPUC 100-year storm flood zone (≈$3.1M of work)", "FEMA rates the area minimal hazard while the city's storm model floods ~0.5 km²" (conflict).
+- Storefront: "Growing storefront corridor with strong transit (+56 businesses in 12 months)", "3 new storefronts within a block of a crime hotspot", on Valencia St, 30 Google Maps restaurants via Apify (avg 4.5★) and a median asking rent of $4,548/mo across 78 live listings via Bright Data.
+- A full Insights mission: 120–240 findings from ~10 agents in about 15 seconds.
 
-### Live data sources (all public, fetched at query time)
+### Agents (36, all live public data)
 
-| Agent | Source |
-|---|---|
-| Flood Recon | FEMA National Flood Hazard Layer |
-| Storm Scout | SFPUC 100-Year Storm Flood Risk Map + historical creeks and water bodies |
-| Permit Patrol | SF Dept. of Building Inspection permits (DataSF), last 2 years |
-| Street Pulse | SF 311 cases (DataSF), last 90 days |
-| Terrain Scanner | Open-Meteo Elevation API (Copernicus DEM) |
-| Sky Sentinel | NWS active alerts + Open-Meteo air quality |
-| Quake Watch | USGS Earthquake Catalog |
-| Street Scout | OpenStreetMap via OpenFreeMap vector tiles |
-| News Uplink | Google News RSS |
-| Census Rover | US Census Geocoder + ACS 5-year |
-| Sentinel Eye | ESA Copernicus Sentinel-2 L2A (Element84 Earth Search) + USGS Landsat Collection 2 |
-| Orbit Planner | CelesTrak element sets, propagated with SGP4 (satellite.js) |
-| Earth Events | NASA EONET v3 |
+- **Hazards:** FEMA flood zones, SFPUC storm flood map + buried creeks/filled lagoons, CGS liquefaction/landslide/tsunami zones, sea-level rise + live NOAA tides, CAL FIRE hazard zones, USGS earthquakes, ground elevation, NWS alerts + air quality, OpenFEMA disaster history, CalEnviroScreen.
+- **City (DataSF):** building permits, 311 reports, crime incidents, evictions, business openings/closures, injury crashes + High Injury Network, zoning and height limits, assessed values and sales, fire/EMS calls, active street work, Muni/BART access, street trees.
+- **Context:** OpenStreetMap places, Census, Wikipedia landmarks, Inside Airbnb, CA public schools, weather and heat history, local news.
+- **Space:** Sentinel-2 and Landsat scenes over the area (with thumbnails), predicted satellite imaging passes and ISS sightings (CelesTrak + SGP4), NASA EONET natural events.
+- **Bright Data:** Rent Scout (live Craigslist listings via Web Unlocker), Local Pulse (Google + Reddit/Nextdoor via SERP API), and the web-fetch backbone for agents that Claude creates.
+- **Apify:** Review Radar (Google Maps places via `compass/crawler-google-places`) and Hearing Watch, powered by **our own Actor built at the event**: [`rocketlaunchers/sf-planning-notices`](https://apify.com/rocketlaunchers/sf-planning-notices), which scrapes SF Planning's public hearing notices and geocodes them.
 
 ## How we built it
 
-- **Frontend:** Next.js 15 (App Router, React 19), Tailwind 4. MapLibre GL on OpenFreeMap vector tiles. deck.gl draws the animated agent fleet, trails, scan beams and insight arcs. Turf.js handles region geometry. Zustand holds client state.
-- **Orchestrator** (`web/src/lib/orchestrator/run.ts`): plan → dispatch → re-dispatch → cross-reference → insights → answer. It reverse-geocodes the region, drops SF-only workers when the region is outside SF, and streams typed `RunEvent`s (`plan`, `agent_status`, `finding`, `insight`, `answer_delta`, …).
-- **Claude (Anthropic SDK)** handles the three reasoning steps: the plan (which agents, why, and with what focus), the insights, and the streamed answer. Plan and insights use structured outputs validated with zod. Any insight citation that doesn't match a real finding id is dropped. If there's no API key, or a call fails, a deterministic fallback takes over (keyword planner, rule-based insights, templated answer), so the demo never depends on one API call.
-- **Spatial cross-referencing** (`crossref.ts`) is deterministic: Turf point-in-polygon and distance joins produce candidate connections (permits in flood zones, permits on fill, 311 reports corroborating hazard maps, FEMA vs. ground-truth conflicts, civic facilities in flood zones, incoming housing units). Claude gets these joins as grounded candidates rather than inventing the connections itself.
-- **Shared finding schema:** every worker emits `{claim, geometry (GeoJSON), source_url, source_type, observed_at, confidence, worker_id}`, so the map renders any agent's output and the orchestrator reasons over all of it the same way.
-- **SpacetimeDB** is the live shared mission state: the agents' persistent world. A TypeScript module defines the runs table, an append-only event log whose reducer enforces strict sequence order, denormalized findings, and the Claude rate-limit counters. The server writes through reducers (batched every ~100 ms) as the only allowlisted identity; every browser subscribes anonymously over WebSocket, which powers share links, live viewing on a second device, mission history, replay and stop. Without it the app falls back to Convex or server-sent events.
-- **Agents creating agents:** generated agents are configs, not code. One structured-output Claude call either reuses a library agent or drafts a new config (name, brief, tools, data sources, coverage). A shared runtime runs it as a bounded Claude tool-use loop (6 turns, 45 s, 15 findings) with only its allowed tools: web search, web fetch, an `http_get` that blocks private and loopback hosts, and an `emit_findings` tool that enforces the finding schema. Addresses are geocoded and findings far outside the region are dropped. The orchestrator spawns agents for planner gaps and once after the first sweep if a coverage check finds one, capped at depth 2 and 4 per run. Spawned agents are temporary until the user keeps them.
-- **Hosting:** Vercel plus SpacetimeDB Maincloud. Claude runs are rate-limited per IP and globally, and over the cap a run falls back to heuristic mode.
+- **Frontend:** Next.js 15, React 19, Tailwind 4. MapLibre GL on OpenFreeMap tiles with a globe intro; deck.gl draws the agent fleet, trails, beams and insight arcs; Turf.js for geometry. VS Code–style resizable panels, a phone layout with a bottom sheet, and a guided tour.
+- **Orchestrator:** plan → dispatch → re-dispatch → cross-reference → insights → answer, streamed as typed events. Each agent has its own timeout and error state, so one slow source never stalls the mission.
+- **Claude (Anthropic SDK):** one planning call picks the specialist *and* the agents (structured output); insights and the answer run in parallel and stream. Citations to finding ids that don't exist are dropped. Without a key, or over the rate limit, deterministic fallbacks take over (keyword router and planner, rule-based insights).
+- **Deterministic cross-referencing first:** point-in-polygon and distance joins between *different* agents (permits × liquefaction / flood / sea-level rise, schools × hazard zones, storefronts × crime hotspots, evictions × short-term rentals, transit × business growth, …). Claude ranks, explains and cites these grounded candidates instead of inventing connections.
+- **One finding schema** (`claim, geometry, source_url, source_type, observed_at, confidence, worker_id`) for all 36 agents, so the map and the orchestrator handle any agent the same way, including ones Claude creates.
+- **SpacetimeDB** is the agents' shared world: a TypeScript module holds runs, an append-only event log whose reducer enforces strict ordering, findings, and rate-limit counters. Only the server's identity can write; every browser subscribes, which gives share links, live viewing on a second device, history, replay and cross-instance stop for free.
+- **Agents creating agents:** configs, not code. Claude drafts a config; a bounded tool-use runtime (6 turns, 45 s, 15 findings, private-IP-blocked fetch through Bright Data, schema-checked findings) runs it. Capped at depth 2 and 4 spawns per run.
+- **Hosting:** Vercel + SpacetimeDB Maincloud. Claude runs are rate-limited per IP and globally via SpacetimeDB.
 
 ## Challenges we ran into
 
-- **FEMA doesn't map inland San Francisco.** Our first flood agent found nothing in the Mission because FEMA's flood map only covers SF's shoreline. Adding the SFPUC 100-year storm map (and its historical creeks and water bodies layers) is what made "permits inside a flood zone" show up where flooding actually happens.
-- **Making the orchestrator more than a summarizer.** Handing an LLM 120+ findings and asking for insights produced plausible text with weak grounding. Running the spatial joins deterministically first, then having Claude rank, explain and cite them, gave insights you can trace back to specific pins.
-- **Heterogeneous public APIs.** These include ArcGIS feature services, Socrata (SoQL `within_polygon`), RSS, vector tiles, and REST APIs with different timeouts and failure modes. Each worker handles its own errors, so one slow or failing source marks that agent as errored and the rest of the mission continues.
-- **Live sharing without a second code path.** Streaming over SSE to one browser was easy. Making the same mission stream to a judge's phone meant moving the event log into SpacetimeDB with strictly ordered sequence numbers, and replaying both live and finished runs through the same dispatcher.
-- **Animation that carries information.** The vehicles had to arrive at the actual finding location before the pin drops, so the animation shows which agent found what.
+- **FEMA doesn't map inland San Francisco.** Our first flood agent found nothing in the Mission. Adding the city's storm flood map and the state's liquefaction zones is what made the real risks show up.
+- **Making the orchestrator more than a summarizer.** Handing an LLM 150 findings produced plausible but ungrounded insights. Running spatial joins first, then having Claude rank and cite them, made every insight traceable to pins.
+- **Thirty-six different APIs.** ArcGIS, Socrata, RSS, vector tiles, STAC, TLEs, scrapers: each fails differently. Per-agent timeouts, retries, a disk cache with stale fallback, and honest coverage checks (SF-only agents skip themselves elsewhere) keep a mission alive when a source is down.
+- **Live data that's actually live.** Craigslist has bait-priced scam listings (we filter anything under 40% of the local median); Google SERP with a date filter took 35 s (we dropped it to stay inside the agent budget); Apify enforces a $0.50 minimum run cap.
+- **Animation that carries information.** Vehicles fly to the actual finding before the pin drops, so you can see which agent found what.
 
 ## Accomplishments that we're proud of
 
-- 13 built-in agents on 15+ live public sources, with no mocked or hardcoded data in the demo path.
-- A real cross-source finding in the Mission: 6 permitted projects (≈$3.1M of work) inside the SFPUC 100-year storm flood zone, and 6 projects on filled-in former water. FEMA's map alone doesn't show either.
-- About 124 findings in about 10 seconds, all streamed onto the map with sources.
-- The orchestrator re-dispatches an agent to specific parcels, which is a follow-up step rather than a single fan-out.
-- Every insight cites finding ids, and citations to findings that don't exist are filtered out.
-- Live shared missions: open the share link on a phone and watch the same mission run.
-- The whole app still runs end to end with no LLM key, using the heuristic fallback.
+- 36 agents on live public data, no mocked data anywhere in the demo path.
+- Cross-source findings no single map shows, e.g. 21 permitted projects on liquefiable ground in the Mission, and FEMA's "minimal hazard" contradicted by the city's own storm model.
+- Ask a plain question and it routes itself to the right specialist and agents.
+- The orchestrator creates a new agent mid-mission when nothing in its library fits.
+- A public Apify Actor built at the event, and Bright Data powering both our agents and Claude-created ones.
+- Share a link and watch the same mission live on a phone.
 
 ## What we learned
 
-- The value is in the overlap between datasets. A single source rarely tells you much on its own, and joins across sources are where the findings come from.
-- Using deterministic geometry for the "what overlaps" step and the LLM for "what does it mean, and for whom" produced better and more checkable results than asking the LLM for both.
-- Regulatory maps lag. FEMA's maps are built for insurance, not for describing where stormwater actually floods. Showing that disagreement is useful in itself.
-- A reactive database as the event log made sharing, history and replay mostly a side effect rather than separate features.
+- The value is in the overlap between datasets; joins across sources are where findings come from.
+- Deterministic geometry for "what overlaps" plus an LLM for "what it means, and for whom" beats asking the LLM to do both.
+- Regulatory maps lag reality, and showing that disagreement is useful in itself.
+- A reactive database as the event log made sharing, history and replay nearly free.
 
 ## What's next for Coordinate
 
-- **A shared agent library:** move saved agents into SpacetimeDB so the agents users and orchestrators create are shared across everyone, with usage counts.
-- **Beyond San Francisco:** about half the workers are already national or global (FEMA, USGS, NWS, Census, OSM, elevation, news). Adding a city means adding its permits, 311 and local flood-map agents. Socrata and ArcGIS cover a lot of US cities.
-- **Parcel reports** a user can export or hand to a buyer, lender or community group, with every claim linked to its source.
-- **Watch mode:** re-run a saved area on a schedule and alert when a new permit, flood report or hazard alert appears.
+- **Beyond San Francisco:** about half the agents are already national or global; Socrata and ArcGIS cover most large US cities' permits and 311.
+- **Parcel reports** a buyer, lender or community group can export, every claim linked to its source.
+- **Watch mode:** re-run a saved area on a schedule and alert on new permits, hearings, flood reports or hazards.
+- **A shared agent library** where agents users create are reusable by everyone.
 - [TEAM: one line on the named community and the next step with them]
 
-## Built with
+## Built with (Devpost tags)
 
 ```
-next.js, react, typescript, tailwindcss, maplibre-gl, deck.gl, turf.js, zustand, spacetimedb,
-anthropic-claude, anthropic-sdk, zod, openfreemap, openstreetmap,
-fema-nfhl, sfpuc-flood-map, datasf (dbi-permits, sf-311), open-meteo, nws-api, usgs-earthquake-api,
-us-census-api, google-news-rss, nominatim, arcgis-rest, socrata,
-sentinel-2, landsat, celestrak, satellite.js, nasa-eonet, vercel
+next.js, react, typescript, tailwindcss, maplibre, deck.gl, turf.js, zustand, spacetimedb, claude, anthropic, zod,
+bright-data, apify, vercel, openstreetmap, openfreemap, datasf, socrata, arcgis, fema, usgs, noaa, nasa, sentinel-2,
+landsat, celestrak, satellite.js, open-meteo, census, wikipedia, vitest
 ```
 
-[ADD: bright-data / apify only if a worker actually uses them by submission time]
+## "Try it out" links
 
-## Links
-
-- Live demo: https://coordinate-agents.vercel.app
+- Live app: https://coordinate-agents.vercel.app
+- Repo: https://github.com/NoahWolk1/CalHacks13
+- Apify Actor: https://apify.com/rocketlaunchers/sf-planning-notices
 - Demo video: [DEMO VIDEO LINK]
-- Repo: [REPO LINK]
-- Team: [TEAM NAMES]
+
+## Team
+
+[TEAM NAMES]
