@@ -13,6 +13,7 @@ import RightPanel from "./RightPanel";
 import { RightRail } from "./Rail";
 import TopBar from "./TopBar";
 import StatusBar from "./StatusBar";
+import Tour from "./Tour";
 import ConvexClientProvider from "./ConvexClientProvider";
 import ConvexRunSync from "./ConvexRunSync";
 import { ConvexMissionHistory } from "./MissionHistory";
@@ -55,6 +56,7 @@ export default function App({ children }: { children?: React.ReactNode }) {
       )}
       </div>
       {/* Live shared mission state: SpacetimeDB (primary) or Convex (fallback), as /api/agents reports. */}
+      {desktop && <Tour />}
       {live?.backend === "spacetime" && stHost && stDb && <SpacetimeLive host={stHost} db={stDb} />}
       {live?.backend === "convex" && process.env.NEXT_PUBLIC_CONVEX_URL && <><ConvexRunSync /><ConvexMissionHistory /></>}
     </main>
