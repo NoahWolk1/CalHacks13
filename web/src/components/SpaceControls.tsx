@@ -41,9 +41,9 @@ export default function SpaceControls() {
         <div className="border-t border-line max-lg:hidden">
           <button onClick={() => setOpen((o) => !o)} aria-expanded={open}
             className="flex w-full items-baseline justify-between px-2.5 py-1.5 text-fg3 transition-colors hover:text-fg1">
-            <span className="text-[11px] uppercase tracking-[0.08em]">{city ? "Overhead now" : "Live orbits"}</span>
+            <span className="text-[11px] uppercase tracking-[0.08em]">Satellites</span>
             <span className="flex items-center gap-1.5">
-              <span className="num text-[11px] text-fg4">{city ? `${over.length}/${tracked}` : `${tracked} satellites`}</span>
+              <span className="num text-[11px] text-fg4">{city ? `${over.length} overhead` : `${tracked} tracked`}</span>
               <ChevronDown size={12} strokeWidth={1.5} className={`self-center transition-transform ${open ? "rotate-180" : ""}`} />
             </span>
           </button>
