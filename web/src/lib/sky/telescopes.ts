@@ -1,8 +1,11 @@
 // Telescope Archive agent: which real telescope observations MAST (STScI) holds in the cone, one
 // result per mission (HST, JWST, TESS, ...), with counts, instruments, filters and the latest date.
-// MAST's CAOM position search is slow on a cold query (20-35 s measured) but cached server-side
-// afterwards (~1 s), so the fetch keeps running in the background past our deadline and fills the
-// HTTP cache; the next run of the same cone is then fast.
+// MAST's CAOM position search is slow on a cold query: measured 2026-10-26, 26 s for a 0.2° cone
+// returning 4 rows and over 90 s for 3°, so the cost is the position search itself, not the cone
+// size or row count. It is cached server-side afterwards (~1 s). So the fetch keeps running in the
+// background past our deadline: the route streams its result late if it lands during the run
+// (see pendingMast), and it fills the HTTP cache for the next run. The TESS light-curve inventory
+// (lightcurves.ts, by TIC id: fast) is what the agent reports when this is still searching.
 import { after } from "next/server";
 import { getJson } from "@/lib/http";
 import type { Cone, SkyObject } from "./types";
@@ -102,22 +105,47 @@ export function parseMast(json: unknown, c: Cone, cap = MAST_CAP): SkyObject[] {
   });
 }
 
-/** Cold MAST queries outlive our deadline: race the fetch against it, but let the fetch finish
- *  (with its own longer timeout) so the HTTP cache is warm for the next run of this cone. */
-export async function fetchMast(c: Cone, signal: AbortSignal, deadlineMs: number): Promise<SkyObject[]> {
-  const pending = getJson(MAST_API, { init: mastRequest(c), timeoutMs: 60_000, retries: 0 });
-  pending.catch((e: Error) => console.warn(`[sky] MAST background fetch failed: ${e.message}`));
+// One CAOM search per cone at a time: the agent races it against its deadline, and the route picks
+// up the same promise later to stream a late result (getJson only caches finished calls).
+const pending = new Map<string, { at: number; p: Promise<unknown>; value?: unknown }>();
+const coneKey = (c: Cone) => `${c.ra.toFixed(5)},${c.dec.toFixed(5)},${c.radius.toFixed(5)}`;
+
+/** Starts (or joins) the CAOM search for this cone. It runs on with its own 60 s timeout, unaffected
+ *  by the run's abort signal, so a cold query still completes and warms the cache. */
+export function pendingMast(c: Cone): Promise<unknown> {
+  const key = coneKey(c);
+  const hit = pending.get(key);
+  if (hit && Date.now() - hit.at < 90_000) return hit.p;
+  for (const [k, v] of pending) if (Date.now() - v.at > 90_000) pending.delete(k);
+  const p = getJson(MAST_API, { init: mastRequest(c), timeoutMs: 60_000, retries: 0 });
+  p.catch((e: Error) => console.warn(`[sky] MAST background fetch failed: ${e.message}`));
   // On Vercel the function would be frozen once the response ends, killing the background fetch
   // before it fills the cache: after() keeps it alive (within maxDuration). Outside a request
   // (unit tests) after() throws, and there's nothing to keep alive anyway.
-  try { after(pending.then(() => {}, () => {})); } catch { /* not in a request scope */ }
+  try { after(p.then(() => {}, () => {})); } catch { /* not in a request scope */ }
+  const entry: { at: number; p: Promise<unknown>; value?: unknown } = { at: Date.now(), p };
+  // A failed search is forgotten so the next run tries again.
+  p.then((v) => { entry.value = v; }, () => { if (pending.get(key) === entry) pending.delete(key); });
+  pending.set(key, entry);
+  return p;
+}
+
+/** Cold MAST queries outlive our deadline: race the search against it (the search keeps going). */
+export async function fetchMast(c: Cone, signal: AbortSignal, deadlineMs: number): Promise<SkyObject[]> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const json = await Promise.race([
-    pending,
+    pendingMast(c),
     new Promise<never>((_, rej) => {
       timer = setTimeout(() => rej(new Error(`MAST still searching after ${Math.round(deadlineMs / 1000)}s (cold query); results are cached for the next run`)), deadlineMs);
       signal.addEventListener("abort", () => rej(new Error("aborted")), { once: true });
     }),
   ]).finally(() => clearTimeout(timer));
   return parseMast(json, c);
+}
+
+/** The CAOM result for this cone if a search has already finished (no waiting, no new search), else null. */
+export function settledMast(c: Cone): SkyObject[] | null {
+  const v = pending.get(coneKey(c))?.value;
+  if (v === undefined) return null;
+  try { return parseMast(v, c); } catch { return null; }
 }

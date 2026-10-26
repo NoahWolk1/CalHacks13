@@ -4,10 +4,11 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { ArrowLeft, CircleDashed, Crosshair, ExternalLink, LoaderCircle, Telescope } from "lucide-react";
+import type { SkyActivity } from "@/lib/client/skyFleet";
 import { Body, Equator, Observer } from "astronomy-engine";
 import { APP_NAME } from "@/lib/brand";
 import { formatDec, formatRa, parseCone } from "@/lib/sky/geom";
-import { SKY_MAX_RADIUS, type Cone, type SkyEvent, type SkyObject, type SkyObserver, type SkySourceReport, type SkySummary } from "@/lib/sky/types";
+import { SKY_MAX_RADIUS, type AnalysisStar, type Cone, type SkyAnalysis, type SkyEvent, type SkyObject, type SkyObserver, type SkySourceReport, type SkySummary, type StarResult } from "@/lib/sky/types";
 import { CATEGORY_STYLE, SURVEYS, type AtlasApi } from "./SkyAtlas";
 import SkySearch from "./SkySearch";
 
@@ -27,7 +28,7 @@ export const SAMPLES: { name: string; note: string; cone: Cone }[] = [
   { name: "Jupiter now", note: "Live position", cone: jupiterNow() },
 ];
 
-const QUESTIONS = ["What's the most interesting thing here?", "Are there any planets here?", "How far away are these objects?"];
+const QUESTIONS = ["What's the most interesting thing here?", "Are there any planets here?", "Any new transit candidates in the light curves?", "How far away are these objects?"];
 
 type Status = "idle" | "running" | "summarising" | "done" | "error";
 
@@ -48,6 +49,11 @@ export default function SkyApp() {
   const [survey, setSurvey] = useState<string>(SURVEYS[0].id);
   const [drawing, setDrawing] = useState(false);
   const [question, setQuestion] = useState("");
+  // Light-curve analysis agents (streamed alongside the catalog results).
+  const [lcStars, setLcStars] = useState<AnalysisStar[]>([]);
+  const [lcResults, setLcResults] = useState<StarResult[]>([]);
+  const [analysis, setAnalysis] = useState<{ analysis: SkyAnalysis | null; note?: string; ms: number } | null>(null);
+  const [run, setRun] = useState(0);
   const api = useRef<AtlasApi | null>(null);
   const abort = useRef<AbortController | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -65,6 +71,7 @@ export default function SkyApp() {
     const ctl = new AbortController();
     abort.current = ctl;
     setStatus("running"); setObjects([]); setSources([]); setSummary(null); setObs(null); setObserving(false); setNote(null); setError(null); setSelected(null); setTiming({});
+    setLcStars([]); setLcResults([]); setAnalysis(null); setRun((n) => n + 1);
     try {
       const res = await fetch("/api/sky/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...c, question: q.trim() || undefined }), signal: ctl.signal });
       if (!res.ok || !res.body) throw new Error(`${res.status} ${res.statusText}`);
@@ -81,7 +88,11 @@ export default function SkyApp() {
           buf = buf.slice(nl + 1);
           if (!line) continue;
           const e = JSON.parse(line) as SkyEvent;
-          if (e.type === "results") { setObserving(e.objects.length > 0); setObjects(e.objects); setSources(e.sources); setTiming((t) => ({ ...t, results: e.ms })); setStatus("summarising"); }
+          if (e.type === "results") { setObserving(e.objects.length > 0); setObjects((o) => [...e.objects, ...o]); setSources(e.sources); setTiming((t) => ({ ...t, results: e.ms })); setStatus("summarising"); }
+          else if (e.type === "archive") setObjects((o) => [...o, ...e.objects]);
+          else if (e.type === "analysis-start") setLcStars(e.stars);
+          else if (e.type === "analysis-star") setLcResults((r) => [...r, e.result]);
+          else if (e.type === "analysis") { setAnalysis({ analysis: e.analysis, note: e.note, ms: e.ms }); if (e.analysis?.objects.length) setObjects((o) => [...o, ...e.analysis!.objects]); }
           else if (e.type === "summary") { setSummary(e.summary); setNote(e.note ?? null); setTiming((t) => ({ ...t, summary: e.ms })); setStatus("done"); }
           else if (e.type === "observer") { setObs({ observer: e.observer, note: e.note, ms: e.ms }); setObserving(false); }
           else if (e.type === "error") { setError(e.message); setStatus("error"); }
@@ -116,6 +127,10 @@ export default function SkyApp() {
 
   const byId = useMemo(() => new Map(objects.map((o) => [o.id, o])), [objects]);
   const busy = status === "running" || status === "summarising";
+  const activity = useMemo<SkyActivity>(() => ({
+    run, status, sources, objects, stars: lcStars, starResults: lcResults, analysisDone: !!analysis,
+    observer: obs ? "done" : observing ? "working" : "idle",
+  }), [run, status, sources, objects, lcStars, lcResults, analysis, obs, observing]);
 
   return (
     <div className="flex h-dvh flex-col bg-bg text-fg1">
@@ -142,7 +157,7 @@ export default function SkyApp() {
           {atlasError ? (
             <div className="grid h-full place-items-center p-6 text-center text-[13px] text-fg3">Sky atlas unavailable ({atlasError}). Research still works from the panel.</div>
           ) : (
-            <SkyAtlas cone={cone} objects={objects} selectedId={selected} onSelect={select} apiRef={api} onError={onAtlasError} />
+            <SkyAtlas cone={cone} objects={objects} selectedId={selected} onSelect={select} apiRef={api} onError={onAtlasError} activity={activity} />
           )}
           {drawing && <div className="pointer-events-none absolute left-1/2 top-3 -translate-x-1/2 rounded-[4px] bg-bg/85 px-2 py-0.5 text-[12px] text-fg2">Drag on the sky to draw a circle</div>}
           <Legend objects={objects} />
@@ -208,13 +223,13 @@ export default function SkyApp() {
                 <span>Sky agents</span>
                 {timing.results != null && <span className="num normal-case tracking-normal text-fg4">{(timing.results / 1000).toFixed(1)}s</span>}
               </div>
-              {status === "running" && !sources.length && <div className="text-[12.5px] text-fg3">Querying SIMBAD, NASA Exoplanet Archive, JPL Horizons and the MAST telescope archive…</div>}
+              {status === "running" && !sources.length && <div className="text-[12.5px] text-fg3">Querying SIMBAD, NASA Exoplanet Archive, JPL Horizons and the MAST telescope archive, and fetching TESS light curves…</div>}
               <ul className="space-y-1">
                 {sources.map((s) => (
                   <li key={s.source} className="flex items-center gap-2 text-[12.5px]">
                     <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${s.status === "ok" ? "bg-ok" : s.status === "empty" ? "bg-fg4" : "bg-risk"}`} />
                     <span className="text-fg1">{s.label}</span>
-                    <span className="truncate text-fg3" title={s.error}>{s.status === "ok" ? `${s.count} found` : s.status === "empty" ? (s.source === "telescopes" ? "no archived observations" : "nothing found") : `failed: ${s.error}`}</span>
+                    <span className="truncate text-fg3" title={s.error ?? s.note}>{s.status === "ok" ? `${s.count} found${s.note ? " (partial)" : ""}` : s.status === "empty" ? (s.source === "telescopes" ? "no archived observations" : "nothing found") : `failed: ${s.error}`}</span>
                     <span className="num ml-auto text-[11.5px] text-fg4">{(s.ms / 1000).toFixed(1)}s</span>
                   </li>
                 ))}
@@ -222,13 +237,15 @@ export default function SkyApp() {
             </section>
           )}
 
+          {(lcStars.length > 0 || analysis || (status === "summarising" && !analysis)) && <AnalysisSection stars={lcStars} results={lcResults} analysis={analysis} running={busy && !analysis} byId={byId} onCite={select} />}
+
           {(status === "summarising" || summary || note) && (
             <section className="border-b border-line p-4">
               <div className="mb-2 flex items-baseline justify-between text-[11.5px] uppercase tracking-[0.06em] text-fg3">
                 <span>{summary?.question ? "Answer" : "Claude summary"}</span>
                 {timing.summary != null && summary && <span className="num normal-case tracking-normal text-fg4">{(timing.summary / 1000).toFixed(1)}s</span>}
               </div>
-              {status === "summarising" && <div className="caret text-[12.5px] text-fg3">Reading {objects.length} results</div>}
+              {status === "summarising" && <div className="caret text-[12.5px] text-fg3">{analysis ? `Reading ${objects.length} results` : "Waiting for the light-curve agents, then reading the results"}</div>}
               {summary && (
                 <>
                   {summary.question && <p className="mb-1.5 text-[12px] italic text-fg3">“{summary.question}”</p>}
@@ -267,7 +284,7 @@ export default function SkyApp() {
 
           {status === "idle" && (
             <section className="p-4 text-[12.5px] leading-relaxed text-fg3">
-              Pan and zoom the sky, then draw a circle or use the current view. Sky agents query SIMBAD, the NASA Exoplanet Archive and JPL Horizons live, and Claude writes a cited summary.
+              Pan and zoom the sky, then draw a circle or use the current view. Sky agents query SIMBAD, the NASA Exoplanet Archive, JPL Horizons and MAST live; analysis agents download real TESS light curves of the field&apos;s stars and search them for transits (Box Least Squares) and variability (Lomb-Scargle); Claude writes a cited summary.
             </section>
           )}
         </aside>
@@ -331,6 +348,81 @@ function ObserverSection({ obs, byId, onCite }: { obs: { observer: SkyObserver |
             {o.dropped > 0 && <li className="text-[11.5px] text-fg4">{o.dropped} observation{o.dropped === 1 ? "" : "s"} dropped for citing results that don&apos;t exist</li>}
           </ul>
         </div>
+      )}
+    </section>
+  );
+}
+
+const AGENT_COLOR: Record<string, string> = { lightcurves: "#5ec8d8", transits: "#f2c35b", variability: "#b39dff", vetting: "#ff8f7a" };
+const fmt = (n: number, d = 3) => (Number.isFinite(n) ? +n.toPrecision(d) : "n/a");
+
+/** Light-curve analysis agents: per-star progress while running, then each agent's report and the
+ *  Vetter's verdicts. Unvetted candidates are labelled as needing follow-up, never as discoveries. */
+function AnalysisSection({ stars, results, analysis, running, byId, onCite }: {
+  stars: AnalysisStar[]; results: StarResult[]; analysis: { analysis: SkyAnalysis | null; note?: string; ms: number } | null; running: boolean;
+  byId: Map<string, SkyObject>; onCite: (id: string) => void;
+}) {
+  const a = analysis?.analysis;
+  const byTic = new Map(results.map((r) => [r.tic, r]));
+  const signals = a?.objects.filter((o) => o.category === "candidate") ?? [];
+  return (
+    <section className="border-b border-line p-4">
+      <div className="mb-2 flex items-baseline justify-between text-[11.5px] uppercase tracking-[0.06em] text-fg3">
+        <span>Light-curve analysis</span>
+        {analysis && <span className="num normal-case tracking-normal text-fg4">{(analysis.ms / 1000).toFixed(1)}s</span>}
+      </div>
+      {running && !stars.length && <div className="caret text-[12.5px] text-fg3">Finding TESS light curves for the stars in this cone</div>}
+      {analysis && !a && <div className="text-[12.5px] text-fg3">{analysis.note ?? "Light-curve analysis unavailable this run."}</div>}
+      {a?.note && <div className="text-[12.5px] text-fg3">{a.note}</div>}
+      {a && a.agents.length > 0 && (
+        <ul className="mb-2 space-y-1">
+          {a.agents.map((r) => (
+            <li key={r.agent} className="flex items-start gap-2 text-[12.5px]">
+              <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: r.status === "error" ? "var(--risk)" : AGENT_COLOR[r.agent] }} />
+              <span className="min-w-0"><span className="text-fg1">{r.label}</span> <span className="text-fg3">{r.detail}</span></span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {signals.length > 0 && (
+        <ul className="mb-2 space-y-1.5">
+          {signals.map((o) => {
+            const fresh = o.type.startsWith("Unvetted");
+            return (
+              <li key={o.id} className={`rounded-md border px-2.5 py-1.5 text-[12.5px] ${fresh ? "border-[#f2c35b]/50 bg-[#f2c35b]/[0.06]" : "border-line"}`}>
+                <button onClick={() => onCite(o.id)} className="flex w-full items-center gap-2 text-left">
+                  <span className="num shrink-0 text-[11px] text-fg4">{o.id}</span>
+                  <span className={`truncate ${fresh ? "text-[#f2c35b]" : "text-fg1"}`}>{o.type}</span>
+                </button>
+                <div className="num mt-0.5 text-[11.5px] text-fg3">
+                  TIC {o.props.TIC} · P {o.props["period (days)"]} d · depth {o.props["depth (ppt)"]} ppt · {o.props["duration (hours)"]} h · SNR {o.props.SNR}
+                </div>
+                {fresh && <div className="mt-0.5 text-[11.5px] text-fg3">Unvetted candidate: needs follow-up observations, not a confirmed planet.</div>}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {stars.length > 0 && (
+        <ul className="space-y-0.5">
+          {stars.map((s) => {
+            const r = byTic.get(s.tic);
+            const t = r?.transit, v = r?.variability;
+            return (
+              <li key={s.tic} className="flex items-center gap-2 text-[12px]">
+                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${!r ? "animate-pulse bg-fg4" : r.status !== "ok" ? "bg-risk" : t?.detected ? "bg-[#f2c35b]" : "bg-ok"}`} />
+                <a href={`https://exofop.ipac.caltech.edu/tess/target.php?id=${s.tic}`} target="_blank" rel="noreferrer" className="num shrink-0 text-fg2 hover:text-fg1">TIC {s.tic}</a>
+                <span className="truncate text-fg4">{s.name.startsWith("TIC ") ? `${s.pipeline} s${s.sector}` : `${s.name} · ${s.pipeline} s${s.sector}`}</span>
+                <span className="num ml-auto shrink-0 text-[11.5px] text-fg3" title={r?.error}>
+                  {!r ? "…" : r.status !== "ok" ? r.status === "skipped" ? "skipped" : "failed" : [t?.detected ? `dip P ${fmt(t.period, 4)} d` : "no transit", v?.variable ? `var ${fmt(v.period)} d` : null].filter(Boolean).join(" · ")}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {a && byId.size > 0 && a.objects.some((o) => o.category === "variable") && (
+        <div className="mt-2 text-[11.5px] text-fg4">Variable stars: {a.objects.filter((o) => o.category === "variable").map((o) => o.id).join(", ")} in the results list.</div>
       )}
     </section>
   );
