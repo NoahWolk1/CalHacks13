@@ -3,13 +3,30 @@ import { getJson } from "@/lib/http";
 import { EXO_TAP, exoRequest, parseExoplanets } from "./exoplanets";
 import { BODIES, bodyObject, HORIZONS_API, horizonsUrl, parseHorizons } from "./horizons";
 import { parseSimbad, SIMBAD_TAP, simbadUrl } from "./simbad";
+import { fieldInventory, inventoryObject } from "./lightcurves";
 import { fetchMast, MAST_API, MAST_DEADLINE_MS } from "./telescopes";
 import type { Cone, SkyObject, SkySourceId, SkySourceReport } from "./types";
 
 export const SOURCE_TIMEOUT_MS = 15_000;
-const PREFIX: Record<SkySourceId, string> = { simbad: "S", exoplanets: "X", horizons: "J", telescopes: "T" };
+const PREFIX: Record<SkySourceId, string> = { simbad: "S", exoplanets: "X", horizons: "J", telescopes: "T", lightcurves: "C" };
 
-type Source = { id: SkySourceId; label: string; endpoint: string; run: (c: Cone, signal: AbortSignal) => Promise<SkyObject[]> };
+/** A source returns its objects, optionally with a note on partial results. */
+type Source = { id: SkySourceId; label: string; endpoint: string; run: (c: Cone, signal: AbortSignal) => Promise<SkyObject[] | { objects: SkyObject[]; note: string }> };
+
+/** Telescope Archive: the TESS light-curve inventory (by TIC id, ~1-2 s) plus MAST's full
+ *  per-mission summary when the CAOM search beats its deadline. When it doesn't (cold query), the
+ *  inventory is reported on its own and the route streams the full summary later if it lands. */
+export async function telescopes(c: Cone, signal: AbortSignal): Promise<SkyObject[] | { objects: SkyObject[]; note: string }> {
+  const [inv, full] = await Promise.allSettled([fieldInventory(c, signal).then((i) => inventoryObject(c, i)), fetchMast(c, signal, MAST_DEADLINE_MS)]);
+  const lc = inv.status === "fulfilled" && inv.value ? [inv.value] : [];
+  if (full.status === "fulfilled") return [...lc, ...full.value];
+  const why = (full.reason as Error).message;
+  if (!lc.length) {
+    if (inv.status === "rejected") throw new Error(`${why}; TESS inventory failed: ${(inv.reason as Error).message}`);
+    throw new Error(why);
+  }
+  return { objects: lc, note: `TESS light curves only so far: ${why}` };
+}
 
 export const SOURCES: Source[] = [
   { id: "simbad", label: "SIMBAD (CDS)", endpoint: SIMBAD_TAP, run: async (c, signal) => parseSimbad(await getJson(simbadUrl(c), { timeoutMs: SOURCE_TIMEOUT_MS, signal, retries: 1 })) },
@@ -24,7 +41,7 @@ export const SOURCES: Source[] = [
       return rows.flatMap((r) => (r.status === "fulfilled" && r.value ? [r.value] : []));
     },
   },
-  { id: "telescopes", label: "MAST telescope archive", endpoint: MAST_API, run: (c, signal) => fetchMast(c, signal, MAST_DEADLINE_MS) },
+  { id: "telescopes", label: "MAST telescope archive", endpoint: MAST_API, run: telescopes },
 ];
 
 /** Assigns citation ids per source (S1.., X1.., J1.., T1..) in the order each source returned them. */
@@ -41,8 +58,9 @@ export async function runSkyAgents(c: Cone, signal: AbortSignal, sources: Source
     // Hard per-source deadline (getJson's timeout is per attempt; this bounds retries too).
     const timer = setTimeout(() => ctl.abort(), SOURCE_TIMEOUT_MS + 2_000);
     try {
-      const objects = await s.run(c, ctl.signal);
-      const report: SkySourceReport = { source: s.id, label: s.label, endpoint: s.endpoint, status: objects.length ? "ok" : "empty", count: objects.length, ms: Date.now() - t0 };
+      const out = await s.run(c, ctl.signal);
+      const { objects, note } = Array.isArray(out) ? { objects: out, note: undefined } : out;
+      const report: SkySourceReport = { source: s.id, label: s.label, endpoint: s.endpoint, status: objects.length ? "ok" : "empty", count: objects.length, ms: Date.now() - t0, ...(note ? { note: note.slice(0, 200) } : {}) };
       return { report, objects };
     } catch (e) {
       const msg = ctl.signal.aborted && !signal.aborted ? `timed out after ${Math.round((Date.now() - t0) / 1000)}s` : (e as Error).message;

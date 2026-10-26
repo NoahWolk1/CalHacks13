@@ -55,8 +55,8 @@ export class Fleet {
     this.kx = 111_320 * Math.cos((r.center[1] * Math.PI) / 180);
     const [a, b, c, d] = r.bbox;
     this.diag = Math.hypot((c - a) * this.kx, (d - b) * this.ky);
-    // Command post: just below the middle of the region's south edge (the side panels hide the corners).
-    this.base = this.fromM([this.toM([(a + c) / 2, b])[0], this.toM([(a + c) / 2, b])[1] - this.diag * 0.1]);
+    // Command post: just inside the middle of the region's south edge (the side panels hide the corners).
+    this.base = this.clampIn([(a + c) / 2, b], 0.9);
   }
 
   setRoads(lines: LL[][]) {
@@ -71,12 +71,9 @@ export class Fleet {
       if (i === undefined) { i = nodes.length; idx.set(k, i); nodes.push(p); adj.push([]); }
       return i;
     };
-    const [a, b, c, d] = this.region.bbox;
-    const pad = 0.002;
-    const inside = (p: LL) => p[0] > a - pad && p[0] < c + pad && p[1] > b - pad && p[1] < d + pad;
     for (const line of lines) {
       for (let i = 1; i < line.length; i++) {
-        if (!inside(line[i - 1]) || !inside(line[i])) continue;
+        if (!this.inside(line[i - 1]) || !this.inside(line[i])) continue;
         const u = id(line[i - 1]), v = id(line[i]);
         if (u !== v) { adj[u].push(v); adj[v].push(u); }
       }
@@ -94,7 +91,7 @@ export class Fleet {
     const b = this.toM(this.base);
     v = {
       id: agent.id, name: agent.name, kind: agent.vehicle, color: hexToRgb(agent.color),
-      pos: this.fromM([b[0] + Math.cos(ang) * 40 - 20, b[1] + Math.sin(ang) * 40 - 20]),
+      pos: this.clampIn(this.fromM([b[0] + Math.cos(ang) * 40 - 20, b[1] + Math.sin(ang) * 40 - 20])),
       heading: 45, mode: "staged", done: false, error: false, waypoints: [], queue: [],
       trail: { path: [], ts: [] }, beams: [], lastTrail: 0, index, pulse: 0,
     };
@@ -108,7 +105,7 @@ export class Fleet {
     if (status === "deploying") {
       v.done = false; v.error = false;
       v.mode = "deploying";
-      v.waypoints = targets?.length ? this.orderNearest(v.pos, targets.map((t) => [t.lng, t.lat] as LL)) : [this.entryPoint(v)];
+      v.waypoints = targets?.length ? this.orderNearest(v.pos, targets.map((t) => this.clampIn([t.lng, t.lat]))) : [this.entryPoint(v)];
     } else if (status === "scanning") {
       if (v.mode !== "deploying") v.mode = "patrol";
     } else if (status === "done") {
@@ -124,7 +121,7 @@ export class Fleet {
     const areaLevel = !!f.props?.areaLevel;
     if (!v) { this.reveal(f.id); return; }
     const t = performance.now() / 1000;
-    if (areaLevel || f.props?.offRegion || !this.region) {
+    if (areaLevel || f.props?.offRegion || !this.region || !this.inside(at)) {
       // Not a place to fly to: reveal with a beam from wherever the agent is.
       v.queue.push({ id: f.id, at, instant: true, t });
     } else v.queue.push({ id: f.id, at, t });
@@ -195,7 +192,8 @@ export class Fleet {
           if (v.mode === "deploying" && !v.waypoints.length) v.mode = "patrol";
         }
       } else {
-        v.pos = this.fromM([p[0] + (dx / d) * stepM, p[1] + (dy / d) * stepM]);
+        // Clamped so a leg that cuts across a concave edge still never leaves the region.
+        v.pos = this.clampIn(this.fromM([p[0] + (dx / d) * stepM, p[1] + (dy / d) * stepM]));
         const want = (Math.atan2(dx, dy) * 180) / Math.PI;
         v.heading = lerpAngle(v.heading, want, Math.min(1, dt * (v.kind === "car" ? 14 : 6)));
       }
@@ -255,10 +253,10 @@ export class Fleet {
       return v.index % 2 ? out.reverse() : out;
     }
     if (v.kind === "satellite") {
-      // Long straight passes over the region at a per-satellite angle.
+      // Long straight passes across the region at a per-satellite angle, edge to edge.
       const ang = ((v.index * 47 + 20) * Math.PI) / 180;
-      const o = this.toM(r.center), L = this.diag * 0.75;
-      return [this.fromM([o[0] - Math.sin(ang) * L, o[1] - Math.cos(ang) * L]), this.fromM([o[0] + Math.sin(ang) * L, o[1] + Math.cos(ang) * L])];
+      const o = this.toM(r.center), L = this.diag;
+      return [this.clampIn(this.fromM([o[0] - Math.sin(ang) * L, o[1] - Math.cos(ang) * L])), this.clampIn(this.fromM([o[0] + Math.sin(ang) * L, o[1] + Math.cos(ang) * L]))];
     }
     // Ground vehicles: drive the real street graph if we have it.
     if (this.roads) return this.roadWalk(v.pos, 28);
@@ -266,7 +264,8 @@ export class Fleet {
     let cur = v.pos;
     for (let i = 0; i < 8; i++) {
       const nxt = this.randomInside();
-      out.push([nxt[0], cur[1]], nxt); // Manhattan-style L moves
+      const corner: LL = [nxt[0], cur[1]]; // Manhattan-style L moves, unless the corner falls outside
+      out.push(...(this.inside(corner) ? [corner, nxt] : [nxt]));
       cur = nxt;
     }
     return out;
@@ -303,6 +302,21 @@ export class Fleet {
       if (turf.booleanPointInPolygon(p, r.polygon)) return p;
     }
     return r.center;
+  }
+
+  private inside(p: LL) { return !this.region || turf.booleanPointInPolygon(p, this.region.polygon); }
+
+  /** p if it's in the region, else the region's edge on the way from its center to p, pulled in by `keep`. */
+  private clampIn(p: LL, keep = 0.97): LL {
+    if (this.inside(p)) return p;
+    const o = this.region!.center;
+    let lo = 0, hi = 1;
+    for (let i = 0; i < 14; i++) {
+      const m = (lo + hi) / 2;
+      if (this.inside([o[0] + (p[0] - o[0]) * m, o[1] + (p[1] - o[1]) * m])) lo = m; else hi = m;
+    }
+    const t = lo * keep;
+    return [o[0] + (p[0] - o[0]) * t, o[1] + (p[1] - o[1]) * t];
   }
 
   private orderNearest(from: LL, pts: LL[]): LL[] {
