@@ -81,7 +81,36 @@ const writers = table(
   },
 );
 
-const spacetimedb = schema({ runs, events, findings, llm_usage, writers });
+// Deep sky surveys (web/src/lib/sky/survey.ts): background jobs that search every TESS light curve in a
+// cone, step by step. One row per survey (progress, notebook, finds as JSON), one per star (its seasons).
+// A step holds the lease while it works; every save checks it, so two steps can't both write.
+const sky_surveys = table(
+  { name: "sky_surveys", public: true },
+  {
+    survey_id: t.string().primaryKey(),
+    status: t.string(), // "running" | "done" | "stopped" | "error"
+    created_ms: t.f64(),
+    updated_ms: t.f64(),
+    lease_owner: t.string(), // "" = free
+    lease_until_ms: t.f64(),
+    summary_json: t.string(), // SurveySummary
+    notes_json: t.string(), // SkyNote[]
+    objects_json: t.string(), // SkyObject[] (finds first)
+    field_json: t.string(), // cross-match catalogs, written once by the planning step
+  },
+);
+
+const sky_survey_stars = table(
+  { name: "sky_survey_stars", public: true },
+  {
+    key: t.string().primaryKey(), // `${survey_id}:${tic}`
+    survey_id: t.string().index("btree"),
+    tic: t.string(),
+    star_json: t.string(), // SurveyStar
+  },
+);
+
+const spacetimedb = schema({ runs, events, findings, llm_usage, writers, sky_surveys, sky_survey_stars });
 export default spacetimedb;
 
 type Ctx = ReducerCtx<InferSchema<typeof spacetimedb>>;
@@ -223,4 +252,76 @@ export const reserve_llm = spacetimedb.reducer({ ip_hash: t.string(), per_ip: t.
   for (const r of ctx.db.llm_usage.ip_hash.filter(ip_hash)) if (r.at_ms >= since) ipUsed++;
   if (ipUsed >= per_ip) throw new SenderError("llm_cap:ip");
   ctx.db.llm_usage.insert({ id: 0n, ip_hash, at_ms: now });
+});
+
+// ── deep sky surveys ────────────────────────────────────────────────────────
+
+const SURVEY_STATUSES = ["running", "done", "stopped", "error"];
+
+function getSurvey(ctx: Ctx, survey_id: string) {
+  const row = ctx.db.sky_surveys.survey_id.find(survey_id);
+  if (!row) throw new SenderError("unknown survey");
+  return row;
+}
+
+/** The caller must hold the survey's lease (owner matches and it hasn't expired). */
+function requireLease(ctx: Ctx, row: { lease_owner: string; lease_until_ms: number }, owner: string) {
+  if (!owner || row.lease_owner !== owner || row.lease_until_ms < nowMs(ctx)) throw new SenderError("lease_lost");
+}
+
+export const create_survey = spacetimedb.reducer({ survey_id: t.string(), summary_json: t.string() }, (ctx, { survey_id, summary_json }) => {
+  requireWriter(ctx);
+  if (!/^[A-Za-z0-9_-]{6,64}$/.test(survey_id)) throw new SenderError("bad survey_id");
+  if (ctx.db.sky_surveys.survey_id.find(survey_id)) throw new SenderError("survey exists");
+  const now = nowMs(ctx);
+  ctx.db.sky_surveys.insert({ survey_id, status: "running", created_ms: now, updated_ms: now, lease_owner: "", lease_until_ms: 0, summary_json, notes_json: "[]", objects_json: "[]", field_json: "" });
+});
+
+/** Takes or extends the lease: "survey_busy" while another owner holds an unexpired one. */
+export const lease_survey = spacetimedb.reducer({ survey_id: t.string(), owner: t.string(), until_ms: t.f64() }, (ctx, { survey_id, owner, until_ms }) => {
+  requireWriter(ctx);
+  const row = getSurvey(ctx, survey_id);
+  if (row.status !== "running") throw new SenderError("not running");
+  if (row.lease_owner && row.lease_owner !== owner && row.lease_until_ms > nowMs(ctx)) throw new SenderError("survey_busy");
+  ctx.db.sky_surveys.survey_id.update({ ...row, lease_owner: owner, lease_until_ms: until_ms });
+});
+
+export const release_survey = spacetimedb.reducer({ survey_id: t.string(), owner: t.string() }, (ctx, { survey_id, owner }) => {
+  requireWriter(ctx);
+  const row = getSurvey(ctx, survey_id);
+  if (row.lease_owner === owner) ctx.db.sky_surveys.survey_id.update({ ...row, lease_owner: "", lease_until_ms: 0 });
+});
+
+const StarIn = t.object("StarIn", { tic: t.string(), star_json: t.string() });
+
+export const put_survey_stars = spacetimedb.reducer({ survey_id: t.string(), owner: t.string(), stars: t.array(StarIn) }, (ctx, { survey_id, owner, stars }) => {
+  requireWriter(ctx);
+  requireLease(ctx, getSurvey(ctx, survey_id), owner);
+  for (const { tic, star_json } of stars) {
+    const key = `${survey_id}:${tic}`;
+    if (ctx.db.sky_survey_stars.key.find(key)) ctx.db.sky_survey_stars.key.update({ key, survey_id, tic, star_json });
+    else ctx.db.sky_survey_stars.insert({ key, survey_id, tic, star_json });
+  }
+});
+
+/** field_json "" keeps the stored one. A stop requested meanwhile wins over the status passed in. */
+export const save_survey = spacetimedb.reducer(
+  { survey_id: t.string(), owner: t.string(), status: t.string(), summary_json: t.string(), notes_json: t.string(), objects_json: t.string(), field_json: t.string() },
+  (ctx, a) => {
+    requireWriter(ctx);
+    if (!SURVEY_STATUSES.includes(a.status)) throw new SenderError("bad status");
+    const row = getSurvey(ctx, a.survey_id);
+    requireLease(ctx, row, a.owner);
+    ctx.db.sky_surveys.survey_id.update({
+      ...row, status: row.status === "stopped" ? "stopped" : a.status, updated_ms: nowMs(ctx),
+      summary_json: a.summary_json, notes_json: a.notes_json, objects_json: a.objects_json, field_json: a.field_json || row.field_json,
+    });
+  },
+);
+
+export const stop_survey = spacetimedb.reducer({ survey_id: t.string() }, (ctx, { survey_id }) => {
+  requireWriter(ctx);
+  const row = getSurvey(ctx, survey_id);
+  if (row.status !== "running") throw new SenderError("not running");
+  ctx.db.sky_surveys.survey_id.update({ ...row, status: "stopped", updated_ms: nowMs(ctx) });
 });

@@ -25,6 +25,7 @@ npm run dev                  # http://localhost:3000 (or pass -p <port>)
 | `NEXT_PUBLIC_SPACETIME_HOST` / `NEXT_PUBLIC_SPACETIME_DB` | Optional browser overrides. By default the browser uses the host/db the server reports from `/api/agents`. |
 | `NEXT_PUBLIC_CONVEX_URL` | Convex (fallback live backend). Written by `npx convex dev`. |
 | `LLM_PER_IP_HOURLY` / `LLM_GLOBAL_HOURLY` / `LLM_IP_SALT` / `LLM_RATE_LIMIT` | Hourly caps on Claude-powered runs (defaults 20 / 150; on in production). Over the cap a run goes heuristic. |
+| `SKY_SURVEY_MAX_RUNNING` / `SKY_SURVEY_STEP_MS` / `SKY_SURVEY_SECRET` | Deep sky surveys: concurrent surveys allowed (default 3), work per step (default 230000 ms), and the HMAC secret for the internal step endpoint (default: falls back to `SPACETIME_TOKEN`, then `ANTHROPIC_API_KEY`). `SKY_SURVEY_BACKEND=file` / `SKY_SURVEY_DIR` force the file store (dev). See [Deep sky surveys](#deep-sky-surveys). |
 
 ## SpacetimeDB: live shared mission state (primary)
 
@@ -59,6 +60,16 @@ npm run dev -- -p 3005                       # terminal 2
 ```
 
 After changing the module: `npm run spacetime:publish:local` (or `:cloud`) and `npm run spacetime:generate` (rewrites `src/spacetime_bindings/`). Maincloud: `spacetime login`, `npm run spacetime:publish:cloud`, `npm run spacetime:writer -- --server maincloud`. The browser rewrites a `127.0.0.1` host to the page's host, so a phone on the same Wi-Fi can open `http://<laptop-ip>:3005/?run=<id>`.
+
+## Deep sky surveys
+
+`/sky` → **Deep survey** searches every star with a TESS light curve in the cone, every sector, as a background job (`src/lib/sky/survey.ts`). It keeps running with the tab closed; `/sky?survey=<id>` reopens it.
+
+- **Steps.** `POST /api/sky/survey` creates the survey row and fires `POST /api/sky/survey/:id/step`, which answers 202 and works in `after()` for `SKY_SURVEY_STEP_MS` (230 s; `maxDuration` 300), saving after every season, then POSTs the next step to the same deployment (`src/lib/server/skySurvey.ts`, HMAC key in `x-survey-key`). A lease on the row (`lease_survey`) keeps two steps from running at once; every save checks it. If a chain breaks, `GET /api/sky/survey/:id` sees an expired lease plus 90 s without an update and restarts it, so any viewer revives a stalled survey.
+- **Work unit = one season**: up to 4 nearby sectors of one star stitched and searched together (the quick run's `analyseStar`). Seasons are searched separately so a star with years of data stays affordable, and a signal found in several seasons is independently confirmed. The first step inventories the field (`surveyInventory`: all SPOC pages, SIMBAD stars to V 13.5 with their QLP/TESS-SPOC light curves), cross-matches catalogs once, and has the Strategist order the stars (Claude picks the first 20). A star whose season finds something is moved up so its other seasons come next; at every 25% Claude reviews the finds (notebook notes, and it can move stars to the front).
+- **Finds** (`surveyObjects`) are recomputed over all stars at every save: periodic signals clustered across seasons ("seen in N seasons", or "not seen" in seasons that covered ≥ 2 transits), lone dips paired into **duotransits** (periods Δt/n whose other transits all fall in TESS's gaps, `duotransitAliases`), simultaneous dips on several stars flagged as systematics, variables through the VSX census.
+- **Storage** (`src/lib/sky/surveyStore.ts`): SpacetimeDB tables `sky_surveys` + `sky_survey_stars` when `SPACETIME_DB`/`SPACETIME_TOKEN` are set (publish the module after pulling this: `npm run spacetime:publish:cloud`), otherwise JSON files in `$TMPDIR/coordinate-sky-surveys` (dev; on Vercel that's per-instance `/tmp`, so production needs SpacetimeDB).
+- `POST /api/sky/survey/:id/stop` stops one (results so far stay); `GET /api/sky/survey` lists recent ones. At most `SKY_SURVEY_MAX_RUNNING` run at once.
 
 ## Convex (fallback live backend)
 

@@ -119,3 +119,56 @@ export const SKY_MAX_RADIUS = 3;
 
 /** The analysis results that would be new if they hold up (the rest are known or rejected). */
 export const isNewFind = (o: Pick<SkyObject, "type">) => /^(Unvetted|Candidate additional|Single-transit|Uncatalogued)/.test(o.type);
+
+// ── deep surveys (survey.ts): every star, every sector, in the background ──────
+
+export type SurveyStatus = "running" | "done" | "stopped" | "error";
+
+/** One season: a run of nearby sectors searched together (one stitched light curve). */
+export type SurveySeason = {
+  sectors: number[];
+  pipeline: string;
+  /** The light-curve files (MAST URIs), one per sector. */
+  files: { sector: number; pipeline: "SPOC" | "TESS-SPOC" | "QLP"; uri: string }[];
+  status: "pending" | "ok" | "error";
+  error?: string;
+  /** Failed downloads so far (MAST times out now and then; a season gets one more try). */
+  tries?: number;
+  points?: number;
+  days?: number;
+  /** Time ranges (BTJD) the light curve actually covers, for alias pruning and recovery checks. */
+  coverage?: [number, number][];
+  signals?: TransitSignal[];
+  singles?: SingleDip[];
+  ls?: { period: number; amplitude: number; power: number; fap: number; variable: boolean };
+  prewhitened?: number[];
+  radius?: number;
+  logg?: number;
+  ms?: number;
+};
+
+export type SurveyStar = {
+  tic: string; name: string; otype: string; ra: number; dec: number; vmag?: number;
+  /** Search order: higher first (the Strategist's score, bumped when a season turns up something). */
+  priority: number;
+  playbook: Playbook; why: string;
+  masked: string[]; // known planets / TOIs masked before searching
+  masks: { period: number; t0: number; duration: number }[];
+  seasons: SurveySeason[];
+};
+
+export type SurveySummary = {
+  id: string; cone: Cone; status: SurveyStatus;
+  createdAt: number; updatedAt: number; finishedAt?: number;
+  llm: boolean; plan?: SkyPlan;
+  planned: boolean; // the inventory and plan are in (done by the first step)
+  stars: number; seasons: number; seasonsDone: number; seasonsFailed: number; lightCurves: number;
+  cpuMs: number; steps: number;
+  finds: number; candidates: number;
+  error?: string; note?: string;
+};
+
+/** A star's progress in a survey, as the page lists it. */
+export type SurveyStarRow = { tic: string; name: string; ra: number; dec: number; playbook: Playbook; priority: number; seasons: number; done: number; failed: number; signals: number; singles: number; variable: boolean };
+
+export type SurveyView = { survey: SurveySummary; notes: SkyNote[]; objects: SkyObject[]; stars: SurveyStarRow[]; backend: string };

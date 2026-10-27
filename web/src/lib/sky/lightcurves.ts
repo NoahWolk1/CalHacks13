@@ -45,10 +45,10 @@ export function coneBox(c: Cone): { ra: { min: number; max: number }[]; dec: { m
 }
 
 /** CAOM: every TESS-mission (SPOC) light curve whose target lies in the cone's RA/Dec box. */
-export function spocBoxRequest(c: Cone): RequestInit {
+export function spocBoxRequest(c: Cone, page = 1): RequestInit {
   const box = coneBox(c);
   return mastForm({
-    service: "Mast.Caom.Filtered", format: "json", pagesize: 5000, page: 1,
+    service: "Mast.Caom.Filtered", format: "json", pagesize: 5000, page,
     params: {
       columns: LC_COLUMNS,
       filters: [
@@ -93,15 +93,15 @@ export function parseLcProducts(json: unknown): LcProduct[] {
   return out;
 }
 
-export function fieldStarsQuery(c: Cone, cap = FIELD_CAP) {
+export function fieldStarsQuery(c: Cone, cap = FIELD_CAP, vmax = FIELD_VMAX) {
   return `SELECT TOP ${cap} b.main_id, b.otype, b.ra, b.dec, f.V AS vmag, i.id AS tic, f.V + 0 AS rank `
     + `FROM basic AS b JOIN allfluxes AS f ON f.oidref = b.oid JOIN ident AS i ON i.oidref = b.oid `
     + `WHERE CONTAINS(POINT('ICRS', b.ra, b.dec), CIRCLE('ICRS', ${adqlNum(c.ra)}, ${adqlNum(c.dec)}, ${adqlNum(c.radius)})) = 1 `
-    + `AND f.V < ${FIELD_VMAX} AND i.id LIKE 'TIC %' ORDER BY rank`;
+    + `AND f.V < ${vmax} AND i.id LIKE 'TIC %' ORDER BY rank`;
 }
 
-export const fieldStarsUrl = (c: Cone, cap = FIELD_CAP) =>
-  `${SIMBAD_TAP}?${new URLSearchParams({ REQUEST: "doQuery", LANG: "ADQL", FORMAT: "json", QUERY: fieldStarsQuery(c, cap) })}`;
+export const fieldStarsUrl = (c: Cone, cap = FIELD_CAP, vmax = FIELD_VMAX) =>
+  `${SIMBAD_TAP}?${new URLSearchParams({ REQUEST: "doQuery", LANG: "ADQL", FORMAT: "json", QUERY: fieldStarsQuery(c, cap, vmax) })}`;
 
 export function parseFieldStars(json: unknown): FieldStar[] {
   const t = json as { metadata?: { name: string }[]; data?: unknown[][] };
@@ -261,4 +261,67 @@ export function inventoryObject(c: Cone, inv: FieldInventory): SkyObject | null 
   if (named.length) props["brightest targets"] = named.join(", ");
   if (!inv.simbad) props.note = "SIMBAD star list unavailable this run: SPOC 2-min targets only";
   return { id: "", name: "TESS light curves", type: "TESS photometry", category: "observation", ra: c.ra, dec: c.dec, source: "telescopes", url: mastPortalUrl(c.ra, c.dec, c.radius), props };
+}
+
+// ── deep-survey inventory: every light curve the field has, not a quick sample ──
+
+/** Deep surveys go fainter and take every SIMBAD star with a TIC id (and every SPOC target). */
+export const SURVEY_VMAX = 13.5;
+export const SURVEY_STAR_CAP = 2000;
+const SURVEY_PAGES = 6;
+const HLSP_CHUNK = 80;
+
+/** The full inventory for a deep survey: all SPOC pages, SIMBAD stars to V 13.5, and their FFI light
+ *  curves (by TIC id in chunks, a few at a time). Slower than fieldInventory (tens of seconds for a
+ *  large cone) but complete; failures of the enrichment leave the SPOC targets. */
+export async function surveyInventory(c: Cone, signal: AbortSignal): Promise<FieldInventory & { notes: string[] }> {
+  const notes: string[] = [];
+  const spoc: LcProduct[] = [];
+  for (let page = 1; page <= SURVEY_PAGES; page++) {
+    const rows = parseLcProducts(await getJson(MAST_API, { init: spocBoxRequest(c, page), timeoutMs: 30_000, signal, retries: 1 }));
+    spoc.push(...rows);
+    if (rows.length < 4000) break; // last page (5000 rows a page, some filtered out in parsing)
+    if (page === SURVEY_PAGES) notes.push(`SPOC inventory stopped at ${SURVEY_PAGES} pages`);
+  }
+  let stars: FieldStar[] = [];
+  const hlsp: LcProduct[] = [];
+  try {
+    stars = parseFieldStars(await getJson(fieldStarsUrl(c, SURVEY_STAR_CAP, SURVEY_VMAX), { timeoutMs: 45_000, signal, retries: 1 }));
+    if (stars.length >= SURVEY_STAR_CAP) notes.push(`SIMBAD star list capped at ${SURVEY_STAR_CAP} stars`);
+    const chunks: string[][] = [];
+    for (let i = 0; i < stars.length; i += HLSP_CHUNK) chunks.push(stars.slice(i, i + HLSP_CHUNK).map((s) => s.tic));
+    let next = 0, failed = 0;
+    await Promise.all(Array.from({ length: Math.min(3, chunks.length) }, async () => {
+      while (next < chunks.length) {
+        const chunk = chunks[next++];
+        try { hlsp.push(...parseLcProducts(await getJson(MAST_API, { init: hlspRequest(chunk), timeoutMs: 20_000, signal, retries: 1 }))); }
+        catch { failed++; }
+      }
+    }));
+    if (failed) notes.push(`${failed} of ${chunks.length} full-frame-image lookups failed`);
+  } catch (e) {
+    notes.push(`SIMBAD star list failed (${(e as Error).message.slice(0, 80)}): SPOC 2-min targets only`);
+  }
+  const products = [...spoc.filter((p) => p.ra === undefined || p.dec === undefined || separation(c.ra, c.dec, p.ra, p.dec) <= c.radius), ...hlsp];
+  return { stars: mergeStars(c, stars, products), products, simbad: stars.length > 0, notes };
+}
+
+/** Every sector of a star, best pipeline per sector (SPOC > TESS-SPOC > QLP), grouped into seasons of
+ *  up to `per` sectors spanning fewer than SECTOR_SPAN sector numbers, latest season first. Each season
+ *  is searched on its own; a signal seen in several seasons is independently confirmed. */
+export function seasonsFor(products: LcProduct[], tic: string, per = 4): LcProduct[][] {
+  const best = new Map<number, LcProduct>();
+  for (const p of products) {
+    if (p.tic !== tic) continue;
+    const b = best.get(p.sector);
+    if (!b || RANK[p.pipeline] < RANK[b.pipeline]) best.set(p.sector, p);
+  }
+  const list = [...best.values()].sort((a, b) => a.sector - b.sector);
+  const out: LcProduct[][] = [];
+  for (const p of list) {
+    const cur = out[out.length - 1];
+    if (cur && cur.length < per && p.sector - cur[0].sector < SECTOR_SPAN) cur.push(p);
+    else out.push([p]);
+  }
+  return out.reverse();
 }
