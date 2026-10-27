@@ -78,3 +78,4 @@
   - Figma is a process track: only worth it if we start a stage log now.
 - [x] Project name: **Coordinate** (2026-10-25; set in `web/src/lib/brand.ts`, live at coordinate-agents.vercel.app).
 - [ ] Who presents the 2-minute pitch, who runs the live demo.
+- **2026-10-27: Space missions + /sky → /space.** Research runs on the space page are recorded as missions (SpacetimeDB `sky_missions` + `sky_mission_events`, file store in dev), so `/space?mission=<id>` replays a run or follows it live, matching Earth's shareable runs. Viewers poll every 2 s rather than subscribe: the space page doesn't load the SpacetimeDB client, and runs last minutes, not hours. Recording never fails a run. The page is renamed Space (route `/space`, labels, metadata); `/sky` redirects with its query string so shared survey links keep working. API paths stay `/api/sky/*`.
