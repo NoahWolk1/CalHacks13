@@ -8,7 +8,7 @@ import type { SkyActivity } from "@/lib/client/skyFleet";
 import { Body, Equator, Observer } from "astronomy-engine";
 import { APP_NAME } from "@/lib/brand";
 import { formatDec, formatRa, parseCone } from "@/lib/sky/geom";
-import { SKY_MAX_RADIUS, type AnalysisStar, type Cone, type SkyAnalysis, type SkyEvent, type SkyObject, type SkyObserver, type SkySourceReport, type SkySummary, type StarResult } from "@/lib/sky/types";
+import { isNewFind, SKY_MAX_RADIUS, type AnalysisStar, type Cone, type SkyAnalysis, type SkyEvent, type SkyNote, type SkyObject, type SkyObserver, type SkyPlan, type SkySourceReport, type SkySummary, type StarResult } from "@/lib/sky/types";
 import { CATEGORY_STYLE, SURVEYS, type AtlasApi } from "./SkyAtlas";
 import SkySearch from "./SkySearch";
 
@@ -25,10 +25,11 @@ export const SAMPLES: { name: string; note: string; cone: Cone }[] = [
   { name: "Pleiades", note: "M45 open cluster", cone: { ra: 56.75, dec: 24.117, radius: 1.2 } },
   { name: "Andromeda", note: "M31 + satellites", cone: { ra: 10.685, dec: 41.269, radius: 1.5 } },
   { name: "TRAPPIST-1", note: "7 rocky planets", cone: { ra: 346.626, dec: -5.043, radius: 0.5 } },
+  { name: "TESS deep field", note: "20+ sectors near the south ecliptic pole: discovery hunt", cone: { ra: 90, dec: -66.56, radius: 0.5 } },
   { name: "Jupiter now", note: "Live position", cone: jupiterNow() },
 ];
 
-const QUESTIONS = ["What's the most interesting thing here?", "Are there any planets here?", "Any new transit candidates in the light curves?", "How far away are these objects?"];
+const QUESTIONS = ["What's the most interesting thing here?", "Did the agents find anything new?", "Are there any planets here?", "How far away are these objects?"];
 
 type Status = "idle" | "running" | "summarising" | "done" | "error";
 
@@ -52,6 +53,8 @@ export default function SkyApp() {
   // Light-curve analysis agents (streamed alongside the catalog results).
   const [lcStars, setLcStars] = useState<AnalysisStar[]>([]);
   const [lcResults, setLcResults] = useState<StarResult[]>([]);
+  const [plan, setPlan] = useState<SkyPlan | null>(null);
+  const [notes, setNotes] = useState<SkyNote[]>([]);
   const [analysis, setAnalysis] = useState<{ analysis: SkyAnalysis | null; note?: string; ms: number } | null>(null);
   const [run, setRun] = useState(0);
   const api = useRef<AtlasApi | null>(null);
@@ -71,7 +74,7 @@ export default function SkyApp() {
     const ctl = new AbortController();
     abort.current = ctl;
     setStatus("running"); setObjects([]); setSources([]); setSummary(null); setObs(null); setObserving(false); setNote(null); setError(null); setSelected(null); setTiming({});
-    setLcStars([]); setLcResults([]); setAnalysis(null); setRun((n) => n + 1);
+    setLcStars([]); setLcResults([]); setPlan(null); setNotes([]); setAnalysis(null); setRun((n) => n + 1);
     try {
       const res = await fetch("/api/sky/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...c, question: q.trim() || undefined }), signal: ctl.signal });
       if (!res.ok || !res.body) throw new Error(`${res.status} ${res.statusText}`);
@@ -90,7 +93,8 @@ export default function SkyApp() {
           const e = JSON.parse(line) as SkyEvent;
           if (e.type === "results") { setObserving(e.objects.length > 0); setObjects((o) => [...e.objects, ...o]); setSources(e.sources); setTiming((t) => ({ ...t, results: e.ms })); setStatus("summarising"); }
           else if (e.type === "archive") setObjects((o) => [...o, ...e.objects]);
-          else if (e.type === "analysis-start") setLcStars(e.stars);
+          else if (e.type === "analysis-start") { setLcStars(e.stars); setPlan(e.plan ?? null); }
+          else if (e.type === "analysis-note") setNotes((n) => [...n, e.note]);
           else if (e.type === "analysis-star") setLcResults((r) => [...r, e.result]);
           else if (e.type === "analysis") { setAnalysis({ analysis: e.analysis, note: e.note, ms: e.ms }); if (e.analysis?.objects.length) setObjects((o) => [...o, ...e.analysis!.objects]); }
           else if (e.type === "summary") { setSummary(e.summary); setNote(e.note ?? null); setTiming((t) => ({ ...t, summary: e.ms })); setStatus("done"); }
@@ -237,7 +241,7 @@ export default function SkyApp() {
             </section>
           )}
 
-          {(lcStars.length > 0 || analysis || (status === "summarising" && !analysis)) && <AnalysisSection stars={lcStars} results={lcResults} analysis={analysis} running={busy && !analysis} byId={byId} onCite={select} />}
+          {(lcStars.length > 0 || analysis || (status === "summarising" && !analysis)) && <AnalysisSection stars={lcStars} results={lcResults} plan={plan} notes={notes} analysis={analysis} running={busy && !analysis} byId={byId} onCite={select} />}
 
           {(status === "summarising" || summary || note) && (
             <section className="border-b border-line p-4">
@@ -284,7 +288,7 @@ export default function SkyApp() {
 
           {status === "idle" && (
             <section className="p-4 text-[12.5px] leading-relaxed text-fg3">
-              Pan and zoom the sky, then draw a circle or use the current view. Sky agents query SIMBAD, the NASA Exoplanet Archive, JPL Horizons and MAST live; analysis agents download real TESS light curves of the field&apos;s stars and search them for transits (Box Least Squares) and variability (Lomb-Scargle); Claude writes a cited summary.
+              Pan and zoom the sky, then draw a circle or use the current view. Sky agents query SIMBAD, the NASA Exoplanet Archive, JPL Horizons and MAST live. A Strategist picks the stars where something new can still hide; discovery agents stitch their real TESS light curves and hunt for extra planets around known hosts, long-period and single transits, and variable stars no catalog lists; a Follow-up agent re-tests every find on data the search never saw. Claude writes a cited summary.
             </section>
           )}
         </aside>
@@ -353,27 +357,71 @@ function ObserverSection({ obs, byId, onCite }: { obs: { observer: SkyObserver |
   );
 }
 
-const AGENT_COLOR: Record<string, string> = { lightcurves: "#5ec8d8", transits: "#f2c35b", variability: "#b39dff", vetting: "#ff8f7a" };
+const AGENT_COLOR: Record<string, string> = { strategist: "#7fd1b9", lightcurves: "#5ec8d8", transits: "#f2c35b", singles: "#f7a35c", variability: "#b39dff", vetting: "#ff8f7a", census: "#c9a0ff", followup: "#8fd16a" };
+const PLAYBOOK: Record<AnalysisStar["playbook"], string> = { "multi-planet": "multi-planet", "long-period": "long-period", "deep-search": "deep", census: "census" };
 const fmt = (n: number, d = 3) => (Number.isFinite(n) ? +n.toPrecision(d) : "n/a");
+const sectorList = (s: number[]) => (s.length > 2 && s[s.length - 1] - s[0] === s.length - 1 ? `s${s[0]}–${s[s.length - 1]}` : `s${s.join(",")}`);
 
-/** Light-curve analysis agents: per-star progress while running, then each agent's report and the
- *  Vetter's verdicts. Unvetted candidates are labelled as needing follow-up, never as discoveries. */
-function AnalysisSection({ stars, results, analysis, running, byId, onCite }: {
-  stars: AnalysisStar[]; results: StarResult[]; analysis: { analysis: SkyAnalysis | null; note?: string; ms: number } | null; running: boolean;
+/** One-line numbers for a find: period or time, depth, SNR. */
+function findLine(o: SkyObject) {
+  const p = o.props;
+  if (o.category === "variable") return `TIC ${p.TIC} · P ${p["period (days)"]} d · ${p["amplitude (ppt)"]} ppt`;
+  const when = p["period (days)"] !== undefined ? `P ${p["period (days)"]} d` : `BTJD ${p["time (BTJD)"]}`;
+  return `TIC ${p.TIC} · ${when} · depth ${p["depth (ppt)"]} ppt · ${p["duration (hours)"]} h · SNR ${p.SNR}${p["implied radius (Earth = 1)"] ? ` · ~${p["implied radius (Earth = 1)"]} R⊕` : ""}`;
+}
+
+/** Light-curve discovery agents: the Strategist's plan and notebook, per-star progress while running,
+ *  then each agent's report, the new finds (labelled as candidates needing follow-up, never as
+ *  discoveries) and everything the Vetter rejected. */
+function AnalysisSection({ stars, results, plan, notes, analysis, running, byId, onCite }: {
+  stars: AnalysisStar[]; results: StarResult[]; plan: SkyPlan | null; notes: SkyNote[]; analysis: { analysis: SkyAnalysis | null; note?: string; ms: number } | null; running: boolean;
   byId: Map<string, SkyObject>; onCite: (id: string) => void;
 }) {
   const a = analysis?.analysis;
   const byTic = new Map(results.map((r) => [r.tic, r]));
-  const signals = a?.objects.filter((o) => o.category === "candidate") ?? [];
+  const finds = a?.objects.filter(isNewFind) ?? [];
+  const rejected = a?.objects.filter((o) => o.category === "candidate" && !isNewFind(o)) ?? [];
+  const cite = (ids?: string[]) => ids?.filter((id) => byId.has(id)).map((id) => (
+    <button key={id} onClick={() => onCite(id)} className="num ml-1 rounded border border-line px-1 text-[10.5px] text-fg3 hover:text-fg1">{id}</button>
+  ));
   return (
     <section className="border-b border-line p-4">
       <div className="mb-2 flex items-baseline justify-between text-[11.5px] uppercase tracking-[0.06em] text-fg3">
-        <span>Light-curve analysis</span>
+        <span>Discovery agents</span>
         {analysis && <span className="num normal-case tracking-normal text-fg4">{(analysis.ms / 1000).toFixed(1)}s</span>}
       </div>
-      {running && !stars.length && <div className="caret text-[12.5px] text-fg3">Finding TESS light curves for the stars in this cone</div>}
+      {running && !stars.length && <div className="caret text-[12.5px] text-fg3">Strategist is ranking the field&apos;s stars by where something new can still hide</div>}
       {analysis && !a && <div className="text-[12.5px] text-fg3">{analysis.note ?? "Light-curve analysis unavailable this run."}</div>}
       {a?.note && <div className="text-[12.5px] text-fg3">{a.note}</div>}
+      {notes.length > 0 && (
+        <ol className="mb-2.5 space-y-1 border-l-2 pl-2.5" style={{ borderColor: AGENT_COLOR.strategist + "66" }}>
+          {notes.map((n, i) => (
+            <li key={i} className="text-[12.5px] leading-snug">
+              <span className="mr-1.5 text-[10.5px] uppercase tracking-[0.05em]" style={{ color: AGENT_COLOR[n.agent] }}>{n.agent === "strategist" ? (i === 0 && plan ? `Strategist${plan.by === "claude" ? " · Claude" : ""}` : "Strategist") : n.agent === "followup" ? "Follow-up" : n.agent}</span>
+              <span className="text-fg2">{n.text}</span>{cite(n.ids)}
+            </li>
+          ))}
+          {running && stars.length > 0 && <li className="caret text-[12px] text-fg4">agents working</li>}
+        </ol>
+      )}
+      {a && finds.length > 0 && (
+        <div className="mb-2.5">
+          <div className="mb-1 text-[11.5px] text-[#f2c35b]">{finds.length} new find{finds.length === 1 ? "" : "s"}: candidates for follow-up, not confirmed discoveries</div>
+          <ul className="space-y-1.5">
+            {finds.map((o) => (
+              <li key={o.id} className="rounded-md border border-[#f2c35b]/50 bg-[#f2c35b]/[0.06] px-2.5 py-1.5 text-[12.5px]">
+                <button onClick={() => onCite(o.id)} className="flex w-full items-center gap-2 text-left">
+                  <span className="num shrink-0 text-[11px] text-fg4">{o.id}</span>
+                  <span className="truncate text-[#f2c35b]">{o.type}</span>
+                </button>
+                <div className="num mt-0.5 text-[11.5px] text-fg3">{findLine(o)}</div>
+                {o.props["follow-up"] && <div className="mt-0.5 text-[11.5px] text-fg2">Follow-up: {o.props["follow-up"]}</div>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {a && !finds.length && !running && stars.length > 0 && <div className="mb-2 text-[12.5px] text-fg3">Nothing new survived vetting in the {stars.length} star{stars.length === 1 ? "" : "s"} searched.</div>}
       {a && a.agents.length > 0 && (
         <ul className="mb-2 space-y-1">
           {a.agents.map((r) => (
@@ -384,45 +432,35 @@ function AnalysisSection({ stars, results, analysis, running, byId, onCite }: {
           ))}
         </ul>
       )}
-      {signals.length > 0 && (
-        <ul className="mb-2 space-y-1.5">
-          {signals.map((o) => {
-            const fresh = o.type.startsWith("Unvetted");
-            return (
-              <li key={o.id} className={`rounded-md border px-2.5 py-1.5 text-[12.5px] ${fresh ? "border-[#f2c35b]/50 bg-[#f2c35b]/[0.06]" : "border-line"}`}>
-                <button onClick={() => onCite(o.id)} className="flex w-full items-center gap-2 text-left">
-                  <span className="num shrink-0 text-[11px] text-fg4">{o.id}</span>
-                  <span className={`truncate ${fresh ? "text-[#f2c35b]" : "text-fg1"}`}>{o.type}</span>
-                </button>
-                <div className="num mt-0.5 text-[11.5px] text-fg3">
-                  TIC {o.props.TIC} · P {o.props["period (days)"]} d · depth {o.props["depth (ppt)"]} ppt · {o.props["duration (hours)"]} h · SNR {o.props.SNR}
-                </div>
-                {fresh && <div className="mt-0.5 text-[11.5px] text-fg3">Unvetted candidate: needs follow-up observations, not a confirmed planet.</div>}
-              </li>
-            );
-          })}
-        </ul>
+      {rejected.length > 0 && (
+        <details className="mb-2 text-[12px]">
+          <summary className="cursor-pointer text-fg3">{rejected.length} signal{rejected.length === 1 ? "" : "s"} explained or rejected by the Vetter</summary>
+          <ul className="mt-1 space-y-0.5">
+            {rejected.map((o) => (
+              <li key={o.id}><button onClick={() => onCite(o.id)} className="flex w-full gap-2 text-left"><span className="num shrink-0 text-[11px] text-fg4">{o.id}</span><span className="truncate text-fg2">{o.type}</span><span className="num ml-auto shrink-0 text-fg4">TIC {o.props.TIC}</span></button></li>
+            ))}
+          </ul>
+        </details>
       )}
       {stars.length > 0 && (
         <ul className="space-y-0.5">
           {stars.map((s) => {
             const r = byTic.get(s.tic);
             const t = r?.transit, v = r?.variability;
+            const nSig = r?.signals?.length ?? (t?.detected ? 1 : 0), nSingle = r?.singles?.length ?? 0;
             return (
-              <li key={s.tic} className="flex items-center gap-2 text-[12px]">
-                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${!r ? "animate-pulse bg-fg4" : r.status !== "ok" ? "bg-risk" : t?.detected ? "bg-[#f2c35b]" : "bg-ok"}`} />
+              <li key={s.tic} className="flex items-center gap-2 text-[12px]" title={s.why}>
+                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${!r ? "animate-pulse bg-fg4" : r.status !== "ok" ? "bg-risk" : nSig || nSingle ? "bg-[#f2c35b]" : "bg-ok"}`} />
                 <a href={`https://exofop.ipac.caltech.edu/tess/target.php?id=${s.tic}`} target="_blank" rel="noreferrer" className="num shrink-0 text-fg2 hover:text-fg1">TIC {s.tic}</a>
-                <span className="truncate text-fg4">{s.name.startsWith("TIC ") ? `${s.pipeline} s${s.sector}` : `${s.name} · ${s.pipeline} s${s.sector}`}</span>
+                <span className="shrink-0 rounded border border-line px-1 text-[10.5px] text-fg3">{PLAYBOOK[s.playbook]}</span>
+                <span className="truncate text-fg4">{s.name.startsWith("TIC ") ? `${s.pipeline} ${sectorList(s.sectors)}` : `${s.name} · ${s.pipeline} ${sectorList(s.sectors)}`}</span>
                 <span className="num ml-auto shrink-0 text-[11.5px] text-fg3" title={r?.error}>
-                  {!r ? "…" : r.status !== "ok" ? r.status === "skipped" ? "skipped" : "failed" : [t?.detected ? `dip P ${fmt(t.period, 4)} d` : "no transit", v?.variable ? `var ${fmt(v.period)} d` : null].filter(Boolean).join(" · ")}
+                  {!r ? "…" : r.status !== "ok" ? r.status === "skipped" ? "skipped" : "failed" : [nSig ? `${nSig} signal${nSig === 1 ? "" : "s"}${t?.detected ? ` P ${fmt(t.period, 4)} d` : ""}` : "no transit", nSingle ? `${nSingle} dip${nSingle === 1 ? "" : "s"}` : null, v?.variable ? `var ${fmt(v.period)} d` : null].filter(Boolean).join(" · ")}
                 </span>
               </li>
             );
           })}
         </ul>
-      )}
-      {a && byId.size > 0 && a.objects.some((o) => o.category === "variable") && (
-        <div className="mt-2 text-[11.5px] text-fg4">Variable stars: {a.objects.filter((o) => o.category === "variable").map((o) => o.id).join(", ")} in the results list.</div>
       )}
     </section>
   );

@@ -15,7 +15,7 @@ import type { Cone, SkyObject } from "./types";
 
 export type FieldStar = { tic: string; name: string; otype: string; ra: number; dec: number; vmag?: number };
 export type LcProduct = { tic: string; pipeline: "SPOC" | "TESS-SPOC" | "QLP"; sector: number; cadence: number; uri: string; ra?: number; dec?: number };
-export type LightCurve = { tic: string; pipeline: LcProduct["pipeline"]; sector: number; time: Float64Array; flux: Float64Array; quality: Float64Array; tessmag?: number; teff?: number; radius?: number };
+export type LightCurve = { tic: string; pipeline: LcProduct["pipeline"]; sector: number; time: Float64Array; flux: Float64Array; quality: Float64Array; tessmag?: number; teff?: number; radius?: number; logg?: number };
 
 /** Stars brighter than this have SIMBAD TIC cross-ids and FFI light curves often enough to be worth it. */
 export const FIELD_VMAX = 12.5;
@@ -147,6 +147,38 @@ export function pickLightCurves(c: Cone, stars: FieldStar[], products: LcProduct
     .slice(0, cap);
 }
 
+/** A star's light curves for a multi-sector search: up to `k` sectors from one pipeline (the one with
+ *  the most sectors, better pipeline on ties), from the densest run of nearby sectors so the stitched
+ *  baseline stays short enough to search finely. The rest are held out: the Follow-up agent re-tests
+ *  signals on sectors the search never saw. */
+export function sectorsFor(products: LcProduct[], tic: string, k: number): { use: LcProduct[]; heldOut: LcProduct[] } {
+  const mine = products.filter((p) => p.tic === tic);
+  const by = new Map<LcProduct["pipeline"], Map<number, LcProduct>>();
+  for (const p of mine) {
+    const m = by.get(p.pipeline) ?? new Map<number, LcProduct>();
+    if (!m.has(p.sector)) m.set(p.sector, p);
+    by.set(p.pipeline, m);
+  }
+  const pipes = [...by].sort((a, b) => b[1].size - a[1].size || RANK[a[0]] - RANK[b[0]]);
+  if (!pipes.length) return { use: [], heldOut: [] };
+  const list = [...pipes[0][1].values()].sort((a, b) => a.sector - b.sector);
+  // Densest window of at most k sectors spanning <= SECTOR_SPAN sector numbers, latest on ties.
+  let best: LcProduct[] = [];
+  for (let i = 0; i < list.length; i++) {
+    const w = list.filter((p) => p.sector >= list[i].sector && p.sector - list[i].sector < SECTOR_SPAN).slice(0, k);
+    if (w.length >= best.length) best = w;
+  }
+  // Held out: other sectors of the same pipeline first (same systematics), then other pipelines'
+  // sectors (not the ones in use: the same photons reduced differently aren't independent).
+  const sectors = new Set(best.map((p) => p.sector));
+  const other = pipes.slice(1).flatMap(([, m]) => [...m.values()]).filter((p) => !sectors.has(p.sector)).sort((a, b) => b.sector - a.sector);
+  const heldOut = [...list.filter((p) => !sectors.has(p.sector)).reverse(), ...other.filter((p, i, a) => a.findIndex((q) => q.sector === p.sector) === i)];
+  return { use: best, heldOut };
+}
+
+/** Stitched sectors span at most this many sector numbers (~5 x 27 d), so the BLS grid stays affordable. */
+export const SECTOR_SPAN = 5;
+
 export const mastDownloadUrl = (uri: string) => `https://mast.stsci.edu/api/v0.1/Download/file?uri=${encodeURIComponent(uri)}`;
 
 /** Light-curve columns from a SPOC / TESS-SPOC (PDCSAP_FLUX) or QLP (KSPSAP_FLUX) FITS file. */
@@ -154,15 +186,17 @@ export function parseLightCurve(buf: ArrayBuffer, product: Pick<LcProduct, "tic"
   const hdus = readHdus(buf);
   const lc = hdus.find((h) => h.header.EXTNAME === "LIGHTCURVE") ?? hdus[1];
   if (!lc) throw new Error("no LIGHTCURVE extension");
-  const fluxCol = product.pipeline === "QLP" ? "KSPSAP_FLUX" : "PDCSAP_FLUX";
-  const tab = readTable(buf, lc, ["TIME", fluxCol, "QUALITY"]);
-  if (!tab.columns.TIME || !tab.columns[fluxCol]) throw new Error(`light curve lacks TIME/${fluxCol}`);
+  // QLP renamed its detrended flux KSPSAP_FLUX -> DET_FLUX in later sectors (DET_FLUX in sector 104, 2026).
+  const cols = product.pipeline === "QLP" ? ["KSPSAP_FLUX", "DET_FLUX"] : ["PDCSAP_FLUX"];
+  const tab = readTable(buf, lc, ["TIME", ...cols, "QUALITY"]);
+  const fluxCol = cols.find((c) => tab.columns[c]);
+  if (!tab.columns.TIME || !fluxCol) throw new Error(`light curve lacks TIME/${cols.join(" or ")}`);
   const h0 = hdus[0].header;
   const pos = (v: unknown) => (typeof v === "number" && v > 0 ? v : undefined);
   return {
     tic: product.tic, pipeline: product.pipeline, sector: product.sector,
     time: tab.columns.TIME, flux: tab.columns[fluxCol], quality: tab.columns.QUALITY ?? new Float64Array(tab.rows),
-    tessmag: pos(h0.TESSMAG), teff: pos(h0.TEFF), radius: pos(h0.RADIUS),
+    tessmag: pos(h0.TESSMAG), teff: pos(h0.TEFF), radius: pos(h0.RADIUS), logg: pos(h0.LOGG),
   };
 }
 
