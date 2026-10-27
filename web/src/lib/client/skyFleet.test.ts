@@ -19,7 +19,7 @@ describe("sky fleet", () => {
 
   it("summons every agent from the command post and keeps all of them inside the cone", () => {
     const f = new SkyFleet();
-    const stars = Array.from({ length: 6 }, (_, i) => ({ tic: String(i), name: `TIC ${i}`, otype: "", ra: cone.ra + (i - 3) * 0.7, dec: cone.dec + (i % 3) - 1, pipeline: "SPOC", sector: 33 }));
+    const stars = Array.from({ length: 6 }, (_, i) => ({ tic: String(i), name: `TIC ${i}`, otype: "", ra: cone.ra + (i - 3) * 0.7, dec: cone.dec + (i % 3) - 1, pipeline: "SPOC", sector: 33, sectors: [33], heldOut: 0, playbook: "census" as const, why: "", masked: [] }));
     const a: SkyActivity = { run: 1, status: "running", sources: [], objects: [], stars: [], starResults: [], analysisDone: false, observer: "idle" };
     let now = 0;
     f.sync(a, cone, now);

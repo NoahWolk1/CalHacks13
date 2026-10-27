@@ -10,7 +10,7 @@ import { decideLlm } from "@/lib/server/llmQuota";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+export const maxDuration = 300; // the discovery pipeline's budget is 150 s (analysis.ts), plus summary
 
 // POST {ra, dec, radius, question?} (degrees; an optional question turns the summary into a cited answer). Streams NDJSON SkyEvents: "results" as soon as every sky agent
 // has answered (or failed); meanwhile the light-curve analysis agents stream "analysis-start" /
@@ -34,8 +34,11 @@ export async function POST(req: Request) {
         try { controller.enqueue(enc.encode(JSON.stringify(e) + "\n")); } catch { /* closed */ }
       };
       try {
+        // Same hourly Claude caps as /api/run (per IP + global), decided up front: the Strategist plans
+        // with Claude while the catalog agents are still answering.
+        const deciding = decideLlm(req, liveStore());
         // Light-curve analysis runs alongside the catalog agents (it shares their TESS inventory lookup).
-        const analysing: Promise<SkyAnalysis | null> = runAnalysis(cone, ctl.signal, send, t0)
+        const analysing: Promise<SkyAnalysis | null> = runAnalysis(cone, ctl.signal, send, t0, deciding.then((d) => d.llm, () => false))
           .then((analysis) => { send({ type: "analysis", analysis, ms: Date.now() - t0 }); return analysis; })
           .catch((e: Error) => {
             console.warn("[sky] analysis failed:", e.message);
@@ -44,10 +47,9 @@ export async function POST(req: Request) {
           });
         const { objects: found, sources } = await runSkyAgents(cone, ctl.signal);
         send({ type: "results", cone, objects: found, sources, ms: Date.now() - t0 });
-        // Same hourly Claude caps as /api/run (per IP + global), decided now so the Observer can start
-        // while the light-curve agents are still working (it only looks at the catalog results).
-        const decision = found.length ? await decideLlm(req, liveStore()) : null;
-        const observing = decision?.llm
+        // The Observer starts while the light-curve agents are still working (it only looks at the catalog results).
+        const decision = await deciding;
+        const observing = found.length && decision.llm
           ? skyObserver(cone, found, ctl.signal)
             .then((observer) => send({ type: "observer", observer, ms: Date.now() - t0 }))
             .catch((e: Error) => {
@@ -71,7 +73,7 @@ export async function POST(req: Request) {
           send({ type: "summary", summary: null, note: "Nothing found in this region, so there is nothing to summarise.", ms: Date.now() - t0 });
           return;
         }
-        const llmOk = decision ?? await decideLlm(req, liveStore());
+        const llmOk = decision;
         if (!llmOk.llm) {
           send({ type: "summary", summary: null, note: llmOk.limited ? "Hourly Claude limit reached: showing raw results." : "No Claude key configured: showing raw results.", ms: Date.now() - t0 });
           send({ type: "observer", observer: null, note: llmOk.limited ? "Hourly Claude limit reached: Observer skipped." : "No Claude key configured: Observer skipped.", ms: Date.now() - t0 });

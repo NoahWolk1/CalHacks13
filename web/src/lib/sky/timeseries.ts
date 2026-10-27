@@ -86,3 +86,31 @@ export function clipUpper(s: Series, k = 4): Series {
   for (let i = 0; i < s.f.length; i++) if (s.f[i] - m <= k * sd) keep.push(i);
   return { t: Float64Array.from(keep, (i) => s.t[i]), f: Float64Array.from(keep, (i) => s.f[i]) };
 }
+
+/** Joins per-sector series (each already normalised to 1) into one, in time order. */
+export function stitch(parts: Series[]): Series {
+  const all = parts.filter((p) => p.t.length).sort((a, b) => a.t[0] - b.t[0]);
+  const n = all.reduce((k, p) => k + p.t.length, 0);
+  const t = new Float64Array(n), f = new Float64Array(n);
+  let o = 0;
+  for (const p of all) { t.set(p.t, o); f.set(p.f, o); o += p.t.length; }
+  return { t, f };
+}
+
+/** A periodic transit window to cut out: centre t0 (days), period and duration (days). */
+export type Ephemeris = { period: number; t0: number; duration: number };
+
+/** Drops points within `factor` x half a duration of any listed transit (known planets, or signals
+ *  already found), so the next search sees what's left. */
+export function maskTransits(s: Series, eph: Ephemeris[], factor = 1.5): Series {
+  if (!eph.length) return s;
+  const keep: number[] = [];
+  for (let i = 0; i < s.t.length; i++) {
+    const hit = eph.some((e) => {
+      const dt = s.t[i] - e.t0 - Math.round((s.t[i] - e.t0) / e.period) * e.period;
+      return Math.abs(dt) < (factor * e.duration) / 2;
+    });
+    if (!hit) keep.push(i);
+  }
+  return { t: Float64Array.from(keep, (i) => s.t[i]), f: Float64Array.from(keep, (i) => s.f[i]) };
+}

@@ -5,7 +5,7 @@
 // light curves it is analysing), beams to what it finds, and pulses on strong finds; unvetted
 // candidates keep a pulsing marker. Everything lives in cone-local unit-disc coordinates (0,0 =
 // cone centre, radius 1 = cone edge, x toward east, y toward north) and is clamped inside the disc.
-import type { AnalysisStar, Cone, SkyObject, SkySourceReport, StarResult } from "@/lib/sky/types";
+import { isNewFind, type AnalysisStar, type Cone, type SkyObject, type SkySourceReport, type StarResult } from "@/lib/sky/types";
 
 export type P = [number, number];
 export type Pattern = "lanes" | "spiral" | "passes" | "orbit" | "raster" | "hop";
@@ -129,9 +129,9 @@ export class SkyFleet {
       if (r.variability?.variable) this.marks.push({ at, color: hexRgb("#b39dff"), since: now, strong: false });
     }
     if (a.analysisDone && once("analysis-done")) {
-      for (const o of a.objects.filter((x) => x.category === "candidate")) {
+      for (const o of a.objects.filter((x) => x.category === "candidate" || isNewFind(x))) {
         const at = toDisc(cone, o.ra, o.dec);
-        const fresh = o.type.startsWith("Unvetted");
+        const fresh = isNewFind(o);
         this.visit("vetting", [at], fresh);
         if (fresh) this.marks.push({ at, color: hexRgb("#f2c35b"), since: now, strong: true });
       }

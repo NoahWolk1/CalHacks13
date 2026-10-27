@@ -1,14 +1,16 @@
 // Box Least Squares transit search (Kovács, Zucker & Mazeh 2002) on a flattened light curve, plus
 // the per-signal checks a transit vetter runs first: SNR, number of transits, odd/even depth
 // mismatch and a secondary eclipse at phase 0.5 (both tell-tale signs of an eclipsing binary).
-import { median, robustStd, type Series } from "./timeseries";
+import { maskTransits, median, robustStd, type Ephemeris, type Series } from "./timeseries";
 
 export type BlsOptions = {
   minPeriod?: number; // days
   maxPeriod?: number; // days; default: half the baseline, so at least two transits are possible
   durations?: number[]; // trial durations, days
-  /** Frequency step in units of shortest duration / baseline² (1 = transits drift at most one
-   *  shortest-duration across the baseline; default 1.5). The peak is refined on a finer grid. */
+  /** Frequency grid coarseness: neighbouring trial periods let transits drift by at most this many
+   *  shortest durations across the baseline (default 0.5). The grid is geometric (relative step
+   *  constant), as that drift scales with period: a uniform grid fine enough for long periods
+   *  oversamples short ones ~100x on multi-sector data. The peak is refined on a finer grid. */
   oversample?: number;
   maxFrequencies?: number;
 };
@@ -95,26 +97,29 @@ export function blsPeriodogram(s: Series, opts: BlsOptions = {}) {
   const maxP = Math.min(opts.maxPeriod ?? span / 2, span / 2);
   if (!(maxP > minP) || n < 50) throw new Error("light curve too short for a transit search");
   const fMin = 1 / maxP, fMax = 1 / minP;
-  let df = ((opts.oversample ?? 1.5) * durations[0]) / (span * span);
-  const cap = opts.maxFrequencies ?? 25_000;
-  if ((fMax - fMin) / df > cap) df = (fMax - fMin) / cap;
-  const nf = Math.floor((fMax - fMin) / df) + 1;
+  // Between neighbouring trial frequencies f and f(1 + r) the last transit in the baseline shifts by
+  // about span x r days, so r = drift / span keeps that shift at `drift` at every period.
+  let ratio = ((opts.oversample ?? 0.5) * durations[0]) / span;
+  const cap = opts.maxFrequencies ?? 50_000;
+  const range = Math.log(fMax / fMin);
+  if (range / Math.log1p(ratio) > cap - 1) ratio = Math.expm1(range / (cap - 1));
+  const nf = Math.max(1, Math.floor(range / Math.log1p(ratio)) + 1);
   const p = prepare(s, durations);
   const freq = new Float64Array(nf), power = new Float64Array(nf);
   const best: BlsPeak[] = new Array(nf);
   for (let j = 0; j < nf; j++) {
-    freq[j] = fMin + j * df;
+    freq[j] = fMin * Math.pow(1 + ratio, j);
     best[j] = boxAt(p, freq[j]);
     power[j] = best[j].power;
   }
-  return { freq, power, best, df, prepared: p };
+  return { freq, power, best, ratio, prepared: p };
 }
 
 /** Robust SDE of each periodogram point: subtract a running median (the slow rise of power toward
  *  long periods, where fewer transits make noisier boxes), then scale by the median absolute
  *  deviation. Median/MAD rather than mean/std so a strong signal's own harmonics and aliases don't
  *  inflate the noise estimate and bury the signal that made them. */
-export function sdeSpectrum(power: Float64Array, window = 1001) {
+export function sdeSpectrum(power: Float64Array, window = Math.max(101, Math.round(power.length / 20) | 1)) {
   const n = power.length, out = new Float64Array(n);
   // Running median sampled every `step` points and interpolated (exact per-point medians are O(n·w)).
   const step = Math.max(1, Math.floor(window / 8)), half = Math.floor(window / 2);
@@ -171,13 +176,13 @@ export function measureSignal(s: Series, peak: Pick<BlsPeak, "period" | "t0" | "
 /** Full search: periodogram, strongest peak by SDE, the period refined on a 20x finer grid around
  *  it, then the signal measured on the data. */
 export function bls(s: Series, opts: BlsOptions = {}): BlsResult {
-  const { freq, best, power, df, prepared } = blsPeriodogram(s, opts);
+  const { freq, best, power, ratio, prepared } = blsPeriodogram(s, opts);
   const sde = sdeSpectrum(power);
   let j = 0;
   for (let i = 1; i < sde.length; i++) if (sde[i] > sde[j]) j = i;
   let peak = best[j];
   for (let k = -20; k <= 20; k++) {
-    const b = boxAt(prepared, freq[j] + (k * df) / 20);
+    const b = boxAt(prepared, freq[j] * (1 + (k * ratio) / 20));
     if (b.power > peak.power) peak = b;
   }
   return { ...peak, sde: sde[j], ...measureSignal(s, peak), periods: power.length };
@@ -185,3 +190,28 @@ export function bls(s: Series, opts: BlsOptions = {}): BlsResult {
 
 /** Whether a BLS result clears the detection thresholds (before vetting). */
 export const blsDetected = (r: Pick<BlsResult, "sde" | "snr" | "transits" | "depth">) => r.sde >= BLS_MIN_SDE && r.snr >= BLS_MIN_SNR && r.transits >= BLS_MIN_TRANSITS && r.depth > 0;
+
+/** The transit window and the phase-0.5 window (secondary eclipse, phase-curve dip) of a signal. */
+export const bothPhases = (e: Ephemeris): Ephemeris[] => [e, { ...e, t0: e.t0 + e.period / 2 }];
+
+/** Iterative search, as Kepler's and TESS's pipelines do for multi-planet systems: search, and while
+ *  the strongest signal clears the thresholds, cut it out (transits and phase 0.5) and search what's
+ *  left. `mask` removes known planets first, so the first search already looks past them. A passing
+ *  peak at the period (or 2x / half) of one already cut out is that signal's residue: cut out too,
+ *  not reported. Returns every reported peak; the last one is the first that didn't pass. */
+export function searchSignals(s: Series, opts: BlsOptions & { maxSignals?: number; mask?: Ephemeris[] } = {}): BlsResult[] {
+  const out: BlsResult[] = [];
+  const seen = [...(opts.mask ?? [])];
+  let cur = maskTransits(s, seen.flatMap(bothPhases));
+  const max = opts.maxSignals ?? 3;
+  for (let k = 0; k < max + 2 && out.filter(blsDetected).length < max; k++) {
+    let r: BlsResult;
+    try { r = bls(cur, opts); } catch { break; } // too little data left
+    const residue = seen.some((e) => [1, 2, 0.5].some((m) => Math.abs(r.period / (e.period * m) - 1) < 0.01));
+    if (!residue) out.push(r);
+    if (!blsDetected(r)) { if (residue) out.push(r); break; }
+    seen.push(r);
+    cur = maskTransits(cur, bothPhases(r));
+  }
+  return out;
+}

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { analyseLightCurve } from "./analysis";
 import { bls, blsDetected, measureSignal } from "./bls";
-import { coneBox, mastDownloadUrl, mergeStars, parseLcProducts, pickLightCurves } from "./lightcurves";
+import { coneBox, mastDownloadUrl, mergeStars, parseLcProducts, parseLightCurve, pickLightCurves } from "./lightcurves";
 import { periodsMatch, toiQuery, vetSignal } from "./vetting";
 import { readHdus, readTable } from "./fits";
 import { isVariable, lombScargle } from "./lombscargle";
@@ -95,7 +95,7 @@ describe("Lomb-Scargle variability", () => {
 });
 
 /** Builds a tiny FITS file: empty primary HDU + a LIGHTCURVE binary table (TIME D, FLUX E, QUALITY J). */
-function fitsFile(rows: [number, number, number][]) {
+function fitsFile(rows: [number, number, number][], fluxName = "PDCSAP_FLUX") {
   const card = (s: string) => s.padEnd(80, " ");
   const header = (cards: string[]) => {
     const all = [...cards, "END"].map(card).join("");
@@ -104,7 +104,7 @@ function fitsFile(rows: [number, number, number][]) {
   const kv = (k: string, v: string | number) => `${k.padEnd(8)}= ${typeof v === "string" ? `'${v}'`.padEnd(20) : String(v).padStart(20)}`;
   const primary = header([kv("SIMPLE", "T").replace("'T'", "T").replace(/= +T/, "=                    T"), kv("BITPIX", 8), kv("NAXIS", 0), kv("OBJECT", "TIC 1"), kv("TESSMAG", 9.5)]);
   const table = header([kv("XTENSION", "BINTABLE"), kv("BITPIX", 8), kv("NAXIS", 2), kv("NAXIS1", 16), kv("NAXIS2", rows.length), kv("PCOUNT", 0), kv("GCOUNT", 1), kv("TFIELDS", 3),
-    kv("TTYPE1", "TIME"), kv("TFORM1", "D"), kv("TTYPE2", "PDCSAP_FLUX"), kv("TFORM2", "E"), kv("TTYPE3", "QUALITY"), kv("TFORM3", "J"), kv("EXTNAME", "LIGHTCURVE")]);
+    kv("TTYPE1", "TIME"), kv("TFORM1", "D"), kv("TTYPE2", fluxName), kv("TFORM2", "E"), kv("TTYPE3", "QUALITY"), kv("TFORM3", "J"), kv("EXTNAME", "LIGHTCURVE")]);
   const data = new ArrayBuffer(Math.ceil((16 * rows.length) / 2880) * 2880);
   const v = new DataView(data);
   rows.forEach(([t, f, q], i) => { v.setFloat64(i * 16, t); v.setFloat32(i * 16 + 8, f); v.setInt32(i * 16 + 12, q); });
@@ -131,6 +131,13 @@ describe("FITS reader", () => {
     expect(Number.isNaN(tab.columns.PDCSAP_FLUX[1])).toBe(true);
     expect([...tab.columns.QUALITY]).toEqual([0, 0, 128]);
     expect(tab.columns.MISSING).toBeUndefined();
+  });
+  it("reads QLP light curves under both flux column names (KSPSAP_FLUX, later DET_FLUX)", () => {
+    for (const name of ["KSPSAP_FLUX", "DET_FLUX"]) {
+      const lc = parseLightCurve(fitsFile([[1500.5, 1234.5, 0]], name), { tic: "1", pipeline: "QLP", sector: 104 });
+      expect(lc.flux[0]).toBeCloseTo(1234.5);
+    }
+    expect(() => parseLightCurve(fitsFile([[1500.5, 1, 0]], "SAP_FLUX"), { tic: "1", pipeline: "QLP", sector: 104 })).toThrow(/DET_FLUX/);
   });
   it("rejects files that aren't FITS", () => {
     expect(() => readHdus(new TextEncoder().encode("<html>".padEnd(2880)).buffer as ArrayBuffer)).toThrow(/not a FITS/);
@@ -235,8 +242,8 @@ describe("per-star analysis pipeline", () => {
     const flux = Array.from(s.f, (f) => f * 51234), quality = Array.from(s.t, (_, i) => (i % 500 === 7 ? 128 : 0));
     flux[100] = NaN;
     const a = analyseLightCurve({ time: s.t, flux: Float64Array.from(flux), quality: Float64Array.from(quality) });
-    expect(a.transit.period).toBeCloseTo(2.93, 1);
-    expect(blsDetected(a.transit)).toBe(true);
+    expect(a.transit!.period).toBeCloseTo(2.93, 1);
+    expect(blsDetected(a.transit!)).toBe(true);
     expect(a.ls.period).toBeCloseTo(5.5, 0);
     expect(isVariable(a.ls)).toBe(true);
   });
