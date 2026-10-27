@@ -1,6 +1,7 @@
 // Minimal FITS reader for light-curve files (TESS SPOC, TESS-SPOC and QLP HLSPs): header cards and
 // binary-table columns, big-endian, no dependency. Only what light curves use: scalar numeric
-// columns (L/B/I/J/K/E/D, with TSCAL/TZERO) plus the first element of vector columns.
+// columns (L/B/I/J/K/E/D, with TSCAL/TZERO) plus the first element of vector columns; readVector
+// reads a whole vector column (the pixel images of a TESScut cutout).
 
 const BLOCK = 2880;
 const CARD = 80;
@@ -94,4 +95,31 @@ export function readTable(buf: ArrayBuffer, hdu: FitsHdu, names: string[]): Fits
     columns[c.name] = a;
   }
   return { header: h, rows, columns };
+}
+
+/** A whole vector column (e.g. FLUX "121E" with TDIM (11, 11)), row-major: value r * repeat + k. */
+export function readVector(buf: ArrayBuffer, hdu: FitsHdu, name: string): { repeat: number; rows: number; dims: number[]; data: Float32Array } {
+  const h = hdu.header;
+  if (h.XTENSION !== "BINTABLE") throw new Error("HDU is not a binary table");
+  const rowBytes = Number(h.NAXIS1), rows = Number(h.NAXIS2), nf = Number(h.TFIELDS);
+  if (hdu.dataStart + rowBytes * rows > buf.byteLength) throw new Error("truncated FITS table");
+  let offset = 0;
+  for (let i = 1; i <= nf; i++) {
+    const m = String(h[`TFORM${i}`] ?? "").trim().match(/^(\d*)([LXBIJKAEDCMPQ])/);
+    if (!m) throw new Error(`unsupported TFORM${i}: ${h[`TFORM${i}`]}`);
+    const rep = m[1] ? Number(m[1]) : 1, type = m[2];
+    const width = type === "X" ? Math.ceil(rep / 8) : type === "C" ? 8 * rep : type === "M" ? 16 * rep : type === "P" ? 8 * rep : type === "Q" ? 16 * rep : SIZE[type] * rep;
+    if (String(h[`TTYPE${i}`] ?? "").trim() === name) {
+      if (type !== "E" && type !== "D" && type !== "J" && type !== "I") throw new Error(`column ${name} is not numeric`);
+      const dims = String(h[`TDIM${i}`] ?? `(${rep})`).replace(/[()\s]/g, "").split(",").map(Number);
+      const view = new DataView(buf, hdu.dataStart, rowBytes * rows), data = new Float32Array(rows * rep), size = SIZE[type];
+      for (let r = 0; r < rows; r++) for (let k = 0; k < rep; k++) {
+        const p = r * rowBytes + offset + k * size;
+        data[r * rep + k] = type === "E" ? view.getFloat32(p) : type === "D" ? view.getFloat64(p) : type === "J" ? view.getInt32(p) : view.getInt16(p);
+      }
+      return { repeat: rep, rows, dims, data };
+    }
+    offset += width;
+  }
+  throw new Error(`no column ${name}`);
 }

@@ -3,14 +3,21 @@
 // (catalogs, seconds) is a hard gate: a known object or a star-sized companion stops the run before
 // any light curve is downloaded, unless forced. Stages 1-3 run on every TESS sector of the star
 // (best pipeline per sector, sectors with transits first), Stage 4 recommends observations, and the
-// tier (vetShared.ts: tierOf) is Stage 5. See vetShared.ts for the stage list.
+// tier (vetShared.ts: tierOf) is Stage 5. See vetShared.ts for the stage list. Beyond the light
+// curves: TESScut pixels (difference images, pixels.ts), Gaia DR3 / APOGEE / ZTF archives
+// (archives.ts), Robovetter-style robustness tests (robust.ts) and a false-positive probability
+// (fpp.ts): what can be done without a telescope.
 import { download } from "./analysis";
+import { apogeeNear, fitK, minMassFromK, gaiaCone, gaiaRvLimit, gaiaStar, gaiaStarVizier, ztfDepths, ztfLightCurve, type GaiaNeighbour, type GaiaStar } from "./archives";
+import { falsePositiveProbability, starFromGaia, type FppData } from "./fpp";
+import { combineSectors, differenceImage, fetchCutout, testSector, type PixStar, type SectorPixels } from "./pixels";
+import { eventStats, harmonicOf, modelShift, removePulsations, type ModelShift } from "./robust";
 import { bls } from "./bls";
-import { ctoisFor, exofopTarget, gaiaFlags, inKeplerField, koisNear, tessEb, ticNeighbours, ticStar, type GaiaFlags, type Koi } from "./hostStar";
+import { ctoisFor, exofopTarget, inKeplerField, koisNear, tessEb, ticNeighbours, ticStar, type Koi } from "./hostStar";
 import { ticProducts, type LcProduct, type LightCurve } from "./lightcurves";
 import { isVariable, lombScargle } from "./lombscargle";
 import { duotransitAliases } from "./survey";
-import { binSeries, cleanSeries, stitch, trimGaps, type Series } from "./timeseries";
+import { binSeries, cleanSeries, median, stitch, trimGaps, type Series } from "./timeseries";
 import {
   cadenceOf, centralDuration, combine, densityFromTransit, detrendLabel, detrendMasked, fitEphemeris, fitTrapezoid, inOutShift, lowerBound,
   massFromRadius, measureEvent, minPeriodFromCoverage, minPeriodFromDuration, redNoise, rhoOf, rvSemiAmplitude, R_JUP_EARTH, segments, timeEvent,
@@ -19,9 +26,11 @@ import {
 import { BTJD, knownPlanetsNear, periodsMatch, toisNear, type KnownSignal } from "./vetting";
 import { isEclipsingType, variablesNear, vsxEntry } from "./vsx";
 import { separation } from "./geom";
-import { tierOf, type VetCheck, type VetEventRow, type VetInput, type VetReport, type VetStage, type VetStatus, type VetStreamEvent } from "./vetShared";
+import { tierOf, type VetCheck, type VetPixels, type VetEventRow, type VetInput, type VetReport, type VetStage, type VetStatus, type VetStreamEvent } from "./vetShared";
 
-export const VET_BUDGET_MS = 200_000;
+export const VET_BUDGET_MS = 240_000;
+/** Sectors whose full-frame-image cutouts are downloaded for difference images (~25 MB each). */
+const PIXEL_SECTORS = 3;
 /** Sectors downloaded (best pipeline each), plus a second pipeline for a few sectors with transits. */
 export const VET_MAX_SECTORS = 16;
 const EXTRA_PIPELINE_SECTORS = 2;
@@ -73,8 +82,12 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
   const pos = { ra: tic.v?.ra ?? input.ra, dec: tic.v?.dec ?? input.dec };
   const cone = { ...pos, radius: 0.5 / 60 };
   const nbrP = settle(ticNeighbours(pos.ra, pos.dec, 2, signal));
+  // Gaia DR3 from the ESA archive (VizieR's copy if that fails), every Gaia source within 2.5′, APOGEE.
+  const gaiaConeP = settle(gaiaCone(pos.ra, pos.dec, 150, signal));
+  const apogeeP = settle(apogeeNear(pos.ra, pos.dec, signal));
+  const gaiaLookup = (id: string) => gaiaStar(id, signal).catch((e: Error) => gaiaStarVizier(id, signal).catch(() => { throw e; }));
   const [gaia, exo, ctois, eb, vsx, planets, tois, kois] = await Promise.all([
-    tic.v?.gaia ? settle(gaiaFlags(tic.v.gaia, signal)) : Promise.resolve({ v: undefined as GaiaFlags | null | undefined, err: tic.err ? "no TIC entry" : "no Gaia id in the TIC" }),
+    tic.v?.gaia ? settle(gaiaLookup(tic.v.gaia)) : Promise.resolve({ v: undefined as GaiaStar | undefined, err: tic.err ? "no TIC entry" : "no Gaia id in the TIC" }),
     exoP, ctoiP, ebP,
     settle(variablesNear(cone, signal)), settle(knownPlanetsNear(cone, signal)), settle(toisNear(cone, signal)),
     inKeplerField(pos.ra, pos.dec) ? settle(koisNear(pos.ra, pos.dec, signal)) : Promise.resolve({ v: [] as Koi[], err: undefined }),
@@ -83,6 +96,8 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
   const R = star?.radius, M = star?.mass ?? (star?.logg && R ? (10 ** star.logg * (R * 6.957e10) ** 2) / 6.674e-8 / 1.989e33 : undefined);
   const rho = star?.rho ?? (M && R ? rhoOf(M, R) : undefined);
   const k0 = Math.sqrt(depth0);
+  /** Gaia's orbit is at this signal's period and its minimum mass is below the hydrogen-burning limit. */
+  const orbitIsCompanion = (o: NonNullable<GaiaStar["orbit"]>) => !!(o.period && o.k1 && M && (periodic ? periodsMatch(input.period!, o.period, 0.01) : false) && minMassFromK(o.k1, o.period, M) < 0.075);
 
   if (star) add(0, "star", "Host star parameters", "info", `TESS Input Catalog v8.2${star.lumclass ? `; luminosity class ${star.lumclass.toLowerCase()}` : ""}`,
     [star.teff && `Teff ${Math.round(star.teff)} K`, R && `R ${r3(R)} R☉`, M && `M ${r3(M)} M☉`, star.logg && `logg ${star.logg.toFixed(2)}`, rho && `ρ ${r3(rho)} ρ☉`, star.tmag !== undefined && `Tmag ${star.tmag.toFixed(2)}`, star.distance && `${Math.round(star.distance)} pc`].filter(Boolean).join(" · "));
@@ -111,9 +126,14 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
   {
     const flags: string[] = [], seen: string[] = [];
     if (gaia.v) {
-      seen.push(`Gaia DR3 RUWE ${gaia.v.ruwe?.toFixed(2) ?? "n/a"}`);
-      if (gaia.v.ruwe !== undefined && gaia.v.ruwe > 1.4) flags.push(`Gaia RUWE ${gaia.v.ruwe.toFixed(2)} > 1.4: the astrometry doesn't fit a single star (an unresolved companion is likely)`);
-      if (gaia.v.nss) flags.push(`Gaia DR3 lists a non-single-star solution (NSS ${gaia.v.nss})`);
+      const g = gaia.v;
+      seen.push(`Gaia DR3 RUWE ${g.ruwe?.toFixed(2) ?? "n/a"}${g.ipdHarmonic !== undefined ? `, IPD harmonic ${g.ipdHarmonic.toFixed(3)}, multi-peak ${g.ipdMultiPeak ?? 0}%` : ""}`);
+      if (g.ruwe !== undefined && g.ruwe > 1.4) flags.push(`Gaia RUWE ${g.ruwe.toFixed(2)} > 1.4: the astrometry doesn't fit a single star (an unresolved companion is likely)`);
+      // Partly resolved doubles (~0.1-1.2″) distort Gaia's image shape before they move RUWE.
+      if ((g.ipdMultiPeak ?? 0) > 2 || ((g.ipdHarmonic ?? 0) > 0.1 && (g.ruwe ?? 0) > 1.2)) flags.push(`Gaia's images of the star look double (${g.ipdMultiPeak ?? 0}% of windows with two peaks, harmonic amplitude ${g.ipdHarmonic?.toFixed(2)}): a companion at ~0.1-1″`);
+      if (g.nss && !g.orbit) flags.push(`Gaia DR3 lists a non-single-star solution (NSS ${g.nss})`);
+      // An orbit at the transit period with a substellar minimum mass is the transiting companion itself (Gaia saw its RV).
+      if (g.orbit && !orbitIsCompanion(g.orbit)) flags.push(`Gaia DR3 fits a ${g.orbit.type} orbit${g.orbit.period ? ` with P ${r3(g.orbit.period)} d` : ""}${g.orbit.k1 ? ` (K1 ${r3(g.orbit.k1)} km/s)` : ""}`);
     }
     if (exo.v) {
       seen.push(`ExoFOP companions ${exo.v.companions.length}`);
@@ -121,7 +141,9 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     }
     if (!gaia.v && !exo.v) add(0, "multiplicity", "Multiplicity", "not-run", `Gaia DR3 (${gaia.err ?? "not found"}) and ExoFOP (${exo.err}) unavailable`);
     else if (flags.length) add(0, "multiplicity", "Multiplicity", "flag", flags.join("; "), seen.join(" · "));
-    else add(0, "multiplicity", "Multiplicity", "pass", `no sign of a companion${!gaia.v ? ` (Gaia DR3 not checked: ${gaia.err ?? "no match"})` : ""}${!exo.v ? ` (ExoFOP not checked: ${exo.err})` : ""}`, seen.join(" · "));
+    // Half a check isn't a pass: with Gaia or ExoFOP missing, it stays open.
+    else if (!gaia.v || !exo.v) add(0, "multiplicity", "Multiplicity", "not-run", `partly run: no sign of a companion in ${gaia.v ? "Gaia DR3" : "ExoFOP"}, but ${!gaia.v ? `Gaia DR3 wasn't checked (${gaia.err ?? "no match"})` : `ExoFOP wasn't checked (${exo.err})`}`, seen.join(" · "));
+    else add(0, "multiplicity", "Multiplicity", "pass", "no sign of a companion in Gaia DR3 (astrometry, image shape, orbit and binary tables) or on ExoFOP", seen.join(" · "));
   }
 
   // Already known: a TOI/CTOI/planet/KOI with this signal (on the star = catalogued; on a neighbour = its light).
@@ -159,6 +181,11 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
       if (ebHit) fail ??= `the TESS eclipsing-binary catalog lists the star with P ${eb.v.period.toFixed(4)} d: this is its eclipse`;
       else lines.push(`the TESS EB catalog lists the star as an eclipsing binary (P ${eb.v.period.toFixed(4)} d)`);
     }
+    const g = gaia.v;
+    const atP = (p?: number) => !!p && (periodic ? [1, 2].some((m) => periodsMatch(input.period! * m, p, 0.01)) : matchesEphem(p));
+    if (g?.eb) { if (atP(g.eb.period)) fail ??= `Gaia DR3 classifies the star as an eclipsing binary with P ${r3(g.eb.period)} d: this is its eclipse`; else lines.push(`Gaia DR3 lists the star as an eclipsing binary (P ${r3(g.eb.period)} d)`); }
+    if (g?.orbit?.period && atP(g.orbit.period) && !orbitIsCompanion(g.orbit)) fail ??= `Gaia DR3 has a ${g.orbit.type} orbit for the star at P ${r3(g.orbit.period)} d, this signal's period${periodic && periodsMatch(input.period! * 2, g.orbit.period, 0.01) ? " ×2" : ""}: a stellar binary`;
+    if (g?.varClass && /ECL/.test(g.varClass.name)) lines.push(`Gaia DR3's classifier calls the star an eclipsing binary (${g.varClass.name}, score ${g.varClass.score?.toFixed(2)})`);
     const own = vsx.v ? vsxEntry(pos, vsx.v) : undefined;
     if (own) {
       if (periodic && own.period && isEclipsingType(own.type) && periodsMatch(input.period!, own.period, 0.01)) fail ??= `AAVSO VSX lists the star as ${own.name} (${own.type}, P ${own.period} d): this is its eclipse`;
@@ -170,11 +197,12 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     }
     // A known planet that a binary catalog also lists (the TESS EB catalog has some) is the planet.
     if (known && fail) { lines.push(fail.replace(/: this is its eclipse$/, "")); fail = undefined; }
-    const failed = [exo.err && "ExoFOP", ctois.err && "CTOI table", tois.err && "TOI list", planets.err && "Exoplanet Archive", eb.err && "TESS EB catalog", vsx.err && "AAVSO VSX", kois.err && "KOI table"].filter(Boolean);
-    const checked = `checked: TOIs, CTOIs, confirmed planets${inKeplerField(pos.ra, pos.dec) ? ", KOIs" : ""}, TESS EB catalog, AAVSO VSX${failed.length ? `; unavailable: ${failed.join(", ")}` : ""}`;
+    const failed = [exo.err && "ExoFOP", ctois.err && "CTOI table", tois.err && "TOI list", planets.err && "Exoplanet Archive", eb.err && "TESS EB catalog", vsx.err && "AAVSO VSX", kois.err && "KOI table", gaia.err && "Gaia DR3 binary tables"].filter(Boolean);
+    const checked = `${failed.length ? "partly checked" : "checked"}: TOIs, CTOIs, confirmed planets${inKeplerField(pos.ra, pos.dec) ? ", KOIs" : ""}, TESS EB catalog, AAVSO VSX, Gaia DR3 eclipsing binaries and orbits${failed.length ? `; unavailable: ${failed.join(", ")}` : ""}`;
     if (known) add(0, "known", "Already catalogued", "info", `${known}${lines.length ? `; also: ${lines.join("; ")}` : ""}. Not new: add notes on ExoFOP instead of a new submission`, checked);
     else if (fail) add(0, "known", "Already catalogued", "fail", fail, checked);
     else if (failed.length >= 4) add(0, "known", "Already catalogued", "not-run", `${failed.length} of the catalogs were unavailable: it may already be known`, checked);
+    else if (failed.length && !lines.length) add(0, "known", "Already catalogued", "not-run", `partly run: not in the catalogs that answered, but ${failed.join(", ")} didn't, so it may already be known there${other.length ? `; the star has other signals on file: ${[...new Set(other)].join(", ")}` : ""}`, checked);
     else add(0, "known", "Already catalogued", lines.length ? "flag" : "pass", [...lines, other.length ? `the star has other signals on file: ${[...new Set(other)].join(", ")}` : "", lines.length ? "" : "not a TOI, CTOI, known planet or catalogued binary at this period"].filter(Boolean).join("; "), checked);
   }
 
@@ -221,6 +249,24 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     const alt = prods.filter((p) => p.sector === c.sector && p.pipeline !== c.pipeline).sort((a, b) => Number(b.pipeline === "QLP") - Number(a.pipeline === "QLP"))[0];
     return alt ? [alt] : [];
   }).slice(0, EXTRA_PIPELINE_SECTORS);
+  // Full-frame-image cutouts for the difference images, in parallel with the light curves: the
+  // sectors with the most predicted transits (later sectors first: shorter FFI cadence).
+  const pixSectors = chosen.filter(hasEvent).map((p) => ({ s: p.sector, n: planned.filter((t) => t > p.tmin! && t < p.tmax!).length }))
+    .sort((a, b) => b.n - a.n || b.s - a.s).slice(0, PIXEL_SECTORS + 2).map((x) => x.s);
+  // Two downloads at a time (each ~25 MB); a sector that fails hands its place to the next one.
+  const cutoutsP = (async () => {
+    const out: { sector: number; v?: Awaited<ReturnType<typeof fetchCutout>>; err?: string }[] = [];
+    const queue = [...pixSectors];
+    const worker = async () => {
+      while (queue.length && out.filter((x) => x.v).length < PIXEL_SECTORS && Date.now() < deadline - 100_000) {
+        const sector = queue.shift()!;
+        const r = await settle(fetchCutout(pos.ra, pos.dec, sector, signal, Math.max(20_000, Math.min(90_000, deadline - Date.now() - 90_000))));
+        out.push({ sector, ...r });
+      }
+    };
+    await Promise.all([worker(), worker()]);
+    return out;
+  })();
   const { lcs, errors } = await download([...chosen, ...extra], signal, deadline - 70_000);
   const primary: Part[] = [], alt: Part[] = [];
   const skipped: string[] = [];
@@ -310,7 +356,9 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
   if (shape && measured.length >= 2) {
     const timed: { n: number; t: number; err: number }[] = [];
     for (const r of measured) {
-      if ((r.snr ?? 0) < 4) continue;
+      // Time only transits expected to stand out on their own (depth/err ≥ 5 at the mean depth),
+      // and not ones far deeper than the rest: picking the noisiest peaks would fit the outliers.
+      if (!(D / r.err! >= 5) || (r.depth! - D) / r.err! > 4 || (r.snr ?? 0) < 3) continue;
       const tm = timeEvent(r.part!.flat, r.t, shape, r.part!.scatter || r.m!.scatter, r.part!.cadence, r.part!.beta);
       if (tm) timed.push({ n: r.n, t: tm.t, err: Math.max(tm.err, 1 / 1440) });
     }
@@ -323,6 +371,25 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     } else for (const x of timed) { const r = rows.find((y) => y.n === x.n)!; r.oc = x.t - r.t; r.ocErr = x.err; }
   }
   emit({ type: "events", events: rows.map(stripRow), ms: ms() });
+
+  // Pulsations (δ Scuti, γ Dor, rotation) fitted out of transit and subtracted, once, on the
+  // sectors with the most transits: the uniqueness test runs on the cleaned light curve (the
+  // star's own signals aren't noise), and Stage 2 checks the transit survives the removal.
+  const cleaned = new Map<Part, { flat: Series; beta: number; cadence: number; removed: { period: number; amplitude: number }[] }>();
+  if (measured.length && Date.now() < deadline - 70_000) {
+    const w = windowsOf(P, T0, dur);
+    // Phase 0.5 is masked too: an occultation there would otherwise be fitted away as harmonics of P.
+    const w2 = periodic ? [...w, ...windowsOf(P, T0 + P / 2, dur)] : w;
+    const mask = (t: number) => w2.some((x) => Math.abs(t - x.t) < x.duration);
+    const count = (p: Part) => measured.filter((r) => r.part === p).length;
+    for (const p of [...primary].sort((a, b) => count(b) - count(a)).slice(0, 8)) {
+      if (Date.now() > deadline - 60_000) break;
+      const pw = removePulsations(p.raw, mask);
+      const flat = pw.removed.length ? detrendMasked(pw.series, w, baseMethod, 2) : p.flat;
+      cleaned.set(p, { flat, beta: pw.removed.length ? redNoise(flat, dur, w) : p.beta, cadence: cadenceOf(flat.t), removed: pw.removed });
+    }
+  }
+  const removedAll = [...cleaned.values()].flatMap((c) => c.removed);
 
   // ── Stage 1: signal integrity ──
   const N = measured.length;
@@ -338,6 +405,36 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     if (lost.length) add(1, "events", "Individual transits", "fail", `the dip at BTJD ${lost.map((r) => r.t.toFixed(2)).join(", ")} isn't there in a fresh reduction (SNR < 3): a systematic of the first search`, v);
     else if (N < rows.length) add(1, "events", "Individual transits", "not-run", `${rows.length - N} of the listed dips fall outside the light curves that downloaded`, v);
     else add(1, "events", "Individual transits", "flag", input.kind === "single" ? "one transit: the period is unknown" : "two transits: the period rests on one spacing (and its aliases)", v);
+  }
+
+  // Event consistency: one depth for every transit, and the signal not resting on a few outliers.
+  if (!periodic || N < 5) add(1, "consistency", "Event consistency", "not-run", periodic ? "fewer than 5 transits" : "needs a periodic signal");
+  else {
+    const es = eventStats(measured.map((r) => r.m!));
+    const red = es.dof ? es.chi2 / es.dof : 1;
+    const v = `χ²/dof ${red.toFixed(2)} over ${N} transits; ${es.outliers.length} more than 4σ deep${es.outliers.length ? ` (BTJD ${es.outliers.slice(0, 3).map((o) => measured[o.i].t.toFixed(2)).join(", ")})` : ""}; without the 3 strongest: ${ppt(es.drop3.depth)}, SNR ${es.drop3.snr.toFixed(1)}`;
+    if (comb.snr >= 7 && es.drop3.snr < 3) add(1, "consistency", "Event consistency", "fail", `the signal rests on ${Math.min(3, N)} events: without them it's gone (SNR ${es.drop3.snr.toFixed(1)}): outliers or systematics, not a repeating transit`, v);
+    else if (es.outliers.length && es.outliers.length <= Math.max(2, 0.05 * N)) add(1, "consistency", "Event consistency", "flag", `${es.outliers.length} transit${es.outliers.length === 1 ? " is" : "s are"} far deeper than the rest (up to ${es.outliers[0].dev.toFixed(1)}σ): a systematic or another source at those times`, v);
+    else if (red > 2 && es.dof >= 4 && Math.sqrt(red - 1) * median(measured.map((r) => r.err!)) > 0.1 * D) add(1, "consistency", "Event consistency", "flag", `the depths scatter ${Math.sqrt(red).toFixed(1)}× more than their errors, by over 10% of the depth: the errors are underestimated, or the depth varies`, v);
+    else add(1, "consistency", "Event consistency", "pass", `the transits share one depth${red > 2 ? " (to within 10%: the excess scatter is small next to the depth)" : " within their errors"}, and the signal survives dropping its 3 strongest events`, v);
+  }
+
+  // Model-shift uniqueness (Robovetter): the transit against every other phase, in units of the red noise.
+  let shift: ModelShift | null = null;
+  let shiftRaw: ModelShift | null = null;
+  if (periodic && N >= 3 && Date.now() < deadline - 50_000) {
+    shift = modelShift(primary.map((p) => cleaned.get(p)?.flat ?? p.flat), P, T0, shape?.T14 ?? dur);
+    if (removedAll.length) shiftRaw = modelShift(primary.map((p) => p.flat), P, T0, shape?.T14 ?? dur);
+  }
+  if (!shift) add(1, "uniqueness", "Signal uniqueness (model-shift)", "not-run", periodic ? (N < 3 ? "fewer than 3 transits" : "too little data or time") : "needs a period");
+  else {
+    const v = `${removedAll.length ? `after removing ${removedAll.length} pulsation signal${removedAll.length === 1 ? "" : "s"}${shiftRaw ? ` (before: ${(shiftRaw.pri / shiftRaw.fred).toFixed(1)}σ red, F_red ${shiftRaw.fred.toFixed(2)})` : ""}: ` : ""}primary ${shift.pri.toFixed(1)}σ white, ${(shift.pri / shift.fred).toFixed(1)}σ red (F_red ${shift.fred.toFixed(2)}); next dip ${shift.ter.sig.toFixed(1)}σ, strongest brightening ${shift.pos.sig.toFixed(1)}σ; thresholds ${shift.fa1.toFixed(1)}σ / ${shift.fa2.toFixed(1)}σ; MS1 ${shift.ms1.toFixed(1)}, MS2 ${shift.ms2.toFixed(1)}, MS3 ${shift.ms3.toFixed(1)}`;
+    const why: string[] = [];
+    if (shift.ms1 <= 0) why.push(`only ${(shift.pri / shift.fred).toFixed(1)}σ against the light curve's own red noise (needs ${shift.fa1.toFixed(1)}σ)`);
+    if (shift.ms2 <= 0) why.push(`a dip at phase ${shift.ter.ph.toFixed(2)} is nearly as strong: the transit isn't unique in the phased light curve`);
+    if (shift.ms3 <= 0) why.push(`a brightening at phase ${shift.pos.ph.toFixed(2)} is nearly as strong: the noise makes "events" this big in both directions`);
+    if (why.length) add(1, "uniqueness", "Signal uniqueness (model-shift)", shift.ms1 <= 0 ? "fail" : "flag", why.join("; "), v);
+    else add(1, "uniqueness", "Signal uniqueness (model-shift)", "pass", `the transit stands out from every other phase by more than the red noise allows${shift.fred > 1.5 ? `, though the noise is ${shift.fred.toFixed(1)}× white at this time scale` : ""}`, v);
   }
 
   if (!periodic || N < 2) add(1, "snr", "SNR growth", "not-run", periodic ? "fewer than 2 transits" : "needs a periodic signal");
@@ -449,18 +546,21 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
   }
 
   // ── Stage 2: astrophysical false positives ──
+  let oddEven: { diff: number; err: number } | undefined;
   if (periodic && N >= 2) {
     const odd = measured.filter((r) => ((r.n % 2) + 2) % 2 === 1), even = measured.filter((r) => ((r.n % 2) + 2) % 2 === 0);
     if (!odd.length || !even.length) add(2, "oddeven", "Odd/even depths", "not-run", "transits of only one parity have data");
     else {
       const o = combine(odd.map((r) => r.m!)), e = combine(even.map((r) => r.m!));
+      oddEven = { diff: o.depth - e.depth, err: Math.hypot(o.err, e.err) };
       const sig = Math.abs(o.depth - e.depth) / Math.hypot(o.err, e.err);
       const v = `odd ${ppt(o.depth)} ± ${r3(o.err * 1000)}, even ${ppt(e.depth)} ± ${r3(e.err * 1000)} (${sig.toFixed(1)}σ)`;
       if (sig > 3 && Math.abs(o.depth - e.depth) > 0.1 * D) add(2, "oddeven", "Odd/even depths", "fail", `alternate transits differ by ${sig.toFixed(1)}σ: two different eclipses, an eclipsing binary at ${(2 * P).toFixed(4)} d`, v);
       else add(2, "oddeven", "Odd/even depths", "pass", "alternate transits agree within 3σ", v);
     }
     // Secondary eclipse at phase 0.5, and anywhere else (eccentric orbits).
-    const at = (ph: number) => combine(epochs(P, T0 + ph * P, from, to).flatMap(({ t }) => { const p = partAt(primary, t, dur); const m = p && measureEvent(p.flat, t, dur, p.cadence, p.beta); return m && m.coverage >= 0.5 ? [m] : []; }));
+    // On the pulsation-cleaned light curves where they exist (a phase curve isn't an eclipse).
+    const at = (ph: number) => combine(epochs(P, T0 + ph * P, from, to).flatMap(({ t }) => { const p = partAt(primary, t, dur); const c = p && cleaned.get(p); const m = p && (c ? measureEvent(c.flat, t, dur, c.cadence, c.beta) : measureEvent(p.flat, t, dur, p.cadence, p.beta)); return m && m.coverage >= 0.5 ? [m] : []; }));
     const sec = at(0.5);
     let worst = { ph: 0, snr: 0, depth: 0 };
     if (Date.now() < deadline - 30_000) {
@@ -471,7 +571,10 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
         if (c.snr > worst.snr) worst = { ph, snr: c.snr, depth: c.depth };
       }
     }
-    const v = `phase 0.5: ${Number.isFinite(sec.depth) ? `${ppt(sec.depth)} (${sec.snr.toFixed(1)}σ)` : "no data"}${worst.snr ? `; deepest elsewhere: phase ${worst.ph.toFixed(2)}, ${ppt(worst.depth)} (${worst.snr.toFixed(1)}σ)` : ""}`;
+    // In units of the red noise the model-shift test measured (F_red), where it ran.
+    const fred = shift?.fred ?? 1;
+    sec.snr /= fred; worst.snr /= fred;
+    const v = `phase 0.5: ${Number.isFinite(sec.depth) ? `${ppt(sec.depth)} (${sec.snr.toFixed(1)}σ)` : "no data"}${worst.snr ? `; deepest elsewhere: phase ${worst.ph.toFixed(2)}, ${ppt(worst.depth)} (${worst.snr.toFixed(1)}σ)` : ""}${fred > 1 ? `; σ include red noise (×${fred.toFixed(2)})` : ""}`;
     if (!Number.isFinite(sec.depth)) add(2, "secondary", "Secondary eclipse", "not-run", "no data at phase 0.5");
     else if (sec.snr > 3 && sec.depth > 0.1 * D) add(2, "secondary", "Secondary eclipse", "fail", `a ${sec.snr.toFixed(1)}σ eclipse at phase 0.5, ${Math.round((sec.depth / D) * 100)}% of the transit depth: too bright to be a planet's occultation`, v);
     else if (worst.snr > 4 && worst.depth > 0.1 * D) add(2, "secondary", "Secondary eclipse", "flag", `a ${worst.snr.toFixed(1)}σ dip at phase ${worst.ph.toFixed(2)}: a secondary eclipse on an eccentric orbit?`, v);
@@ -530,8 +633,85 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
         const r = P / ls.period, n = Math.round(r >= 1 ? r : 1 / r);
         const hit = n >= 1 && n <= 6 && Math.abs((r >= 1 ? r : 1 / r) / n - 1) < 0.01 * n;
         add(2, "variability", "Variability at the transit period", hit ? "flag" : "pass", hit ? `the star varies at ${n === 1 ? "the transit period" : r >= 1 ? `P/${n}` : `${n}×P`}: rotation or pulsation could make the dips (or an ellipsoidal binary)${hot}` : `not at the transit period or a harmonic${hot}`, v);
-      } else add(2, "variability", "Variability at the transit period", isVariable(ls) ? "info" : "pass", (isVariable(ls) ? "the star varies (out of transit)" : "out-of-transit light curve is quiet") + hot, v);
+      } else add(2, "variability", "Variability at the transit period", isVariable(ls) ? "info" : "pass", (isVariable(ls) ? "the star varies (out of transit)" : "no variability above 0.5 ppt out of transit (smaller pulsations are handled by the pulsation test)") + hot, v);
     } catch (e) { add(2, "variability", "Variability at the transit period", "not-run", (e as Error).message.slice(0, 80)); }
+  }
+
+  // Pulsation removal: the transit measured again on the cleaned sectors (fitted above).
+  if (!N) add(2, "pulsation", "Pulsation removal", "not-run", "no transit with data");
+  else if (!cleaned.size) add(2, "pulsation", "Pulsation removal", "not-run", "time budget used up");
+  else {
+    const parts = [...cleaned.keys()];
+    const before = combine(measured.filter((r) => parts.includes(r.part!)).map((r) => r.m!));
+    const after = combine(measured.filter((r) => parts.includes(r.part!)).flatMap((r) => { const c = cleaned.get(r.part!)!; const m = measureEvent(c.flat, r.t, dur, c.cadence, c.beta); return m && m.coverage >= 0.5 ? [m] : []; }));
+    // The same signal is fitted in each sector: keep the strongest of each period (within 0.5%).
+    const pulsations = [...removedAll].sort((a, b) => b.amplitude - a.amplitude).filter((x, i, all) => all.findIndex((y) => Math.abs(y.period / x.period - 1) < 0.005) === i);
+    const hot = star?.teff && star.teff > 6800 && star.teff < 10_000;
+    const list = pulsations.slice(0, 5).map((x) => `${r3(x.period * 24)} h (${r3(x.amplitude * 1000)} ppt)`).join(", ");
+    const v = `${pulsations.length} periodic signal${pulsations.length === 1 ? "" : "s"} removed${list ? `: ${list}` : ""}; transit ${ppt(before.depth)} (SNR ${before.snr.toFixed(1)}) → ${ppt(after.depth)} (SNR ${after.snr.toFixed(1)}), ${parts.length} sector${parts.length === 1 ? "" : "s"}`;
+    const harm = periodic ? harmonicOf(P, pulsations) : null;
+    if (!pulsations.length) add(2, "pulsation", "Pulsation removal", "pass", `no significant pulsation or rotation signal to remove${hot ? " (unusual for a star this hot)" : ""}`, v);
+    else if (!(after.snr >= 3) || after.depth < 0.5 * before.depth) add(2, "pulsation", "Pulsation removal", "fail", "with the star's own variability subtracted, the dip is gone: it was made by pulsation or rotation, not a transit", v);
+    else if (harm && (harm.relation === "is 2×" || harm.relation === "equals") && harm.pulsation.amplitude < 0.2 * D && M && R) {
+      // A phase curve, not pulsation: ellipsoidal variation at P/2 (tides raised by the companion)
+      // or reflection/beaming at P. Ellipsoidal amplitude ≈ α (M2/M1)(R★/a)³, α ≈ 1.3 in TESS's band.
+      const aR = Math.cbrt((6.674e-11 * M * 1.989e30 * (P * 86400) ** 2) / (4 * Math.PI ** 2)) / (R * 6.957e8);
+      if (harm.relation === "is 2×") {
+        const m2 = (harm.pulsation.amplitude / (1.3 * aR ** -3)) * M;
+        add(2, "pulsation", "Pulsation removal", m2 < 0.075 ? "pass" : "flag", m2 < 0.075
+          ? `a ${r3(harm.pulsation.amplitude * 1e6)} ppm signal at P/2 is ellipsoidal variation: the companion's tides on the star imply ~${r3(m2 * 1047.6)} M_J, substellar (a photometric mass, ±50%); the transit survives its removal`
+          : `ellipsoidal variation at P/2 of ${r3(harm.pulsation.amplitude * 1e6)} ppm implies a ~${r3(m2)} M☉ companion: a star`, v);
+      } else add(2, "pulsation", "Pulsation removal", "info", `a ${r3(harm.pulsation.amplitude * 1e6)} ppm signal at the orbital period: reflected light, Doppler beaming or spots; the transit survives its removal`, v);
+    }
+    else if (harm) add(2, "pulsation", "Pulsation removal", "flag", `the transit period ${harm.relation} a pulsation period (${r3(harm.pulsation.period)} d): the dips may be pulsation folded at that period`, v);
+    else if (Math.abs(after.depth / before.depth - 1) > 0.25) add(2, "pulsation", "Pulsation removal", "flag", `the depth changes by ${Math.round(Math.abs(after.depth / before.depth - 1) * 100)}% once the pulsations are removed: they distort it`, v);
+    else add(2, "pulsation", "Pulsation removal", "pass", "the transit survives subtracting the star's pulsations, at the same depth", v);
+  }
+
+  // Archival radial velocities: Gaia DR3's epoch RVs (summary) and APOGEE's visits.
+  const apogee = await apogeeP;
+  let kMaxKms: number | undefined;
+  {
+    const Pk = ephem?.period ?? P;
+    const kStellar = M && Number.isFinite(Pk) ? rvSemiAmplitude(Pk, 0.08 * 333_000, M) / 1000 : undefined;
+    const lines: string[] = [], vals: string[] = [];
+    let status: VetStatus | null = null;
+    const gl = gaiaRvLimit(gaia.v?.rv);
+    const orb = gaia.v?.orbit;
+    if (orb?.k1 && orb.period && M && orbitIsCompanion(orb)) {
+      // Gaia's own orbit at the transit period: a radial-velocity mass for the transiting companion.
+      const m2 = minMassFromK(orb.k1, orb.period, M);
+      vals.push(`Gaia ${orb.type} orbit: P ${r3(orb.period)} d, K1 ${r3(orb.k1)} km/s → M sin i ≈ ${r3(m2 * 1047.6)} M_J`);
+      lines.push(`Gaia DR3 measured the star's reflex motion at the transit period: the companion's minimum mass is ${r3(m2 * 1047.6)} M_J (${m2 * 1047.6 < 13 ? "a planet" : "a brown dwarf"}), below any star's`);
+      status = "pass";
+    }
+    if (gl) {
+      vals.push(`Gaia: ${gaia.v!.rv!.epochs} epochs, p(constant) ${gaia.v!.rv!.pvalue?.toPrecision(2) ?? "?"}, robust amplitude ${r3(gaia.v!.rv!.amplitude!)} km/s → K < ${r3(gl.kMax)} km/s`);
+      kMaxKms = gl.kMax;
+      if (gl.variable && status !== "pass") {
+        // Variable, but is it a star's worth of variation? K ≳ amplitude / 2.
+        if (kStellar !== undefined && gl.kMax < kStellar) { lines.push(`Gaia sees the RV vary, but by less than a 0.08 M☉ companion at this period would cause (K < ${r3(gl.kMax)} vs ${r3(kStellar)} km/s): a massive planet or brown dwarf, or line-profile noise`); status = "info"; }
+        else { lines.push("Gaia sees the star's radial velocity vary (χ² p ≤ 0.01, renormalised GoF > 4) by as much as a stellar companion would: a spectroscopic binary"); status = "flag"; }
+      }
+    }
+    if (apogee.v && apogee.v.visits.length >= 3 && Number.isFinite(Pk)) {
+      const jit = Math.max(0.05, (apogee.v.vsini ?? 0) / 50);
+      const precise = ephem?.errT0 !== undefined && ephem.errP !== undefined && Math.hypot(ephem.errT0, ephem.errP * Math.abs((apogee.v.visits[0].mjd - 56999.5 - ephem.t0) / Pk)) < 0.05 * Pk;
+      const k = fitK(apogee.v.visits.map((x) => ({ t: x.mjd - 56999.5, rv: x.rv, err: x.err })), Pk, precise ? ephem!.t0 : undefined, jit);
+      if (k) {
+        const lim = Math.abs(k.k) + 2 * k.err;
+        vals.push(`APOGEE: ${apogee.v.visits.length} visits, K = ${r3(k.k)} ± ${r3(k.err)} km/s at P ${r3(Pk)} d${precise ? " (phase from the ephemeris)" : " (phase free)"}`);
+        kMaxKms = Math.min(kMaxKms ?? Infinity, lim);
+        if (Math.abs(k.k) > 3 * k.err && Math.abs(k.k) > 1) { lines.push(`APOGEE's RVs swing by K ≈ ${r3(Math.abs(k.k))} km/s at the transit period: a stellar-mass companion`); status = "fail"; }
+      } else vals.push(`APOGEE: ${apogee.v.visits.length} visits (too few to fit)`);
+    } else if (apogee.v?.vscatter !== undefined) vals.push(`APOGEE: RV scatter ${r3(apogee.v.vscatter)} km/s`);
+    if (!vals.length) add(2, "archivalrv", "Archival radial velocities", "not-run", `no archival RVs: ${gaia.v ? "Gaia DR3 has no RV time series for the star (too faint or too hot for RVS)" : `Gaia unavailable (${gaia.err})`}; ${apogee.v ? "APOGEE has the star but too few visits" : apogee.err ? `APOGEE unavailable (${apogee.err})` : "not in APOGEE DR17"}`);
+    else if (status) add(2, "archivalrv", "Archival radial velocities", status, lines.join("; "), vals.join(" · "));
+    else if (kMaxKms !== undefined && kStellar !== undefined) {
+      const mMax = 0.08 * (kMaxKms / kStellar);
+      add(2, "archivalrv", "Archival radial velocities", kMaxKms < kStellar ? "pass" : "info",
+        kMaxKms < kStellar ? `no RV variation big enough for a star: K < ${r3(kMaxKms)} km/s rules out a companion above ~${r3(mMax * 1047.6)} M_J (${r3(mMax)} M☉) on the target at this period` : `the archival RVs allow K up to ${r3(kMaxKms)} km/s: companions up to ~${r3(mMax)} M☉ on the target aren't excluded`, vals.join(" · "));
+    } else add(2, "archivalrv", "Archival radial velocities", "info", "archival RVs found but no stellar mass to turn them into a companion mass limit", vals.join(" · "));
   }
 
   // ── Stage 3: contamination and blends ──
@@ -563,7 +743,55 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
       else add(3, "centroid", "Centroid shift", "pass", `no significant centroid motion: the source is within ~${exclArcsec.toFixed(0)}″ of the target (3σ)`, v);
     }
   }
-  add(3, "diffimage", "Difference imaging", "not-run", "needs target pixel files (TESScut / TPFs), not fetched here; the centroid shift is the light-curve proxy");
+  // Difference imaging on TESScut cutouts: which star does the light go missing from?
+  const gcone = await gaiaConeP;
+  // Stars that could be the source: Gaia within 2.5′ (TIC as the fallback), the target first.
+  const tgtTmag = star?.tmag ?? 10;
+  const others: GaiaNeighbour[] = gcone.v ? gcone.v.filter((g) => g.sep > 1.5 || Math.abs(g.tmag - tgtTmag) > 1.5) : [];
+  const capableOf = (tmag: number) => { const fr = 10 ** (-0.4 * (tmag - tgtTmag)); return (D * (1 + fr)) / fr <= 1; };
+  const pixStars: PixStar[] = [{ id: "target", label: `TIC ${input.tic} (target)`, ra: pos.ra, dec: pos.dec, tmag: tgtTmag },
+    ...others.filter((g) => g.sep <= 120 && (capableOf(g.tmag) || g.tmag < tgtTmag + 4)).slice(0, 60).map((g) => ({ id: g.source, label: `Gaia ${g.source} (${g.sep.toFixed(0)}″, T ${g.tmag.toFixed(1)})`, ra: g.ra, dec: g.dec, tmag: g.tmag }))];
+  let pixels: VetPixels | undefined;
+  let pixCombined: ReturnType<typeof combineSectors> | null = null;
+  {
+    const cuts = await cutoutsP;
+    const errs = cuts.flatMap((c) => (c.err ? [`s${c.sector}: ${c.err}`] : []));
+    const dur14 = shape?.T14 ?? dur;
+    const secs: SectorPixels[] = [];
+    for (const c of cuts) {
+      if (!c.v) continue;
+      const times = periodic ? epochs(P, T0, c.v.t[0], c.v.t[c.v.t.length - 1]).map((e) => e.t) : (input.times ?? []);
+      const img = differenceImage(c.v, times, dur14);
+      if (img) secs.push(testSector(img, pixStars));
+    }
+    if (!pixSectors.length) add(3, "diffimage", "Difference imaging", "not-run", "no sector with a transit to cut out");
+    else if (!secs.length) add(3, "diffimage", "Difference imaging", "not-run", errs.length ? `TESScut cutouts unavailable (${errs[0]})` : "too few transits in the cutouts' sectors to build a difference image");
+    else {
+      pixCombined = combineSectors(secs);
+      const det = Math.hypot(...secs.map((x) => x.detection));
+      const show = secs.reduce((b, x) => (x.detection > b.detection ? x : b));
+      const pc = pixCombined, best = pc.best;
+      const tgt = pc.stars.find((x) => x.id === "target");
+      const excluded = pc.stars.filter((x) => x.id !== "target" && x.dchi2 > 9);
+      const rivals = pc.stars.filter((x) => x.id !== "target" && x.dchi2 <= 9);
+      const v = `${secs.map((x) => `s${x.sector}: ${x.transits} transits, source ${x.detection.toFixed(1)}σ`).join("; ")}${pc.offset ? `; source ${Math.hypot(pc.offset.e, pc.offset.n).toFixed(1)} ± ${pc.offset.err.toFixed(1)}″ from the target` : ""}`;
+      let verdict: string;
+      if (det < 3 || !best) {
+        verdict = `no source visible in the pixels (${det.toFixed(1)}σ): the transit is too shallow for TESS's full-frame images`;
+        add(3, "diffimage", "Difference imaging", "not-run", `ran on ${secs.length} sector${secs.length === 1 ? "" : "s"}, but ${verdict}; it can't say which star dims`, v);
+      } else if (best.id !== "target" && tgt && tgt.dchi2 > 9) {
+        verdict = `the light goes missing from ${best.label}, not the target (Δχ² ${tgt.dchi2.toFixed(0)})`;
+        add(3, "diffimage", "Difference imaging", "fail", `${verdict}: a nearby eclipsing star`, v);
+      } else if (pc.unlisted > 25 && pc.offset && Math.hypot(pc.offset.e, pc.offset.n) > 3 * pc.offset.err + 5) {
+        verdict = `the source sits ${Math.hypot(pc.offset.e, pc.offset.n).toFixed(0)}″ from the target where no catalogued star fits`;
+        add(3, "diffimage", "Difference imaging", "flag", `${verdict} (Δχ² ${pc.unlisted.toFixed(0)}): an uncatalogued source, or a PSF mismatch`, v);
+      } else {
+        verdict = `source consistent with the target; ${excluded.length} of ${pc.stars.length - 1} nearby star${pc.stars.length === 2 ? "" : "s"} ruled out`;
+        add(3, "diffimage", "Difference imaging", rivals.length ? "flag" : "pass", rivals.length ? `the target fits, but so ${rivals.length === 1 ? "does" : "do"} ${rivals.slice(0, 3).map((x) => x.label).join(", ")} (within Δχ² 9): too close to separate in 21″ pixels` : `the light goes missing from the target; every other star that could make the dip is ruled out (Δχ² > 9)`, v);
+      }
+      pixels = { sector: show.sector, detection: show.detection, ...show.image, verdict };
+    }
+  }
 
   {
     const qlp = allParts.filter((p) => p.lc.small && p.lc.large && measured.some((r) => r.sector === p.lc.sector));
@@ -586,21 +814,71 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     }
   }
 
+  // Nearby sources: every star within 2′ bright enough to make the dip if it eclipsed (Gaia DR3,
+  // which resolves ~1″; the TIC if Gaia didn't answer), less those the pixels or centroids exclude.
+  const nbWeights: { id: string; label: string; sep: number; tmag: number; weight: number; radius?: number; mass?: number; teff?: number }[] = [];
   {
     const nb = await nbrP;
-    if (!nb.v) add(3, "neighbours", "Nearby sources", "not-run", `TIC cone search failed (${nb.err})`);
+    // Gaia neighbours carry a size (colour + parallax), so the statistical test can ask whether each could make a transit this long.
+    const list = gcone.v ? others.map((g) => ({ id: g.source, label: `Gaia ${g.source}`, sep: g.sep, tmag: g.tmag, ...starFromGaia(g.g, g.bpRp, g.parallax) })) : nb.v ? nb.v.filter((n) => n.tic !== input.tic).map((n) => ({ id: `TIC ${n.tic}`, label: `TIC ${n.tic}`, sep: n.sep, tmag: n.tmag })) : null;
+    if (!list) add(3, "neighbours", "Nearby sources", "not-run", `Gaia (${gcone.err}) and TIC (${nb.err}) cone searches failed`);
     else if (star?.tmag === undefined) add(3, "neighbours", "Nearby sources", "not-run", "no TESS magnitude for the target");
     else {
-      const capable = nb.v.filter((n) => n.tic !== input.tic).map((n) => {
-        const fr = 10 ** (-0.4 * (n.tmag - star.tmag!));
-        return { ...n, need: (D * (1 + fr)) / fr };
-      }).filter((n) => n.need <= 1).sort((a, b) => a.sep - b.sep);
-      const open = capable.filter((n) => exclArcsec === undefined || n.sep <= exclArcsec);
+      const pixOut = new Map((pixCombined?.stars ?? []).map((x) => [x.id, x.dchi2]));
+      const tgtD = pixOut.get("target") ?? 0;
+      const capable = list.filter((n) => n.sep <= 120 && capableOf(n.tmag)).map((n) => {
+        const fr = 10 ** (-0.4 * (n.tmag - star.tmag!)), need = (D * (1 + fr)) / fr;
+        const dp = pixOut.get(n.id);
+        // Evidence against each star relative to the target: pixels where they ran, else the centroid bound.
+        const weight = dp !== undefined ? Math.exp(-Math.max(-50, Math.min(50, (dp - tgtD) / 2))) : exclArcsec !== undefined && n.sep > exclArcsec ? Math.exp(-0.5 * (n.sep / Math.max(1, exclArcsec / 3)) ** 2) : 1;
+        return { ...n, need, weight, byPixels: dp !== undefined && dp - tgtD > 9 };
+      }).sort((a, b) => a.sep - b.sep);
+      nbWeights.push(...capable.map((n) => { const x = n as typeof n & { radius?: number; mass?: number; teff?: number }; return { id: x.id, label: x.label, sep: x.sep, tmag: x.tmag, weight: x.weight, radius: x.radius, mass: x.mass, teff: x.teff }; }));
+      const open = capable.filter((n) => !n.byPixels && (exclArcsec === undefined || n.sep <= exclArcsec));
       const close = open.filter((n) => n.sep <= 63);
-      const v = `${capable.length} of ${nb.v.length - 1} TIC stars within 2′ could cause a ${ppt(D)} dip if eclipsed${capable.length ? `: ${capable.slice(0, 4).map((n) => `TIC ${n.tic} at ${n.sep.toFixed(0)}″, T ${n.tmag.toFixed(1)} (needs a ${Math.round(n.need * 100)}% eclipse)`).join("; ")}` : ""}`;
-      if (!capable.length) add(3, "neighbours", "Nearby sources", "pass", "no star within 2′ is bright enough to make this dip, even fully eclipsed", v);
-      else if (close.length) add(3, "neighbours", "Nearby sources", "flag", `${close.length} star${close.length === 1 ? "" : "s"} within 1′ (3 TESS pixels) could make the dip${exclArcsec !== undefined ? " and the centroid test doesn't rule them out" : ""}: needs higher-resolution photometry`, v);
-      else add(3, "neighbours", "Nearby sources", "pass", exclArcsec !== undefined && open.length < capable.length ? `the centroid test rules out ${capable.length - open.length} of them; the rest are over 1′ away` : "the ones that could are over 1′ away", v);
+      const src = gcone.v ? "Gaia DR3" : "TIC";
+      const v = `${capable.length} of ${list.length} ${src} stars within 2′ could cause a ${ppt(D)} dip if eclipsed${capable.length ? `: ${capable.slice(0, 4).map((n) => `${n.label} at ${n.sep.toFixed(0)}″, T ${n.tmag.toFixed(1)} (needs a ${Math.round(n.need * 100)}% eclipse${n.byPixels ? ", ruled out by pixels" : ""})`).join("; ")}` : ""}`;
+      const ruled = capable.length - open.length;
+      if (!capable.length) add(3, "neighbours", "Nearby sources", "pass", `no star within 2′ is bright enough to make this dip, even fully eclipsed (${src}, complete to G ≈ 21)`, v);
+      else if (close.length) add(3, "neighbours", "Nearby sources", "flag", `${close.length} star${close.length === 1 ? "" : "s"} within 1′ (3 TESS pixels) could make the dip and ${ruled ? `the pixel and centroid tests rule out the other ${ruled}` : "neither the pixels nor the centroids rule them out"}: needs seeing-limited photometry of the neighbours on a transit night`, v);
+      else add(3, "neighbours", "Nearby sources", "pass", ruled ? `the pixel and centroid tests rule out ${ruled} of them; the rest are over 1′ away` : "the ones that could are over 1′ away", v);
+    }
+  }
+
+  // Unresolved companions: what Gaia can't see is what high-resolution imaging would look for.
+  {
+    const g = gaia.v, dpc = star?.distance ?? (g?.parallax && g.parallax > 0 ? 1000 / g.parallax : undefined);
+    const close = gcone.v?.filter((x) => x.sep > 0.3 && x.sep < 4 && x.source !== g?.source) ?? [];
+    const imaging = exo.v?.imaging ?? [];
+    const v = [g ? `RUWE ${g.ruwe?.toFixed(2) ?? "?"}` : "", close.length ? `${close.length} Gaia source${close.length === 1 ? "" : "s"} within 4″: ${close.map((x) => `${x.sep.toFixed(1)}″ ΔG ${(x.g - (g?.g ?? x.g)).toFixed(1)}`).join(", ")}` : "no Gaia source within 4″", imaging.length ? `${imaging.length} high-resolution image${imaging.length === 1 ? "" : "s"} on ExoFOP` : ""].filter(Boolean).join(" · ");
+    const au = (as: number) => (dpc ? ` (${Math.round(as * dpc)} au at ${Math.round(dpc)} pc)` : "");
+    if (!g && !gcone.v) add(3, "unresolved", "Unresolved companions", "not-run", "Gaia unavailable", v);
+    else if (close.some((x) => capableOf(x.tmag))) add(3, "unresolved", "Unresolved companions", "flag", `a Gaia source ${close.filter((x) => capableOf(x.tmag))[0].sep.toFixed(1)}″ away is blended with the target in every TESS pixel and bright enough to make the dip`, v);
+    else if (imaging.length) add(3, "unresolved", "Unresolved companions", "pass", `Gaia resolves nothing that could make the dip within 4″, and high-resolution imaging is on ExoFOP (${imaging.slice(0, 2).map((i) => `${i.telescope}${i.contrast ? ` ${i.contrast}` : ""}`).join("; ")})`, v);
+    else add(3, "unresolved", "Unresolved companions", "not-run", `Gaia sees no companion beyond ~1″${au(1)}${(g?.ruwe ?? 2) < 1.4 ? `, and RUWE ${g!.ruwe!.toFixed(2)} disfavours bright ones at ~0.1-1″` : ""}; closer than ~0.5-1″${au(0.5)} only speckle/AO imaging can look (the statistical validation below allows for them)`, v);
+  }
+
+  // ZTF: a second photometric system in g and r, for transits deep enough on stars faint enough.
+  {
+    const g = gaia.v?.g ?? (star?.tmag !== undefined ? star.tmag + 0.4 : undefined);
+    if (!periodic || !ephem) add(3, "ztf", "Ground photometry (ZTF archive)", "not-run", "needs an ephemeris");
+    else if (g === undefined || g < 12.5) add(3, "ztf", "Ground photometry (ZTF archive)", "not-run", `the star (G ${g?.toFixed(1) ?? "?"}) saturates ZTF (G < 12.5)`);
+    else if (D < 3e-3) add(3, "ztf", "Ground photometry (ZTF archive)", "not-run", `${ppt(D)} is too shallow for ZTF's ~1-2% per-point precision`);
+    else if (Date.now() > deadline - 25_000) add(3, "ztf", "Ground photometry (ZTF archive)", "not-run", "time budget used up");
+    else {
+      try {
+        const pts = await ztfLightCurve(pos.ra, pos.dec, signal);
+        const dz = ztfDepths(pts, ephem.period, ephem.t0, shape?.T14 ?? dur);
+        const bands = (["g", "r"] as const).flatMap((b) => (dz[b] ? [{ b, ...dz[b]! }] : []));
+        const v = `${pts.length} ZTF points; ${bands.map((x) => `${x.b}: ${ppt(x.depth)} ± ${r3(x.err * 1000)} (${x.inTransit} in transit)`).join("; ") || "too few in transit"}`;
+        const seen = bands.filter((x) => x.depth / x.err >= 3);
+        if (!bands.length) add(3, "ztf", "Ground photometry (ZTF archive)", "not-run", "too few ZTF points fall in transit", v);
+        else if (bands.length === 2 && seen.length && Math.abs(bands[0].depth - bands[1].depth) / Math.hypot(bands[0].err, bands[1].err) > 3 && Math.abs(bands[0].depth / bands[1].depth - 1) > 0.3)
+          add(3, "ztf", "Ground photometry (ZTF archive)", "flag", "the depth differs between g and r: a chromatic dip, the mark of a blend of stars of different colours", v);
+        else if (seen.length) add(3, "ztf", "Ground photometry (ZTF archive)", seen.every((x) => Math.abs(x.depth - D) / Math.hypot(x.err, 1e-9) < 3) ? "pass" : "flag", seen.every((x) => Math.abs(x.depth - D) / x.err < 3) ? "ZTF sees the transit at the TESS depth, in ZTF's 1″ seeing-limited images: on the target, independently of TESS" : "ZTF sees a dip, but at a different depth than TESS: dilution differs, so a neighbour may contribute", v);
+        else if (bands.every((x) => (D - x.depth) / x.err > 3)) add(3, "ztf", "Ground photometry (ZTF archive)", "fail", "ZTF's seeing-limited photometry of the target shows no dip where TESS predicts one: the eclipse is on another star blended in TESS's 21″ pixels", v);
+        else add(3, "ztf", "Ground photometry (ZTF archive)", "info", "ZTF can't tell either way at this depth", v);
+      } catch (e) { add(3, "ztf", "Ground photometry (ZTF archive)", "not-run", `ZTF unavailable (${(e as Error).message.slice(0, 80)})`); }
     }
   }
 
@@ -647,6 +925,41 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     else add(3, "independent", "Another season", input.kind === "single" ? "info" : "flag", input.kind === "single" ? "a single transit can only be in one season" : "transits only in one year, though other years have data", v);
   }
 
+  // Statistical validation: how likely each false-positive scenario is, given everything above.
+  let fppOut: VetReport["fpp"];
+  if (!periodic || N < 3 || !shape) add(3, "fpp", "False-positive probability", "not-run", !periodic ? "needs a period" : N < 3 ? "fewer than 3 transits" : "no transit shape");
+  else if (!M || !R || !star?.teff || star.tmag === undefined) add(3, "fpp", "False-positive probability", "not-run", "needs the star's mass, radius, Teff and Tmag");
+  else if (Date.now() > deadline - 15_000) add(3, "fpp", "False-positive probability", "not-run", "time budget used up");
+  else {
+    try {
+      const noise = Math.max(median(primary.map((p) => p.beta)), shift?.fred ?? 1);
+      const binned = (center: number): FppData | undefined => {
+        const pts = stack(epochs(P, center, from, to).flatMap(({ t }) => { const part = partAt(primary, t, dur); return part ? [{ t, part }] : []; }), Math.max(2.5 * shape!.T14, 0.1));
+        if (pts.dt.length < 20) return undefined;
+        const width = Math.max(cadenceOf(primary[0].flat.t), shape!.T14 / 25), reach = Math.max(2.5 * shape!.T14, 0.1);
+        const nb = Math.ceil((2 * reach) / width), sum = new Float64Array(nb), cnt = new Float64Array(nb), sw = new Float64Array(nb);
+        for (let i = 0; i < pts.dt.length; i++) { const k = Math.floor((pts.dt[i] + reach) / width); if (k >= 0 && k < nb) { sum[k] += pts.f[i]; cnt[k]++; sw[k] += pts.sg[i] ** 2; } }
+        const keep = [...cnt.keys()].filter((k) => cnt[k] >= 3);
+        return { dt: Float64Array.from(keep, (k) => -reach + (k + 0.5) * width), f: Float64Array.from(keep, (k) => sum[k] / cnt[k]), err: Float64Array.from(keep, (k) => (noise * Math.sqrt(sw[k] / cnt[k])) / Math.sqrt(cnt[k])) };
+      };
+      const primaryData = binned(T0);
+      if (!primaryData) throw new Error("too few points around the transit");
+      const bg = gcone.v ? others.filter((g) => g.sep <= 120) : [];
+      const res = falsePositiveProbability({
+        P, T14: shape.T14, depth: D, primary: primaryData, secondary: binned(T0 + P / 2), oddEven,
+        star: { radius: R, mass: M, teff: star.teff, tmag: star.tmag, distance: star.distance },
+        kMaxKms, neighbours: nbWeights, background: { count: bg.length, radiusArcsec: 120, tmags: bg.map((g) => g.tmag) }, seed: Number(input.tic) % 2 ** 31,
+      });
+      fppOut = { fpp: res.fpp, nfpp: res.nfpp, scenarios: res.scenarios.slice(0, 8).map(({ id, label, prob }) => ({ id, label, prob })), notes: res.notes };
+      const pc = (x: number) => (x < 0.001 ? "< 0.1%" : `${(x * 100).toPrecision(2)}%`);
+      const v = `FPP ${pc(res.fpp)}, NFPP ${pc(res.nfpp)}; most likely: ${res.scenarios.slice(0, 3).map((x) => `${x.label} ${pc(x.prob)}`).join(", ")}`;
+      const tail = " (an approximate TRICERATOPS-style calculation: run TRICERATOPS with a contrast curve before claiming validation)";
+      if (res.nfpp > 0.5 || (res.fpp > 0.95 && comb.snr >= 15)) add(3, "fpp", "False-positive probability", "fail", `${res.nfpp > 0.5 ? "a nearby star is the most likely source" : "a false positive is far more likely than a planet"}${tail}`, v);
+      else if (res.fpp < 0.015 && res.nfpp < 0.001) add(3, "fpp", "False-positive probability", "pass", `low enough for statistical validation by TRICERATOPS's thresholds (FPP < 1.5%, NFPP < 0.1%)${tail}`, v);
+      else add(3, "fpp", "False-positive probability", "flag", `${res.fpp < 0.5 && res.nfpp < 0.001 ? "a likely planet, but not validated" : res.nfpp > 0.1 ? "a nearby false positive is plausible" : "a false positive is about as likely as a planet"}${tail}`, v);
+    } catch (e) { add(3, "fpp", "False-positive probability", "not-run", (e as Error).message.slice(0, 100)); }
+  }
+
   // ── Stage 4: follow-up observations (recommended, never run here) ──
   const rejected = checks.some((c) => c.status === "fail");
   const nTransits = periodic ? N : rows.filter((r) => r.m && r.coverage >= 0.5).length;
@@ -683,7 +996,7 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     }
   }
 
-  return finish({ events: rows.map(stripRow), ephemeris: ephem, next, sectors, lightCurves: lcs.length, transits: nTransits, gated: !!(known || gateFail) });
+  return finish({ events: rows.map(stripRow), ephemeris: ephem, next, sectors, lightCurves: lcs.length, transits: nTransits, gated: !!(known || gateFail), pixels, fpp: fppOut });
 }
 
 function stripRow(r: Row): VetEventRow {

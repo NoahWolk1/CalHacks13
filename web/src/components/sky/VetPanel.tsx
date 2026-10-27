@@ -111,9 +111,63 @@ export default function VetPanel({ input }: { input: VetInput }) {
         })}
       </div>
 
+      {r && <PixelView r={r} />}
       {st.events.length > 0 && <EventTable events={st.events} />}
       {r?.next?.length ? <div className="num mt-1 text-[11px] text-fg3">Next transits: {r.next.map((x) => `${x.utc}${x.err ? ` ± ${Math.max(1, Math.round(x.err * 1440))} min` : ""}`).join(" · ")}</div> : null}
       {r && <div className="mt-1 text-[11.5px] text-fg2">{r.submit}</div>}
+    </div>
+  );
+}
+
+type Pixels = {
+  sector: number; detection: number;
+  nx: number; ny: number; diff: number[]; oot: number[];
+  target: { x: number; y: number }; source?: { x: number; y: number };
+  stars: { x: number; y: number; label: string }[];
+  verdict?: string;
+};
+
+function PixelView({ r }: { r: VetReport }) {
+  const px = (r as VetReport & { pixels?: Pixels }).pixels;
+  if (!px || !px.nx || !px.ny || px.diff.length < px.nx * px.ny) return null;
+  const fin = (a: number[]) => a.filter(Number.isFinite);
+  const o = fin(px.oot), lo = o.length ? Math.min(...o) : 0, hi = o.length ? Math.max(...o) : 1;
+  const ad = fin(px.diff).map(Math.abs).sort((a, b) => a - b);
+  const scale = ad[Math.min(ad.length - 1, Math.floor(ad.length * 0.98))] || 1;
+  const grey = (v: number) => { if (!Number.isFinite(v)) return "#000"; const g = Math.round(255 * Math.sqrt(Math.max(0, (v - lo) / (hi - lo || 1)))); return `rgb(${g},${g},${g})`; };
+  const div = (v: number) => {
+    if (!Number.isFinite(v)) return "#000";
+    const t = Math.max(-1, Math.min(1, v / scale)), [R, G, B] = t >= 0 ? [242, 195, 91] : [94, 200, 216], a = Math.abs(t), base = 22;
+    return `rgb(${Math.round(base + (R - base) * a)},${Math.round(base + (G - base) * a)},${Math.round(base + (B - base) * a)})`;
+  };
+  return (
+    <details open className="mt-1.5">
+      <summary className="cursor-pointer text-[11px] text-fg3">Pixels · sector {px.sector}</summary>
+      <div className="mt-1 flex gap-3 max-sm:flex-col">
+        <Heat px={px} vals={px.oot} color={grey} title="Out of transit" />
+        <Heat px={px} vals={px.diff} color={div} title="Difference (in-transit loss)" cross />
+      </div>
+      <div className="num mt-1 text-[11px] text-fg2">source detected at {px.detection.toFixed(1)}σ</div>
+      {px.verdict && <div className="text-[11.5px] text-fg3">{px.verdict}</div>}
+    </details>
+  );
+}
+
+function Heat({ px, vals, color, title, cross }: { px: Pixels; vals: number[]; color: (v: number) => string; title: string; cross?: boolean }) {
+  const { nx, ny } = px, k = 120 / Math.max(nx, ny), w = nx * k, h = ny * k;
+  // pixel centres at integers; y=0 at the bottom
+  const X = (x: number) => (x + 0.5) * k, Y = (y: number) => h - (y + 0.5) * k;
+  const cells = [];
+  for (let y = 0; y < ny; y++) for (let x = 0; x < nx; x++) cells.push(<rect key={y * nx + x} x={x * k} y={h - (y + 1) * k} width={k + 0.3} height={k + 0.3} fill={color(vals[y * nx + x])} />);
+  return (
+    <div>
+      <div className="mb-0.5 text-[10.5px] text-fg3">{title}</div>
+      <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} className="rounded-sm bg-black">
+        {cells}
+        {px.stars.map((s, i) => <circle key={i} cx={X(s.x)} cy={Y(s.y)} r={2} fill="#9aa3ad" stroke="#000" strokeWidth={0.5}><title>{s.label}</title></circle>)}
+        <circle cx={X(px.target.x)} cy={Y(px.target.y)} r={Math.max(4, k * 0.6)} fill="none" stroke="#fff" strokeWidth={1.2}><title>target</title></circle>
+        {cross && px.source && <path d={`M${X(px.source.x) - 4} ${Y(px.source.y)}h8M${X(px.source.x)} ${Y(px.source.y) - 4}v8`} stroke="#ff6b6b" strokeWidth={1.4}><title>fitted source</title></path>}
+      </svg>
     </div>
   );
 }

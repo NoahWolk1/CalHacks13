@@ -3,10 +3,12 @@
 //
 // Stages, cheapest and most decisive first:
 //   0 host star sanity (catalogs; a hard gate: a fail stops the run unless forced)
-//   1 signal integrity (individual transits, SNR growth, period, aliases, detrending, depth stability)
-//   2 astrophysical false positives from the light curve (odd/even, secondary, shape, duration,
-//     density, variability)
-//   3 contamination and blends (centroids, apertures, neighbours, saturation, other pipelines)
+//   1 signal integrity (individual transits, event consistency, model-shift uniqueness, SNR growth,
+//     period, aliases, detrending, depth stability)
+//   2 astrophysical false positives (odd/even, secondary, shape, duration, density, variability,
+//     pulsation removal, archival radial velocities)
+//   3 contamination and blends (difference images, centroids, apertures, Gaia neighbours and
+//     unresolved companions, saturation, other pipelines, ZTF colours, a false-positive probability)
 //   4 follow-up observations: recommended, never run here
 //   5 triage: a tier and every check logged as pass / flag / fail / not run
 import type { SkyObject } from "./types";
@@ -62,6 +64,18 @@ export type VetReport = {
   sectors: number[]; lightCurves: number;
   gated: boolean;
   ms: number;
+  /** The difference image of the sector where the source shows best (Stage 3). */
+  pixels?: VetPixels;
+  /** Statistical validation (Stage 3): scenario probabilities, approximate. */
+  fpp?: { fpp: number; nfpp: number; scenarios: { id: string; label: string; prob: number }[]; notes: string[] };
+};
+
+export type VetPixels = {
+  sector: number; detection: number;
+  nx: number; ny: number; diff: number[]; oot: number[];
+  target: { x: number; y: number }; source?: { x: number; y: number };
+  stars: { x: number; y: number; label: string }[];
+  verdict?: string;
 };
 
 export type VetStreamEvent =
@@ -142,6 +156,7 @@ export function parseVetInput(b: unknown): VetInput | null {
   };
 }
 
+const pct = (x: number) => (x < 0.001 ? `${(x * 100).toPrecision(1)}%` : `${(x * 100).toPrecision(2)}%`);
 const ICON: Record<VetStatus, string> = { pass: "PASS", flag: "FLAG", fail: "FAIL", "not-run": "NOT RUN", info: "info" };
 
 /** The report as plain text (for a CTOI note, a notebook or a chat), every check included. */
@@ -163,7 +178,12 @@ export function reportText(r: VetReport): string {
     for (const e of r.events) lines.push(`  #${e.n} ${e.t.toFixed(3)} s${e.sector} ${e.pipeline}${e.camera ? ` cam${e.camera}/ccd${e.ccd}` : ""}  ${e.depth !== undefined ? `${(e.depth * 1000).toFixed(2)} ± ${((e.err ?? 0) * 1000).toFixed(2)}` : "n/a"}  ${e.snr !== undefined ? e.snr.toFixed(1) : "n/a"}  ${Math.round(e.coverage * 100)}%${e.oc !== undefined ? `  ${(e.oc * 1440).toFixed(1)} ± ${((e.ocErr ?? 0) * 1440).toFixed(1)}` : ""}${e.note ? `  (${e.note})` : ""}`);
   }
   if (r.next?.length) lines.push("", `Next transits: ${r.next.map((n) => `${n.utc}${n.err ? ` ± ${(n.err * 1440).toFixed(0)} min` : ""}`).join("; ")}`);
+  if (r.fpp) lines.push("", `False-positive probability (approximate, TRICERATOPS-style): FPP ${pct(r.fpp.fpp)}, NFPP ${pct(r.fpp.nfpp)}; ${r.fpp.scenarios.slice(0, 5).map((x) => `${x.id} ${pct(x.prob)}`).join(", ")}`);
   if (r.open.length) lines.push("", "Open items:", ...r.open.map((o) => `  - ${o}`));
+  if (r.ephemeris && (r.tier === "A" || r.tier === "B")) {
+    const T14 = i.duration * 24;
+    lines.push("", `CTOI fields: TIC ${i.tic} | period ${r.ephemeris.period.toFixed(6)} ± ${(r.ephemeris.errP ?? 0).toFixed(6)} d | epoch BJD ${(r.ephemeris.t0 + 2457000).toFixed(5)} ± ${(r.ephemeris.errT0 ?? 0).toFixed(5)} | depth ${Math.round(i.depth * 1e6)} ppm | duration ${T14.toFixed(2)} h | tier ${r.tier}`);
+  }
   lines.push("", r.submit);
   return lines.join("\n");
 }
