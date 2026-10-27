@@ -1,16 +1,18 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { ArrowLeft, CircleDashed, Crosshair, ExternalLink, LoaderCircle, Telescope } from "lucide-react";
+import { ArrowLeft, CircleDashed, Crosshair, ExternalLink, LoaderCircle, Radar, Telescope } from "lucide-react";
 import type { SkyActivity } from "@/lib/client/skyFleet";
 import { Body, Equator, Observer } from "astronomy-engine";
 import { APP_NAME } from "@/lib/brand";
 import { formatDec, formatRa, parseCone } from "@/lib/sky/geom";
-import { isNewFind, SKY_MAX_RADIUS, type AnalysisStar, type Cone, type SkyAnalysis, type SkyEvent, type SkyNote, type SkyObject, type SkyObserver, type SkyPlan, type SkySourceReport, type SkySummary, type StarResult } from "@/lib/sky/types";
+import { isNewFind, SKY_MAX_RADIUS, type AnalysisStar, type Cone, type SkyAnalysis, type SkyEvent, type SkyNote, type SkyObject, type SkyObserver, type SkyPlan, type SkySourceReport, type SkySummary, type StarResult, type SurveySummary, type SurveyView } from "@/lib/sky/types";
 import { CATEGORY_STYLE, SURVEYS, type AtlasApi } from "./SkyAtlas";
 import SkySearch from "./SkySearch";
+import { AGENT_COLOR, fmt, FindCard, Notebook, PLAYBOOK, sectorList } from "./finds";
+import SurveyPanel from "./SurveyPanel";
 
 const SkyAtlas = dynamic(() => import("./SkyAtlas"), { ssr: false });
 
@@ -57,9 +59,23 @@ export default function SkyApp() {
   const [notes, setNotes] = useState<SkyNote[]>([]);
   const [analysis, setAnalysis] = useState<{ analysis: SkyAnalysis | null; note?: string; ms: number } | null>(null);
   const [run, setRun] = useState(0);
+  // Deep survey being viewed (?survey=id) and recent ones.
+  const [deepId, setDeepId] = useState<string | null>(null);
+  const [recent, setRecent] = useState<SurveySummary[]>([]);
+  const [starting, setStarting] = useState(false);
+  const deepCone = useRef<string | null>(null);
   const api = useRef<AtlasApi | null>(null);
   const abort = useRef<AbortController | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+
+  /** Shows a deep survey's panel (null closes it) and keeps ?survey= in the URL for sharing. */
+  function openDeep(id: string | null) {
+    setDeepId(id);
+    deepCone.current = null;
+    const u = new URL(window.location.href);
+    if (id) u.searchParams.set("survey", id); else u.searchParams.delete("survey");
+    window.history.replaceState(null, "", u);
+  }
 
   const applyCone = useCallback((c: Cone, move = false) => {
     const n = parseCone(c);
@@ -75,6 +91,7 @@ export default function SkyApp() {
     abort.current = ctl;
     setStatus("running"); setObjects([]); setSources([]); setSummary(null); setObs(null); setObserving(false); setNote(null); setError(null); setSelected(null); setTiming({});
     setLcStars([]); setLcResults([]); setPlan(null); setNotes([]); setAnalysis(null); setRun((n) => n + 1);
+    openDeep(null);
     try {
       const res = await fetch("/api/sky/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...c, question: q.trim() || undefined }), signal: ctl.signal });
       if (!res.ok || !res.body) throw new Error(`${res.status} ${res.statusText}`);
@@ -109,6 +126,38 @@ export default function SkyApp() {
       setError((e as Error).message); setStatus("error");
     }
   }, []);
+
+  const loadRecent = useCallback(() => {
+    fetch("/api/sky/survey", { cache: "no-store" }).then((r) => r.json()).then((j: { surveys?: SurveySummary[] }) => setRecent(j.surveys ?? [])).catch(() => {});
+  }, []);
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get("survey");
+    if (id) openDeep(id);
+    loadRecent();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const startDeep = async () => {
+    const c = parseCone({ ra: draft.ra, dec: draft.dec, radius: draft.radius });
+    if (!c) { setError("Enter RA 0–360°, Dec −90…90°, radius > 0"); return; }
+    setStarting(true); setError(null);
+    try {
+      const res = await fetch("/api/sky/survey", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(c) });
+      const j = await res.json().catch(() => null);
+      if (!res.ok || !j?.id) throw new Error(j?.error ?? `${res.status} ${res.statusText}`);
+      abort.current?.abort();
+      setStatus("idle"); setSources([]); setSummary(null); setObs(null); setNote(null); setLcStars([]); setLcResults([]); setPlan(null); setNotes([]); setAnalysis(null);
+      openDeep(j.id);
+      loadRecent();
+    } catch (e) {
+      setError(`Couldn't start the survey: ${(e as Error).message}`);
+    } finally {
+      setStarting(false);
+    }
+  };
+  const onDeepView = useCallback((v: SurveyView) => {
+    setObjects(v.objects);
+    if (deepCone.current !== v.survey.id) { deepCone.current = v.survey.id; applyCone(v.survey.cone, true); }
+  }, [applyCone]);
 
   const pickSample = (c: Cone) => { applyCone(c, true); void research(c, question); };
   const runDraft = () => {
@@ -214,12 +263,35 @@ export default function SkyApp() {
                 <Crosshair size={13} strokeWidth={1.5} /> Use view
               </button>
               <div className="flex-1" />
+              <button onClick={startDeep} disabled={busy || starting} title="Search every star and every TESS sector in this cone in the background: it keeps going after you close the tab"
+                className="flex h-[30px] items-center gap-1.5 rounded-md border border-[#7fd1b9]/60 px-2.5 text-[12.5px] text-[#7fd1b9] transition-colors hover:bg-[#7fd1b9]/10 disabled:opacity-50">
+                {starting ? <LoaderCircle size={13} className="animate-spin" /> : <Radar size={13} strokeWidth={1.5} />} Deep survey
+              </button>
               <button onClick={runDraft} disabled={busy}
                 className="flex h-[30px] items-center gap-1.5 rounded-md bg-accent px-3 text-[12.5px] font-medium text-[#1a1208] transition-opacity hover:opacity-90 disabled:opacity-60">
                 {busy ? <LoaderCircle size={13} className="animate-spin" /> : <Telescope size={13} strokeWidth={1.75} />} Research
               </button>
             </div>
           </section>
+
+          {!deepId && recent.length > 0 && (
+            <section className="border-b border-line px-4 py-3">
+              <div className="mb-1.5 text-[11.5px] uppercase tracking-[0.06em] text-fg3">Deep surveys</div>
+              <ul className="space-y-0.5">
+                {recent.slice(0, 5).map((r) => (
+                  <li key={r.id}>
+                    <button onClick={() => openDeep(r.id)} className="flex w-full items-center gap-2 text-left text-[12px]">
+                      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${r.status === "running" ? "animate-pulse bg-[#7fd1b9]" : r.status === "done" ? "bg-ok" : "bg-fg4"}`} />
+                      <span className="num text-fg2">{formatRa(r.cone.ra)} {formatDec(r.cone.dec)} · r {r.cone.radius}°</span>
+                      <span className="num ml-auto text-fg3">{r.seasons ? `${Math.round(((r.seasonsDone + r.seasonsFailed) / r.seasons) * 100)}%` : r.status}{r.finds ? ` · ${r.finds} find${r.finds === 1 ? "" : "s"}` : ""}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {deepId && <SurveyPanel id={deepId} byId={byId} onView={onDeepView} onCite={select} onClose={() => { openDeep(null); loadRecent(); }} />}
 
           {(sources.length > 0 || status === "running") && (
             <section className="border-b border-line p-4">
@@ -357,19 +429,6 @@ function ObserverSection({ obs, byId, onCite }: { obs: { observer: SkyObserver |
   );
 }
 
-const AGENT_COLOR: Record<string, string> = { strategist: "#7fd1b9", lightcurves: "#5ec8d8", transits: "#f2c35b", singles: "#f7a35c", variability: "#b39dff", vetting: "#ff8f7a", census: "#c9a0ff", followup: "#8fd16a" };
-const PLAYBOOK: Record<AnalysisStar["playbook"], string> = { "multi-planet": "multi-planet", "long-period": "long-period", "deep-search": "deep", census: "census" };
-const fmt = (n: number, d = 3) => (Number.isFinite(n) ? +n.toPrecision(d) : "n/a");
-const sectorList = (s: number[]) => (s.length > 2 && s[s.length - 1] - s[0] === s.length - 1 ? `s${s[0]}–${s[s.length - 1]}` : `s${s.join(",")}`);
-
-/** One-line numbers for a find: period or time, depth, SNR. */
-function findLine(o: SkyObject) {
-  const p = o.props;
-  if (o.category === "variable") return `TIC ${p.TIC} · P ${p["period (days)"]} d · ${p["amplitude (ppt)"]} ppt`;
-  const when = p["period (days)"] !== undefined ? `P ${p["period (days)"]} d` : `BTJD ${p["time (BTJD)"]}`;
-  return `TIC ${p.TIC} · ${when} · depth ${p["depth (ppt)"]} ppt · ${p["duration (hours)"]} h · SNR ${p.SNR}${p["implied radius (Earth = 1)"] ? ` · ~${p["implied radius (Earth = 1)"]} R⊕` : ""}`;
-}
-
 /** Light-curve discovery agents: the Strategist's plan and notebook, per-star progress while running,
  *  then each agent's report, the new finds (labelled as candidates needing follow-up, never as
  *  discoveries) and everything the Vetter rejected. */
@@ -381,9 +440,6 @@ function AnalysisSection({ stars, results, plan, notes, analysis, running, byId,
   const byTic = new Map(results.map((r) => [r.tic, r]));
   const finds = a?.objects.filter(isNewFind) ?? [];
   const rejected = a?.objects.filter((o) => o.category === "candidate" && !isNewFind(o)) ?? [];
-  const cite = (ids?: string[]) => ids?.filter((id) => byId.has(id)).map((id) => (
-    <button key={id} onClick={() => onCite(id)} className="num ml-1 rounded border border-line px-1 text-[10.5px] text-fg3 hover:text-fg1">{id}</button>
-  ));
   return (
     <section className="border-b border-line p-4">
       <div className="mb-2 flex items-baseline justify-between text-[11.5px] uppercase tracking-[0.06em] text-fg3">
@@ -393,31 +449,14 @@ function AnalysisSection({ stars, results, plan, notes, analysis, running, byId,
       {running && !stars.length && <div className="caret text-[12.5px] text-fg3">Strategist is ranking the field&apos;s stars by where something new can still hide</div>}
       {analysis && !a && <div className="text-[12.5px] text-fg3">{analysis.note ?? "Light-curve analysis unavailable this run."}</div>}
       {a?.note && <div className="text-[12.5px] text-fg3">{a.note}</div>}
-      {notes.length > 0 && (
-        <ol className="mb-2.5 space-y-1 border-l-2 pl-2.5" style={{ borderColor: AGENT_COLOR.strategist + "66" }}>
-          {notes.map((n, i) => (
-            <li key={i} className="text-[12.5px] leading-snug">
-              <span className="mr-1.5 text-[10.5px] uppercase tracking-[0.05em]" style={{ color: AGENT_COLOR[n.agent] }}>{n.agent === "strategist" ? (i === 0 && plan ? `Strategist${plan.by === "claude" ? " · Claude" : ""}` : "Strategist") : n.agent === "followup" ? "Follow-up" : n.agent}</span>
-              <span className="text-fg2">{n.text}</span>{cite(n.ids)}
-            </li>
-          ))}
-          {running && stars.length > 0 && <li className="caret text-[12px] text-fg4">agents working</li>}
-        </ol>
-      )}
+      <Notebook notes={notes} byId={byId} onCite={onCite}
+        label={(n, i) => (n.agent === "strategist" && i === 0 && plan ? `Strategist${plan.by === "claude" ? " · Claude" : ""}` : n.agent === "strategist" ? "Strategist" : n.agent === "followup" ? "Follow-up" : n.agent)}
+        tail={running && stars.length > 0 ? <li className="caret text-[12px] text-fg4">agents working</li> : undefined} />
       {a && finds.length > 0 && (
         <div className="mb-2.5">
           <div className="mb-1 text-[11.5px] text-[#f2c35b]">{finds.length} new find{finds.length === 1 ? "" : "s"}: candidates for follow-up, not confirmed discoveries</div>
           <ul className="space-y-1.5">
-            {finds.map((o) => (
-              <li key={o.id} className="rounded-md border border-[#f2c35b]/50 bg-[#f2c35b]/[0.06] px-2.5 py-1.5 text-[12.5px]">
-                <button onClick={() => onCite(o.id)} className="flex w-full items-center gap-2 text-left">
-                  <span className="num shrink-0 text-[11px] text-fg4">{o.id}</span>
-                  <span className="truncate text-[#f2c35b]">{o.type}</span>
-                </button>
-                <div className="num mt-0.5 text-[11.5px] text-fg3">{findLine(o)}</div>
-                {o.props["follow-up"] && <div className="mt-0.5 text-[11.5px] text-fg2">Follow-up: {o.props["follow-up"]}</div>}
-              </li>
-            ))}
+            {finds.map((o) => <FindCard key={o.id} o={o} onCite={onCite} />)}
           </ul>
         </div>
       )}
