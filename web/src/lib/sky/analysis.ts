@@ -151,7 +151,7 @@ export function variableObject(id: string, star: AnalysisStar, v: NonNullable<St
 }
 
 /** Single-dip result (C id). */
-function singleObject(id: string, star: AnalysisStar, e: NonNullable<StarResult["singles"]>[number], label: string, reason: string, starRadius?: number): SkyObject {
+export function singleObject(id: string, star: AnalysisStar, e: NonNullable<StarResult["singles"]>[number], label: string, reason: string, starRadius?: number): SkyObject {
   const rp = impliedRadiusEarth(e.depth, starRadius);
   const props: Record<string, string | number> = {
     verdict: label,
@@ -185,7 +185,7 @@ async function within<T>(p: Promise<T>, ms: number): Promise<{ v: T | null; err?
 }
 
 /** Downloads products (two at a time), each bounded by the deadline; failures are counted, not fatal. */
-async function download(products: LcProduct[], signal: AbortSignal, deadline: number): Promise<{ lcs: LightCurve[]; errors: string[] }> {
+export async function download(products: LcProduct[], signal: AbortSignal, deadline: number): Promise<{ lcs: LightCurve[]; errors: string[] }> {
   const lcs: LightCurve[] = [], errors: string[] = [];
   await pool(products, 2, async (p) => {
     const limit = Math.min(LC_TIMEOUT_MS, deadline - Date.now());

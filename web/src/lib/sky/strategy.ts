@@ -192,3 +192,32 @@ export async function claudeReview(lines: string, items: Followable[], max: numb
   const notes = parsed.data.notes.map((n) => ({ ids: n.ids.filter((x) => valid.has(x)), text: n.text.trim() })).filter((n) => n.ids.length && n.text);
   return { actions, notes };
 }
+
+// ── deep surveys: milestone reviews ─────────────────────────────────────────
+
+const SurveyReviewSchema = z.object({
+  notes: z.array(z.object({ ids: z.array(z.string()), text: z.string() })),
+  prioritize: z.array(z.object({ tic: z.string(), why: z.string() })),
+});
+
+const SURVEY_REVIEW_SYSTEM = `You are the Strategist of a deep survey: your team of agents is searching every TESS light curve of every star in one field, season by season (a season is a run of up to 4 nearby sectors searched together). You are shown the progress and the results so far: periodic transit signals and single dips (C ids, with the Vetter's verdict and in how many seasons they were seen), duotransit candidates (two lone dips on one star, with the orbital periods still allowed by when TESS was watching), and variable stars (V ids, with the Variable Census verdict).
+In "notes", write 1-4 short lab-notebook observations (each at most 30 words) interpreting the most interesting results physically (implied size, whether a duration fits the star, what a period means, whether a signal seen in several seasons is now strong), each citing the ids it is about. Never call anything a confirmed discovery.
+In "prioritize", name up to 5 TIC ids from the results whose remaining seasons should be searched next (stars where more data could confirm or reject a new find), with a short why. Leave it empty when nothing needs it.`;
+
+export async function claudeSurveyReview(progress: string, lines: string, valid: Set<string>, tics: Set<string>, signal: AbortSignal) {
+  const res = await llm()!.beta.messages.create({
+    model: MODEL,
+    max_tokens: 1500,
+    output_config: { effort: "low", format: betaZodOutputFormat(SurveyReviewSchema) },
+    ...FALLBACK,
+    system: SURVEY_REVIEW_SYSTEM,
+    messages: [{ role: "user", content: `PROGRESS\n${progress}\n\nRESULTS\n${lines}` }],
+  }, { signal });
+  const text = res.content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join("");
+  const parsed = SurveyReviewSchema.safeParse(JSON.parse(text));
+  if (!parsed.success) throw new Error("review did not match schema");
+  return {
+    notes: parsed.data.notes.map((n) => ({ ids: n.ids.filter((x) => valid.has(x)), text: n.text.trim() })).filter((n) => n.ids.length && n.text),
+    prioritize: parsed.data.prioritize.map((p) => ({ tic: p.tic.replace(/^TIC\s*/i, "").trim(), why: p.why.trim() })).filter((p) => tics.has(p.tic)).slice(0, 5),
+  };
+}
