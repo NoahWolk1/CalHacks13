@@ -48,7 +48,7 @@ export default function SurveyPanel({ id, byId, onView, onCite, onClose }: {
 
   const stop = async () => { await fetch(`/api/sky/survey/${encodeURIComponent(id)}/stop`, { method: "POST" }).catch(() => {}); void load().catch(() => {}); };
   const share = async () => {
-    try { await navigator.clipboard.writeText(`${location.origin}/sky?survey=${id}`); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* clipboard blocked */ }
+    try { await navigator.clipboard.writeText(`${location.origin}/space?survey=${id}`); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* clipboard blocked */ }
   };
 
   const s = view?.survey;

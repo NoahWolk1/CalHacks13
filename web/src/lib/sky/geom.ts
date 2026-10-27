@@ -22,13 +22,14 @@ export function parseCone(raw: unknown): Cone | null {
 export const adqlNum = (n: number) => n.toFixed(6);
 
 export function formatRa(ra: number) {
-  const h = ra / 15;
-  const hh = Math.floor(h), mm = Math.floor((h - hh) * 60), ss = ((h - hh) * 60 - mm) * 60;
-  return `${String(hh).padStart(2, "0")}h${String(mm).padStart(2, "0")}m${ss.toFixed(0).padStart(2, "0")}s`;
+  // Round the total first, so 56.75° reads 03h47m00s, not 03h46m60s.
+  const t = Math.round((ra / 15) * 3600) % 86400;
+  const hh = Math.floor(t / 3600), mm = Math.floor((t % 3600) / 60), ss = t % 60;
+  return `${String(hh).padStart(2, "0")}h${String(mm).padStart(2, "0")}m${String(ss).padStart(2, "0")}s`;
 }
 
 export function formatDec(dec: number) {
   const s = dec < 0 ? "-" : "+";
-  const a = Math.abs(dec), d = Math.floor(a), m = Math.floor((a - d) * 60), sec = ((a - d) * 60 - m) * 60;
-  return `${s}${String(d).padStart(2, "0")}°${String(m).padStart(2, "0")}′${sec.toFixed(0).padStart(2, "0")}″`;
+  const t = Math.round(Math.abs(dec) * 3600), d = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), sec = t % 60;
+  return `${s}${String(d).padStart(2, "0")}°${String(m).padStart(2, "0")}′${String(sec).padStart(2, "0")}″`;
 }

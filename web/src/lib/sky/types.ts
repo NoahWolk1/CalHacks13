@@ -113,12 +113,24 @@ export type SkyEvent =
   | { type: "analysis"; analysis: SkyAnalysis | null; note?: string; ms: number }
   | { type: "summary"; summary: SkySummary | null; note?: string; ms: number }
   | { type: "observer"; observer: SkyObserver | null; image?: string; note?: string; ms: number }
+  /** First event of a recorded run: its mission id, for the share link (/space?mission=<id>). */
+  | { type: "mission"; id: string; ms: number }
   | { type: "error"; message: string };
 
 export const SKY_MAX_RADIUS = 3;
 
+// ── missions: recorded Research runs, shareable and replayable ───────────────
+
+export type MissionStatus = "running" | "done" | "stopped" | "error";
+export type MissionMeta = {
+  id: string; cone: Cone; question?: string; label: string; createdAt: number; updatedAt: number; status: MissionStatus;
+  /** Filled in as the run goes. */
+  finds?: number; objects?: number; headline?: string; llm?: boolean;
+};
+export type MissionView = { mission: MissionMeta; events: SkyEvent[]; next: number };
+
 /** The analysis results that would be new if they hold up (the rest are known or rejected). */
-export const isNewFind = (o: Pick<SkyObject, "type">) => /^(Unvetted|Candidate additional|Single-transit|Uncatalogued)/.test(o.type);
+export const isNewFind = (o: Pick<SkyObject, "type">) => /^(Unvetted|Candidate additional|Duotransit|Single-transit|Uncatalogued)/.test(o.type);
 
 // ── deep surveys (survey.ts): every star, every sector, in the background ──────
 

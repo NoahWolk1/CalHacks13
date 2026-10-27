@@ -1,6 +1,10 @@
 // Shared pieces for showing what the discovery agents found: the quick run's AnalysisSection
 // (SkyApp) and the deep-survey panel (SurveyPanel).
+import { useState } from "react";
+import { ShieldCheck } from "lucide-react";
 import type { AnalysisStar, SkyNote, SkyObject } from "@/lib/sky/types";
+import { vetInputFrom } from "@/lib/sky/vetShared";
+import VetPanel from "./VetPanel";
 
 export const AGENT_COLOR: Record<string, string> = { strategist: "#7fd1b9", lightcurves: "#5ec8d8", transits: "#f2c35b", singles: "#f7a35c", variability: "#b39dff", vetting: "#ff8f7a", census: "#c9a0ff", followup: "#8fd16a" };
 export const PLAYBOOK: Record<AnalysisStar["playbook"], string> = { "multi-planet": "multi-planet", "long-period": "long-period", "deep-search": "deep", census: "census" };
@@ -17,17 +21,29 @@ export function findLine(o: SkyObject) {
   return `TIC ${p.TIC} · ${when} · depth ${p["depth (ppt)"]} ppt · ${p["duration (hours)"]} h · SNR ${p.SNR}${p["implied radius (Earth = 1)"] ? ` · ~${p["implied radius (Earth = 1)"]} R⊕` : ""}`;
 }
 
-/** A new find: labelled as a candidate needing follow-up, never as a discovery. */
+/** A new find: labelled as a candidate needing follow-up, never as a discovery. Transit finds can be
+ *  vetted in depth (VetPanel). */
 export function FindCard({ o, onCite }: { o: SkyObject; onCite: (id: string) => void }) {
+  const [vet, setVet] = useState(false);
+  const input = vetInputFrom(o);
   return (
     <li className="rounded-md border border-[#f2c35b]/50 bg-[#f2c35b]/[0.06] px-2.5 py-1.5 text-[12.5px]">
-      <button onClick={() => onCite(o.id)} className="flex w-full items-center gap-2 text-left">
-        <span className="num shrink-0 text-[11px] text-fg4">{o.id}</span>
-        <span className="truncate text-[#f2c35b]">{o.type}</span>
-      </button>
+      <div className="flex items-center gap-2">
+        <button onClick={() => onCite(o.id)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+          <span className="num shrink-0 text-[11px] text-fg4">{o.id}</span>
+          <span className="truncate text-[#f2c35b]">{o.type}</span>
+        </button>
+        {input && (
+          <button onClick={() => setVet((v) => !v)} title="Vet this find: host star, every transit, false-positive and blend tests, a tier"
+            className={`flex shrink-0 items-center gap-1 rounded border px-1.5 py-px text-[11px] ${vet ? "border-[#7fd1b9]/60 text-[#7fd1b9]" : "border-line text-fg3 hover:text-fg1"}`}>
+            <ShieldCheck size={11} />vet
+          </button>
+        )}
+      </div>
       <div className="num mt-0.5 text-[11.5px] text-fg3">{findLine(o)}</div>
       {o.props.seasons && <div className="mt-0.5 text-[11.5px] text-fg3">{String(o.props.seasons)}</div>}
       {o.props["follow-up"] && <div className="mt-0.5 text-[11.5px] text-fg2">Follow-up: {o.props["follow-up"]}</div>}
+      {vet && input && <VetPanel input={input} />}
     </li>
   );
 }

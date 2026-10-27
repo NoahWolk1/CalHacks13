@@ -110,7 +110,31 @@ const sky_survey_stars = table(
   },
 );
 
-const spacetimedb = schema({ runs, events, findings, llm_usage, writers, sky_surveys, sky_survey_stars });
+// Space missions (web/src/app/api/sky/run): each Research run on /space, its event stream recorded as
+// it happens so /space?mission=<id> can follow it live or replay it.
+const sky_missions = table(
+  { name: "sky_missions", public: true },
+  {
+    mission_id: t.string().primaryKey(),
+    status: t.string(), // "running" | "done" | "stopped" | "error"
+    created_ms: t.f64(),
+    updated_ms: t.f64(),
+    next_seq: t.u32(),
+    meta_json: t.string(), // MissionMeta: cone, question, label, find count, headline
+  },
+);
+
+const sky_mission_events = table(
+  { name: "sky_mission_events", public: true },
+  {
+    id: t.u64().primaryKey().autoInc(),
+    mission_id: t.string().index("btree"),
+    seq: t.u32(),
+    event_json: t.string(), // SkyEvent
+  },
+);
+
+const spacetimedb = schema({ runs, events, findings, llm_usage, writers, sky_surveys, sky_survey_stars, sky_missions, sky_mission_events });
 export default spacetimedb;
 
 type Ctx = ReducerCtx<InferSchema<typeof spacetimedb>>;
@@ -325,3 +349,35 @@ export const stop_survey = spacetimedb.reducer({ survey_id: t.string() }, (ctx, 
   if (row.status !== "running") throw new SenderError("not running");
   ctx.db.sky_surveys.survey_id.update({ ...row, status: "stopped", updated_ms: nowMs(ctx) });
 });
+
+// ── space missions ───────────────────────────────────────────────────────────
+
+const MISSION_STATUSES = ["running", "done", "stopped", "error"];
+
+export const create_sky_mission = spacetimedb.reducer({ mission_id: t.string(), meta_json: t.string() }, (ctx, { mission_id, meta_json }) => {
+  requireWriter(ctx);
+  if (!/^[A-Za-z0-9_-]{6,64}$/.test(mission_id)) throw new SenderError("bad mission_id");
+  if (ctx.db.sky_missions.mission_id.find(mission_id)) throw new SenderError("mission exists");
+  const now = nowMs(ctx);
+  ctx.db.sky_missions.insert({ mission_id, status: "running", created_ms: now, updated_ms: now, next_seq: 0, meta_json });
+});
+
+/** Appends the next events in order (already-stored seqs skipped, a gap rejected, as append_events
+ *  does), and sets the status and, unless "", the meta. */
+export const append_sky_mission_events = spacetimedb.reducer(
+  { mission_id: t.string(), events: t.array(EventIn), status: t.string(), meta_json: t.string() },
+  (ctx, a) => {
+    requireWriter(ctx);
+    if (!MISSION_STATUSES.includes(a.status)) throw new SenderError("bad status");
+    const row = ctx.db.sky_missions.mission_id.find(a.mission_id);
+    if (!row) throw new SenderError("unknown mission");
+    let next = row.next_seq;
+    for (const { seq, event_json } of a.events) {
+      if (seq < next) continue;
+      if (seq > next) throw new SenderError(`seq gap: expected ${next}, got ${seq}`);
+      ctx.db.sky_mission_events.insert({ id: 0n, mission_id: a.mission_id, seq, event_json });
+      next = seq + 1;
+    }
+    ctx.db.sky_missions.mission_id.update({ ...row, next_seq: next, status: a.status, updated_ms: nowMs(ctx), meta_json: a.meta_json || row.meta_json });
+  },
+);

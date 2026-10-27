@@ -1,10 +1,12 @@
-import { parseCone } from "@/lib/sky/geom";
+import { randomBytes } from "node:crypto";
+import { formatDec, formatRa, parseCone } from "@/lib/sky/geom";
+import { missionRecorder, missionStore } from "@/lib/sky/missionStore";
 import { runSkyAgents } from "@/lib/sky/run";
 import { runAnalysis } from "@/lib/sky/analysis";
 import { settledMast } from "@/lib/sky/telescopes";
 import { cleanQuestion, skySummary } from "@/lib/sky/summary";
 import { skyObserver } from "@/lib/sky/observer";
-import type { SkyAnalysis, SkyEvent, SkyObject } from "@/lib/sky/types";
+import type { MissionMeta, SkyAnalysis, SkyEvent, SkyObject } from "@/lib/sky/types";
 import { liveStore } from "@/lib/server/liveRun";
 import { decideLlm } from "@/lib/server/llmQuota";
 
@@ -22,6 +24,9 @@ export async function POST(req: Request) {
   const question = cleanQuestion((body as { question?: unknown } | null)?.question);
   if (!cone) return Response.json({ error: "body must be {ra, dec, radius} in degrees" }, { status: 400 });
 
+  const rawLabel = (body as { label?: unknown } | null)?.label;
+  const label = typeof rawLabel === "string" && rawLabel.trim() ? rawLabel.trim().slice(0, 60) : `${formatRa(cone.ra)} ${formatDec(cone.dec)}, r ${+cone.radius.toFixed(3)}°`;
+
   const ctl = new AbortController();
   req.signal.addEventListener("abort", () => ctl.abort());
   const enc = new TextEncoder();
@@ -29,10 +34,19 @@ export async function POST(req: Request) {
 
   const stream = new ReadableStream({
     async start(controller) {
-      const send = (e: SkyEvent) => {
+      const write = (e: SkyEvent) => {
         if (ctl.signal.aborted) return;
         try { controller.enqueue(enc.encode(JSON.stringify(e) + "\n")); } catch { /* closed */ }
       };
+      // Mission: the run is recorded as it streams, so /space?mission=<id> can follow or replay it.
+      // Recording is best effort: a store that's down leaves the run unrecorded, not failed.
+      const store = missionStore();
+      const meta: MissionMeta = { id: randomBytes(9).toString("base64url"), cone, ...(question ? { question } : {}), label, createdAt: t0, updatedAt: t0, status: "running" };
+      const recorder = await Promise.race([store.create(meta).then(() => missionRecorder(store, meta)), new Promise<null>((r) => setTimeout(() => r(null), 5_000))])
+        .catch((e: Error) => { console.warn("[space] mission not recorded:", e.message); return null; });
+      let failed = false;
+      const send = (e: SkyEvent) => { if (e.type === "error") failed = true; recorder?.push(e); write(e); };
+      if (recorder) write({ type: "mission", id: meta.id, ms: Date.now() - t0 });
       try {
         // Same hourly Claude caps as /api/run (per IP + global), decided up front: the Strategist plans
         // with Claude while the catalog agents are still answering.
@@ -89,6 +103,7 @@ export async function POST(req: Request) {
       } catch (e) {
         send({ type: "error", message: (e as Error).message });
       } finally {
+        await recorder?.finish(failed ? "error" : ctl.signal.aborted ? "stopped" : "done");
         try { controller.close(); } catch { /* closed */ }
       }
     },

@@ -68,8 +68,10 @@ describe("survey finds across seasons", () => {
   });
   it("pairs two lone dips into a duotransit with possible periods", () => {
     const s1 = star("1", [season([10], 2000, { singles: [{ t: 2010, duration: 0.2, depth: 2e-3, snr: 11 }] }), season([40], 2900, { singles: [{ t: 2910, duration: 0.2, depth: 1.8e-3, snr: 10 }] })]);
-    const o = surveyObjects([s1], field).objects[0];
+    const { objects, finds } = surveyObjects([s1], field);
+    const o = objects[0];
     expect(o.type).toBe("Duotransit candidate");
+    expect(finds).toBe(1); // a duotransit is a new find, not a rejected result
     expect(Number(o.props["possible periods"])).toBeGreaterThan(0);
     expect(String(o.props["longest possible periods (days)"]).startsWith("900.00")).toBe(true);
   });

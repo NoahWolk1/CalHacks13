@@ -340,20 +340,20 @@ export default function AgentsPage() {
         </motion.section>
 
         <motion.section variants={rise}>
-          <SectionLabel right={<Link href="/sky" className="text-[12px] text-fg3 hover:text-fg1">Open Sky research</Link>}>Sky team</SectionLabel>
+          <SectionLabel right={<Link href="/space" className="text-[12px] text-fg3 hover:text-fg1">Open Space research</Link>}>Space team</SectionLabel>
           <div className="grid gap-px overflow-hidden rounded-md border border-line bg-line sm:grid-cols-2 lg:grid-cols-3">
             {SKY_AGENTS.map((a) => (
               <div key={a.id} className="flex flex-col gap-2.5 bg-panel p-4">
                 <div className="flex items-center gap-2.5">
                   <VehicleGlyph kind="satellite" color={a.color} size={18} />
                   <span className="min-w-0 flex-1 truncate text-[13.5px] font-medium text-fg1">{a.name}</span>
-                  <span className="text-[12px] text-fg3">Sky</span>
+                  <span className="text-[12px] text-fg3">Space</span>
                 </div>
                 <p className="text-[12.5px] leading-relaxed text-fg2">{a.description}</p>
                 <a href={a.sourceUrl} target="_blank" rel="noreferrer" className="truncate text-[12px] text-fg3 hover:text-fg1" title={a.sourceUrl}>{a.source}</a>
                 <div className="mt-auto flex items-center pt-1">
                   <Tag>Celestial cone</Tag>
-                  <Link href="/sky" className="ml-auto text-[12px] text-fg4 hover:text-fg1">Runs on /sky</Link>
+                  <Link href="/space" className="ml-auto text-[12px] text-fg4 hover:text-fg1">Runs on /space</Link>
                 </div>
               </div>
             ))}

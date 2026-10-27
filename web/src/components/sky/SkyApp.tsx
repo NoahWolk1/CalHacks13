@@ -8,10 +8,11 @@ import type { SkyActivity } from "@/lib/client/skyFleet";
 import { Body, Equator, Observer } from "astronomy-engine";
 import { APP_NAME } from "@/lib/brand";
 import { formatDec, formatRa, parseCone } from "@/lib/sky/geom";
-import { isNewFind, SKY_MAX_RADIUS, type AnalysisStar, type Cone, type SkyAnalysis, type SkyEvent, type SkyNote, type SkyObject, type SkyObserver, type SkyPlan, type SkySourceReport, type SkySummary, type StarResult, type SurveySummary, type SurveyView } from "@/lib/sky/types";
+import { isNewFind, SKY_MAX_RADIUS, type AnalysisStar, type Cone, type MissionMeta, type MissionView, type SkyAnalysis, type SkyEvent, type SkyNote, type SkyObject, type SkyObserver, type SkyPlan, type SkySourceReport, type SkySummary, type StarResult, type SurveyView } from "@/lib/sky/types";
 import { CATEGORY_STYLE, SURVEYS, type AtlasApi } from "./SkyAtlas";
 import SkySearch from "./SkySearch";
 import { AGENT_COLOR, fmt, FindCard, Notebook, PLAYBOOK, sectorList } from "./finds";
+import SpaceMissions from "./SpaceMissions";
 import SurveyPanel from "./SurveyPanel";
 
 const SkyAtlas = dynamic(() => import("./SkyAtlas"), { ssr: false });
@@ -59,23 +60,49 @@ export default function SkyApp() {
   const [notes, setNotes] = useState<SkyNote[]>([]);
   const [analysis, setAnalysis] = useState<{ analysis: SkyAnalysis | null; note?: string; ms: number } | null>(null);
   const [run, setRun] = useState(0);
-  // Deep survey being viewed (?survey=id) and recent ones.
+  // Deep survey being viewed (?survey=id).
   const [deepId, setDeepId] = useState<string | null>(null);
-  const [recent, setRecent] = useState<SurveySummary[]>([]);
   const [starting, setStarting] = useState(false);
+  // Mission on screen (?mission=id): this tab's own run, or one opened from a link (watching).
+  const [mission, setMission] = useState<{ id: string; watching: boolean; meta?: MissionMeta } | null>(null);
   const deepCone = useRef<string | null>(null);
   const api = useRef<AtlasApi | null>(null);
   const abort = useRef<AbortController | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  /** Shows a deep survey's panel (null closes it) and keeps ?survey= in the URL for sharing. */
+  /** Keeps ?mission= or ?survey= (at most one) in the URL, for sharing. */
+  function setLink(key: "mission" | "survey" | null, id: string | null) {
+    const u = new URL(window.location.href);
+    u.searchParams.delete("mission"); u.searchParams.delete("survey");
+    if (key && id) u.searchParams.set(key, id);
+    window.history.replaceState(null, "", u);
+  }
+
+  /** Shows a deep survey's panel (null closes it). */
   function openDeep(id: string | null) {
     setDeepId(id);
     deepCone.current = null;
-    const u = new URL(window.location.href);
-    if (id) u.searchParams.set("survey", id); else u.searchParams.delete("survey");
-    window.history.replaceState(null, "", u);
+    if (id) { setMission(null); setLink("survey", id); } else setLink(null, null);
   }
+
+  const reset = useCallback(() => {
+    setStatus("running"); setObjects([]); setSources([]); setSummary(null); setObs(null); setObserving(false); setNote(null); setError(null); setSelected(null); setTiming({});
+    setLcStars([]); setLcResults([]); setPlan(null); setNotes([]); setAnalysis(null); setRun((n) => n + 1);
+  }, []);
+
+  /** Applies one run event to the page: the same for a live run, a followed mission and a replay. */
+  const apply = useCallback((e: SkyEvent) => {
+    if (e.type === "results") { setObserving(e.objects.length > 0); setObjects((o) => [...e.objects, ...o]); setSources(e.sources); setTiming((t) => ({ ...t, results: e.ms })); setStatus("summarising"); }
+    else if (e.type === "archive") setObjects((o) => [...o, ...e.objects]);
+    else if (e.type === "analysis-start") { setLcStars(e.stars); setPlan(e.plan ?? null); }
+    else if (e.type === "analysis-note") setNotes((n) => [...n, e.note]);
+    else if (e.type === "analysis-star") setLcResults((r) => [...r, e.result]);
+    else if (e.type === "analysis") { setAnalysis({ analysis: e.analysis, note: e.note, ms: e.ms }); if (e.analysis?.objects.length) setObjects((o) => [...o, ...e.analysis!.objects]); }
+    else if (e.type === "summary") { setSummary(e.summary); setNote(e.note ?? null); setTiming((t) => ({ ...t, summary: e.ms })); setStatus("done"); }
+    else if (e.type === "observer") { setObs({ observer: e.observer, note: e.note, ms: e.ms }); setObserving(false); }
+    else if (e.type === "error") { setError(e.message); setStatus("error"); }
+    else if (e.type === "mission") { setMission({ id: e.id, watching: false }); setLink("mission", e.id); }
+  }, []);
 
   const applyCone = useCallback((c: Cone, move = false) => {
     const n = parseCone(c);
@@ -89,9 +116,9 @@ export default function SkyApp() {
     abort.current?.abort();
     const ctl = new AbortController();
     abort.current = ctl;
-    setStatus("running"); setObjects([]); setSources([]); setSummary(null); setObs(null); setObserving(false); setNote(null); setError(null); setSelected(null); setTiming({});
-    setLcStars([]); setLcResults([]); setPlan(null); setNotes([]); setAnalysis(null); setRun((n) => n + 1);
+    reset();
     openDeep(null);
+    setMission(null);
     try {
       const res = await fetch("/api/sky/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...c, question: q.trim() || undefined }), signal: ctl.signal });
       if (!res.ok || !res.body) throw new Error(`${res.status} ${res.statusText}`);
@@ -107,16 +134,7 @@ export default function SkyApp() {
           const line = buf.slice(0, nl).trim();
           buf = buf.slice(nl + 1);
           if (!line) continue;
-          const e = JSON.parse(line) as SkyEvent;
-          if (e.type === "results") { setObserving(e.objects.length > 0); setObjects((o) => [...e.objects, ...o]); setSources(e.sources); setTiming((t) => ({ ...t, results: e.ms })); setStatus("summarising"); }
-          else if (e.type === "archive") setObjects((o) => [...o, ...e.objects]);
-          else if (e.type === "analysis-start") { setLcStars(e.stars); setPlan(e.plan ?? null); }
-          else if (e.type === "analysis-note") setNotes((n) => [...n, e.note]);
-          else if (e.type === "analysis-star") setLcResults((r) => [...r, e.result]);
-          else if (e.type === "analysis") { setAnalysis({ analysis: e.analysis, note: e.note, ms: e.ms }); if (e.analysis?.objects.length) setObjects((o) => [...o, ...e.analysis!.objects]); }
-          else if (e.type === "summary") { setSummary(e.summary); setNote(e.note ?? null); setTiming((t) => ({ ...t, summary: e.ms })); setStatus("done"); }
-          else if (e.type === "observer") { setObs({ observer: e.observer, note: e.note, ms: e.ms }); setObserving(false); }
-          else if (e.type === "error") { setError(e.message); setStatus("error"); }
+          apply(JSON.parse(line) as SkyEvent);
         }
       }
       setObserving(false);
@@ -125,15 +143,54 @@ export default function SkyApp() {
       if (ctl.signal.aborted) return;
       setError((e as Error).message); setStatus("error");
     }
-  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apply, reset]);
 
-  const loadRecent = useCallback(() => {
-    fetch("/api/sky/survey", { cache: "no-store" }).then((r) => r.json()).then((j: { surveys?: SurveySummary[] }) => setRecent(j.surveys ?? [])).catch(() => {});
-  }, []);
+  /** Opens a recorded mission: replays its events, then follows it (polling) while it's still running. */
+  const openMission = useCallback(async (id: string) => {
+    abort.current?.abort();
+    const ctl = new AbortController();
+    abort.current = ctl;
+    reset();
+    setDeepId(null); deepCone.current = null;
+    setMission({ id, watching: true });
+    setLink("mission", id);
+    let since = 0, first = true;
+    try {
+      for (;;) {
+        const res = await fetch(`/api/sky/missions/${encodeURIComponent(id)}?since=${since}`, { cache: "no-store", signal: ctl.signal });
+        const j = (await res.json().catch(() => null)) as (MissionView & { error?: string }) | null;
+        if (!res.ok || !j?.mission) throw new Error(j?.error ?? `${res.status} ${res.statusText}`);
+        if (first) {
+          first = false;
+          applyCone(j.mission.cone, true);
+          setQuestion(j.mission.question ?? "");
+        }
+        j.events.forEach(apply);
+        since = j.next;
+        setMission({ id, watching: true, meta: j.mission });
+        if (j.mission.status !== "running") {
+          setObserving(false);
+          setStatus((s) => (s === "running" || s === "summarising" ? (j.mission.status === "error" ? "error" : "done") : s));
+          if (j.mission.status === "stopped") setNote((n) => n ?? "This run was stopped before it finished; what it found up to then is shown.");
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 2000));
+        if (ctl.signal.aborted) return;
+      }
+    } catch (e) {
+      if (ctl.signal.aborted) return;
+      setError(`Couldn't open the mission: ${(e as Error).message}`); setStatus("error");
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apply, reset]);
+
   useEffect(() => {
-    const id = new URLSearchParams(window.location.search).get("survey");
-    if (id) openDeep(id);
-    loadRecent();
+    const q = new URLSearchParams(window.location.search);
+    const m = q.get("mission"), id = q.get("survey");
+    if (m) void openMission(m);
+    else if (id) openDeep(id);
+    return () => abort.current?.abort();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const startDeep = async () => {
@@ -145,9 +202,8 @@ export default function SkyApp() {
       const j = await res.json().catch(() => null);
       if (!res.ok || !j?.id) throw new Error(j?.error ?? `${res.status} ${res.statusText}`);
       abort.current?.abort();
-      setStatus("idle"); setSources([]); setSummary(null); setObs(null); setNote(null); setLcStars([]); setLcResults([]); setPlan(null); setNotes([]); setAnalysis(null);
+      setStatus("idle"); setMission(null); setSources([]); setSummary(null); setObs(null); setNote(null); setLcStars([]); setLcResults([]); setPlan(null); setNotes([]); setAnalysis(null);
       openDeep(j.id);
-      loadRecent();
     } catch (e) {
       setError(`Couldn't start the survey: ${(e as Error).message}`);
     } finally {
@@ -180,6 +236,8 @@ export default function SkyApp() {
 
   const byId = useMemo(() => new Map(objects.map((o) => [o.id, o])), [objects]);
   const busy = status === "running" || status === "summarising";
+  // Following someone else's mission doesn't lock the controls: starting a run of your own leaves it.
+  const locked = busy && !mission?.watching;
   const activity = useMemo<SkyActivity>(() => ({
     run, status, sources, objects, stars: lcStars, starResults: lcResults, analysisDone: !!analysis,
     observer: obs ? "done" : observing ? "working" : "idle",
@@ -190,8 +248,10 @@ export default function SkyApp() {
       <header className="dock flex h-12 shrink-0 items-center gap-2.5 border-b border-line px-4">
         <SwarmMark />
         <span className="text-[14px] font-semibold tracking-[-0.01em]">{APP_NAME}</span>
-        <span className="truncate text-[12px] text-fg3">Sky research</span>
+        <span className="truncate text-[12px] text-fg3">Space research</span>
         <div className="flex-1" />
+        <SpaceMissions missionId={mission?.id ?? null} surveyId={deepId} watching={!!mission?.watching} live={mission?.meta?.status === "running"}
+          onMission={(id) => void openMission(id)} onSurvey={(id) => { abort.current?.abort(); setStatus("idle"); setSources([]); setSummary(null); setObs(null); setNote(null); setLcStars([]); setLcResults([]); setPlan(null); setNotes([]); setAnalysis(null); openDeep(id); }} />
         <div className="flex h-[30px] items-center gap-0.5 rounded-md border border-line bg-bg p-0.5 max-sm:hidden">
           {SURVEYS.map((s) => (
             <button key={s.id} onClick={() => { setSurvey(s.id); api.current?.setSurvey(s.id); }} aria-pressed={survey === s.id}
@@ -218,11 +278,11 @@ export default function SkyApp() {
 
         <aside className="dock scroll-thin flex min-h-0 w-[400px] shrink-0 flex-col overflow-y-auto border-l border-line max-lg:w-full max-lg:flex-1 max-lg:border-l-0 max-lg:border-t">
           <section className="border-b border-line p-4">
-            <SkySearch disabled={busy} onPick={(h) => applyCone({ ra: h.ra, dec: h.dec, radius: h.category === "solar-system" ? 2 : cone.radius }, true)} />
+            <SkySearch disabled={locked} onPick={(h) => applyCone({ ra: h.ra, dec: h.dec, radius: h.category === "solar-system" ? 2 : cone.radius }, true)} />
             <div className="mb-2 mt-4 text-[11.5px] uppercase tracking-[0.06em] text-fg3">Sample targets</div>
             <div className="flex flex-wrap gap-1.5">
               {SAMPLES.map((s) => (
-                <button key={s.name} onClick={() => pickSample(s.cone)} disabled={busy} title={s.note}
+                <button key={s.name} onClick={() => pickSample(s.cone)} disabled={locked} title={s.note}
                   className="rounded-md border border-line bg-bg px-2.5 py-1 text-[12.5px] text-fg2 transition-colors hover:border-line-strong hover:text-fg1 disabled:opacity-50">
                   {s.name}
                 </button>
@@ -243,60 +303,43 @@ export default function SkyApp() {
             <div className="num mt-1.5 text-[11.5px] text-fg4">{formatRa(cone.ra)} {formatDec(cone.dec)} · r {cone.radius.toFixed(3)}°</div>
 
             <div className="mb-2 mt-4 text-[11.5px] uppercase tracking-[0.06em] text-fg3">Question (optional)</div>
-            <textarea value={question} onChange={(e) => setQuestion(e.target.value)} rows={2} maxLength={300} disabled={busy}
+            <textarea value={question} onChange={(e) => setQuestion(e.target.value)} rows={2} maxLength={300} disabled={locked}
               onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); runDraft(); } }}
               placeholder="Ask about this region, e.g. Are there planets here? Leave empty for a briefing."
               className="w-full resize-none rounded-md border border-line bg-bg px-2 py-1.5 text-[12.5px] leading-snug text-fg1 outline-none placeholder:text-fg4 focus:border-line-strong disabled:opacity-60" />
             <div className="mt-1.5 flex flex-wrap gap-1">
               {QUESTIONS.map((q) => (
-                <button key={q} onClick={() => setQuestion(q)} disabled={busy}
+                <button key={q} onClick={() => setQuestion(q)} disabled={locked}
                   className="rounded-[4px] border border-line px-1.5 py-0.5 text-[11.5px] text-fg3 transition-colors hover:border-line-strong hover:text-fg1 disabled:opacity-50">
                   {q}
                 </button>
               ))}
             </div>
             <div className="mt-3 flex gap-1.5">
-              <button onClick={draw} disabled={busy || !!atlasError} className="flex h-[30px] items-center gap-1.5 rounded-md border border-line px-2.5 text-[12.5px] text-fg2 hover:text-fg1 disabled:opacity-50">
+              <button onClick={draw} disabled={locked || !!atlasError} className="flex h-[30px] items-center gap-1.5 rounded-md border border-line px-2.5 text-[12.5px] text-fg2 hover:text-fg1 disabled:opacity-50">
                 <CircleDashed size={13} strokeWidth={1.5} /> Draw circle
               </button>
-              <button onClick={useView} disabled={busy || !!atlasError} className="flex h-[30px] items-center gap-1.5 rounded-md border border-line px-2.5 text-[12.5px] text-fg2 hover:text-fg1 disabled:opacity-50">
+              <button onClick={useView} disabled={locked || !!atlasError} className="flex h-[30px] items-center gap-1.5 rounded-md border border-line px-2.5 text-[12.5px] text-fg2 hover:text-fg1 disabled:opacity-50">
                 <Crosshair size={13} strokeWidth={1.5} /> Use view
               </button>
               <div className="flex-1" />
-              <button onClick={startDeep} disabled={busy || starting} title="Search every star and every TESS sector in this cone in the background: it keeps going after you close the tab"
+              <button onClick={startDeep} disabled={locked || starting} title="Search every star and every TESS sector in this cone in the background: it keeps going after you close the tab"
                 className="flex h-[30px] items-center gap-1.5 rounded-md border border-[#7fd1b9]/60 px-2.5 text-[12.5px] text-[#7fd1b9] transition-colors hover:bg-[#7fd1b9]/10 disabled:opacity-50">
                 {starting ? <LoaderCircle size={13} className="animate-spin" /> : <Radar size={13} strokeWidth={1.5} />} Deep survey
               </button>
-              <button onClick={runDraft} disabled={busy}
+              <button onClick={runDraft} disabled={locked}
                 className="flex h-[30px] items-center gap-1.5 rounded-md bg-accent px-3 text-[12.5px] font-medium text-[#1a1208] transition-opacity hover:opacity-90 disabled:opacity-60">
-                {busy ? <LoaderCircle size={13} className="animate-spin" /> : <Telescope size={13} strokeWidth={1.75} />} Research
+                {locked ? <LoaderCircle size={13} className="animate-spin" /> : <Telescope size={13} strokeWidth={1.75} />} Research
               </button>
             </div>
           </section>
 
-          {!deepId && recent.length > 0 && (
-            <section className="border-b border-line px-4 py-3">
-              <div className="mb-1.5 text-[11.5px] uppercase tracking-[0.06em] text-fg3">Deep surveys</div>
-              <ul className="space-y-0.5">
-                {recent.slice(0, 5).map((r) => (
-                  <li key={r.id}>
-                    <button onClick={() => openDeep(r.id)} className="flex w-full items-center gap-2 text-left text-[12px]">
-                      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${r.status === "running" ? "animate-pulse bg-[#7fd1b9]" : r.status === "done" ? "bg-ok" : "bg-fg4"}`} />
-                      <span className="num text-fg2">{formatRa(r.cone.ra)} {formatDec(r.cone.dec)} · r {r.cone.radius}°</span>
-                      <span className="num ml-auto text-fg3">{r.seasons ? `${Math.round(((r.seasonsDone + r.seasonsFailed) / r.seasons) * 100)}%` : r.status}{r.finds ? ` · ${r.finds} find${r.finds === 1 ? "" : "s"}` : ""}</span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
-
-          {deepId && <SurveyPanel id={deepId} byId={byId} onView={onDeepView} onCite={select} onClose={() => { openDeep(null); loadRecent(); }} />}
+          {deepId && <SurveyPanel id={deepId} byId={byId} onView={onDeepView} onCite={select} onClose={() => openDeep(null)} />}
 
           {(sources.length > 0 || status === "running") && (
             <section className="border-b border-line p-4">
               <div className="mb-2 flex items-baseline justify-between text-[11.5px] uppercase tracking-[0.06em] text-fg3">
-                <span>Sky agents</span>
+                <span>Space agents</span>
                 {timing.results != null && <span className="num normal-case tracking-normal text-fg4">{(timing.results / 1000).toFixed(1)}s</span>}
               </div>
               {status === "running" && !sources.length && <div className="text-[12.5px] text-fg3">Querying SIMBAD, NASA Exoplanet Archive, JPL Horizons and the MAST telescope archive, and fetching TESS light curves…</div>}
@@ -360,7 +403,7 @@ export default function SkyApp() {
 
           {status === "idle" && (
             <section className="p-4 text-[12.5px] leading-relaxed text-fg3">
-              Pan and zoom the sky, then draw a circle or use the current view. Sky agents query SIMBAD, the NASA Exoplanet Archive, JPL Horizons and MAST live. A Strategist picks the stars where something new can still hide; discovery agents stitch their real TESS light curves and hunt for extra planets around known hosts, long-period and single transits, and variable stars no catalog lists; a Follow-up agent re-tests every find on data the search never saw. Claude writes a cited summary.
+              Pan and zoom the sky, then draw a circle or use the current view. Space agents query SIMBAD, the NASA Exoplanet Archive, JPL Horizons and MAST live. A Strategist picks the stars where something new can still hide; discovery agents stitch their real TESS light curves and hunt for extra planets around known hosts, long-period and single transits, and variable stars no catalog lists; a Follow-up agent re-tests every find on data the search never saw. Claude writes a cited summary. Every run is saved as a mission: share its link and anyone can follow it live or replay it.
             </section>
           )}
         </aside>

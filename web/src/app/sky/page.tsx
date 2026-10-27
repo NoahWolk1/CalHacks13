@@ -1,11 +1,8 @@
-import type { Metadata } from "next";
-import SkyApp from "@/components/sky/SkyApp";
+import { redirect } from "next/navigation";
 
-export const metadata: Metadata = {
-  title: "Coordinate Sky: AI agents that research any region of space",
-  description: "Select a patch of sky and sky agents query SIMBAD, the NASA Exoplanet Archive, JPL Horizons and MAST live, and search real TESS light curves for transits and variability.",
-};
-
-export default function SkyPage() {
-  return <SkyApp />;
+// The space page moved from /sky to /space; old links (?survey=, ?mission=) keep working.
+export default async function SkyPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(await searchParams)) for (const x of [v ?? []].flat()) q.append(k, x);
+  redirect(q.size ? `/space?${q}` : "/space");
 }
