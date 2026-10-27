@@ -33,7 +33,8 @@ export async function getBuffer(url: string, opts: { timeoutMs?: number; signal?
 }
 
 async function cached(url: string, opts: Opts, kind: Kind, read: (r: Response) => Promise<unknown>) {
-  const key = url + (opts.init?.body ? String(opts.init.body) : "");
+  // Text and JSON reads of one URL are kept apart (each would otherwise get the other's type back).
+  const key = (kind === "text" ? "text:" : "") + url + (opts.init?.body ? String(opts.init.body) : "");
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < TTL) return hit.data;
   const disk = await diskRead(key, kind);
@@ -86,7 +87,7 @@ async function live(url: string, opts: Opts, read: (r: Response) => Promise<unkn
 
 // ─── disk cache ─────────────────────────────────────────────────────────────
 
-const diskPath = (key: string, kind: Kind) => path.join(DISK_DIR, createHash("sha1").update(key).digest("hex") + (kind === "bin" ? ".bin" : ".json"));
+const diskPath = (key: string, kind: Kind) => path.join(DISK_DIR, createHash("sha1").update(key).digest("hex") + (kind === "bin" ? ".bin" : kind === "text" ? ".txt.json" : ".json"));
 
 async function diskRead(key: string, kind: Kind): Promise<{ at: number; data: unknown } | null> {
   const file = diskPath(key, kind);
