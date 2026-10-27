@@ -14,8 +14,17 @@ import { SIMBAD_TAP, tidyName } from "./simbad";
 import type { Cone, SkyObject } from "./types";
 
 export type FieldStar = { tic: string; name: string; otype: string; ra: number; dec: number; vmag?: number };
-export type LcProduct = { tic: string; pipeline: "SPOC" | "TESS-SPOC" | "QLP"; sector: number; cadence: number; uri: string; ra?: number; dec?: number };
-export type LightCurve = { tic: string; pipeline: LcProduct["pipeline"]; sector: number; time: Float64Array; flux: Float64Array; quality: Float64Array; tessmag?: number; teff?: number; radius?: number; logg?: number };
+export type LcProduct = { tic: string; pipeline: "SPOC" | "TESS-SPOC" | "QLP"; sector: number; cadence: number; uri: string; ra?: number; dec?: number;
+  /** Time range the file covers (BTJD), when the inventory has it. */
+  tmin?: number; tmax?: number };
+export type LightCurve = { tic: string; pipeline: LcProduct["pipeline"]; sector: number; time: Float64Array; flux: Float64Array; quality: Float64Array; tessmag?: number; teff?: number; radius?: number; logg?: number;
+  camera?: number; ccd?: number;
+  /** SPOC's estimate of the fraction of aperture flux that is the target's (PDCSAP is already corrected for the rest). */
+  crowdsap?: number;
+  /** Flux-weighted centroid (pixels: SPOC MOM_CENTR1/2, QLP SAP_X/SAP_Y), for the centroid-shift test. */
+  cx?: Float64Array; cy?: Float64Array;
+  /** QLP's small- and large-aperture fluxes, for the aperture-dependence test. */
+  small?: Float64Array; large?: Float64Array };
 
 /** Stars brighter than this have SIMBAD TIC cross-ids and FFI light curves often enough to be worth it. */
 export const FIELD_VMAX = 12.5;
@@ -30,7 +39,9 @@ const mastForm = (request: unknown): RequestInit => ({
   headers: { "Content-Type": "application/x-www-form-urlencoded" },
   body: new URLSearchParams({ request: JSON.stringify(request) }).toString(),
 });
-const LC_COLUMNS = "obs_collection,provenance_name,target_name,sequence_number,t_exptime,dataURL,s_ra,s_dec";
+const LC_COLUMNS = "obs_collection,provenance_name,target_name,sequence_number,t_exptime,dataURL,s_ra,s_dec,t_min,t_max";
+/** MJD - 56999.5 = BTJD (BJD - 2457000; the half-day is JD vs MJD, the barycentric correction is minutes). */
+const MJD_TO_BTJD = 56999.5;
 
 /** RA/Dec ranges covering the cone (RA split in two across 0°, all RA near a pole). */
 export function coneBox(c: Cone): { ra: { min: number; max: number }[]; dec: { min: number; max: number } } {
@@ -88,6 +99,7 @@ export function parseLcProducts(json: unknown): LcProduct[] {
     if (!pipeline || !/(_lc|_llc)\.fits$/.test(uri) || /fast-lc/.test(uri)) continue;
     const p: LcProduct = { tic: String(r.target_name).replace(/^0+/, ""), pipeline, sector: Number(r.sequence_number) || 0, cadence: Number(r.t_exptime) || 0, uri };
     if (typeof r.s_ra === "number" && typeof r.s_dec === "number") { p.ra = r.s_ra; p.dec = r.s_dec; }
+    if (typeof r.t_min === "number" && typeof r.t_max === "number") { p.tmin = r.t_min - MJD_TO_BTJD; p.tmax = r.t_max - MJD_TO_BTJD; }
     out.push(p);
   }
   return out;
@@ -181,6 +193,25 @@ export const SECTOR_SPAN = 5;
 
 export const mastDownloadUrl = (uri: string) => `https://mast.stsci.edu/api/v0.1/Download/file?uri=${encodeURIComponent(uri)}`;
 
+/** CAOM by TIC id (target_name): every TESS light curve of one star, SPOC and FFI pipelines both. */
+export function ticProductsRequest(tic: string): RequestInit {
+  return mastForm({
+    service: "Mast.Caom.Filtered", format: "json", pagesize: 2000, page: 1,
+    params: {
+      columns: LC_COLUMNS,
+      filters: [
+        { paramName: "obs_collection", values: ["TESS", "HLSP"] },
+        { paramName: "dataproduct_type", values: ["timeseries"] },
+        { paramName: "target_name", values: [tic] },
+      ],
+    },
+  });
+}
+
+export async function ticProducts(tic: string, signal: AbortSignal): Promise<LcProduct[]> {
+  return parseLcProducts(await getJson(MAST_API, { init: ticProductsRequest(tic), timeoutMs: 20_000, signal, retries: 1 })).filter((p) => p.tic === tic);
+}
+
 /** Light-curve columns from a SPOC / TESS-SPOC (PDCSAP_FLUX) or QLP (KSPSAP_FLUX) FITS file. */
 export function parseLightCurve(buf: ArrayBuffer, product: Pick<LcProduct, "tic" | "pipeline" | "sector">): LightCurve {
   const hdus = readHdus(buf);
@@ -188,15 +219,21 @@ export function parseLightCurve(buf: ArrayBuffer, product: Pick<LcProduct, "tic"
   if (!lc) throw new Error("no LIGHTCURVE extension");
   // QLP renamed its detrended flux KSPSAP_FLUX -> DET_FLUX in later sectors (DET_FLUX in sector 104, 2026).
   const cols = product.pipeline === "QLP" ? ["KSPSAP_FLUX", "DET_FLUX"] : ["PDCSAP_FLUX"];
-  const tab = readTable(buf, lc, ["TIME", ...cols, "QUALITY"]);
+  const cent = product.pipeline === "QLP" ? ["SAP_X", "SAP_Y"] : ["MOM_CENTR1", "MOM_CENTR2"];
+  const apert = ["KSPSAP_FLUX_SML", "KSPSAP_FLUX_LAG", "DET_FLUX_SML", "DET_FLUX_LAG"];
+  const tab = readTable(buf, lc, ["TIME", ...cols, "QUALITY", ...cent, ...(product.pipeline === "QLP" ? apert : [])]);
   const fluxCol = cols.find((c) => tab.columns[c]);
   if (!tab.columns.TIME || !fluxCol) throw new Error(`light curve lacks TIME/${cols.join(" or ")}`);
   const h0 = hdus[0].header;
   const pos = (v: unknown) => (typeof v === "number" && v > 0 ? v : undefined);
+  const c = tab.columns, fl = fluxCol === "DET_FLUX" ? "DET_FLUX" : "KSPSAP_FLUX";
   return {
     tic: product.tic, pipeline: product.pipeline, sector: product.sector,
-    time: tab.columns.TIME, flux: tab.columns[fluxCol], quality: tab.columns.QUALITY ?? new Float64Array(tab.rows),
+    time: c.TIME, flux: c[fluxCol], quality: c.QUALITY ?? new Float64Array(tab.rows),
     tessmag: pos(h0.TESSMAG), teff: pos(h0.TEFF), radius: pos(h0.RADIUS), logg: pos(h0.LOGG),
+    camera: pos(h0.CAMERA ?? lc.header.CAMERA), ccd: pos(h0.CCD ?? lc.header.CCD), crowdsap: pos(lc.header.CROWDSAP),
+    ...(c[cent[0]] && c[cent[1]] ? { cx: c[cent[0]], cy: c[cent[1]] } : {}),
+    ...(c[`${fl}_SML`] && c[`${fl}_LAG`] ? { small: c[`${fl}_SML`], large: c[`${fl}_LAG`] } : {}),
   };
 }
 

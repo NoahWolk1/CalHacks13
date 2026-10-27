@@ -118,7 +118,7 @@ export type SkyEvent =
 export const SKY_MAX_RADIUS = 3;
 
 /** The analysis results that would be new if they hold up (the rest are known or rejected). */
-export const isNewFind = (o: Pick<SkyObject, "type">) => /^(Unvetted|Candidate additional|Single-transit|Uncatalogued)/.test(o.type);
+export const isNewFind = (o: Pick<SkyObject, "type">) => /^(Unvetted|Candidate additional|Duotransit|Single-transit|Uncatalogued)/.test(o.type);
 
 // ── deep surveys (survey.ts): every star, every sector, in the background ──────
 
