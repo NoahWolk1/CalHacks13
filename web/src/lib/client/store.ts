@@ -36,6 +36,8 @@ interface State {
   profileId: string;
   mode: RunMode;
   question: string;
+  /** A photo attached to the question (JPEG data URL, re-encoded in the browser). Sent with the run, never stored. */
+  photo: { url: string; name: string } | null;
   // run
   /** Shared run id of the mission on screen (SpacetimeDB or Convex; null in SSE mode). */
   runId: string | null;
@@ -71,7 +73,7 @@ const emptyRun = {
 
 export const useStore = create<State>((set, get) => ({
   agents: [], profiles: [], llm: false, live: null,
-  runId: null, tool: "pan", tour: null, pinRadius: 450, region: null, profileId: "auto", mode: "ask", question: "",
+  runId: null, tool: "pan", tour: null, pinRadius: 450, region: null, profileId: "auto", mode: "ask", question: "", photo: null,
   ...emptyRun,
 
   set: (p) => set(p),

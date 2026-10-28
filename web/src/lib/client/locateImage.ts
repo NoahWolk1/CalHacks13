@@ -5,7 +5,8 @@ import type { LocateArea, LocateResult } from "@/lib/locate";
 
 const MAX_PX = 1568;
 
-async function toJpeg(file: File): Promise<string> {
+/** A photo as a JPEG data URL, at most 1568 px on a side, without its EXIF metadata. */
+export async function toJpeg(file: File): Promise<string> {
   const bmp = await createImageBitmap(file);
   const k = Math.min(1, MAX_PX / Math.max(bmp.width, bmp.height));
   const canvas = document.createElement("canvas");

@@ -8,6 +8,7 @@ import type { Finding, Insight, PlanStep, Region, RunEvent, RunRequest, Worker, 
 import { allWorkers, getWorker, toConfig } from "@/lib/agents/registry";
 import { requestSpawn, SPAWN_LIMITS } from "@/lib/agents/factory";
 import { hasKeys } from "@/lib/sponsors/keys";
+import { PHOTO_AGENT } from "@/lib/agents/workers/photo";
 import { RUNTIME_LIMITS } from "@/lib/agents/runtime";
 import { getProfile, PROFILES } from "./profiles";
 import { AUTO, DEFAULT_PROFILE, isProfileId, normalizeProfileId, routeByKeywords } from "./route";
@@ -23,6 +24,8 @@ import { bboxKm, covers, insightsProfile, joinNames, needSimilarity, SIMILAR_NEE
 
 const ORCH = "orchestrator";
 const WORKER_TIMEOUT_MS = 30_000;
+// Photo Locator: area map names + a vision call + up to 3 geocodes.
+const PHOTO_TIMEOUT_MS = 60_000;
 // Only start a late replacement agent if the run is younger than this (a replacement takes up to ~50s).
 const RETRY_BEFORE_MS = 120_000;
 // Generated agents run their own bounded Claude loop (runtime.ts); give it room to finish.
@@ -71,9 +74,91 @@ export async function runOrchestrator(input: RunRequest, emitRaw: (e: RunEvent) 
   const area = areaContext(region, areaKm2, span);
   think(`Area: ${region.label ?? "unnamed area"} · ${areaKm2.toFixed(2)} km²${span.length > 1 ? ` · spans ${joinNames(span)}` : ""}${touchesSF(region) ? " · SF city feeds available" : ""}`);
 
+  // ── Dispatch (defined up front: the Photo Locator runs before planning) ───────────────────────────────────────────────────────────
+  /** How a dispatch ended; failed generated agents feed the coverage check / one replacement spawn. */
+  type Outcome = { w: Worker; ok: boolean; n: number; detail: string; logs: string[] };
+  /** Per-agent outcome for the "coverage & failures" section of the insights/answer prompts. */
+  const status = new Map<string, { name: string; n: number; detail: string }>();
+  const record = (o: Outcome) => {
+    const prev = status.get(o.w.id);
+    const n = (prev?.n ?? 0) + o.n;
+    status.set(o.w.id, { name: o.w.name, n, detail: o.ok || (prev && prev.n > 0) ? "" : o.detail });
+  };
+  const dispatch = async (w: Worker, rawTask: WorkerTask, delayMs = 0): Promise<Outcome | undefined> => {
+    // Generated agents read the label as the area's name: give them the span, not just the center's place.
+    const task = !w.builtin && area.label !== region.label ? { ...rawTask, region: { ...rawTask.region, label: area.label } } : rawTask;
+    const dispatchId = `${w.id}#${Math.random().toString(36).slice(2, 7)}`;
+    emit({ type: "agent_status", agentId: w.id, status: "queued", dispatchId, focus: task.focus, targets: task.targets });
+    await sleep(delayMs);
+    emit({ type: "agent_status", agentId: w.id, status: "deploying", dispatchId, focus: task.focus, targets: task.targets });
+    await sleep(700); // let the vehicle visibly travel in before results land
+    if (signal.aborted) return;
+    emit({ type: "agent_status", agentId: w.id, status: "scanning", dispatchId });
+    let n = 0;
+    const logs: string[] = [];
+    // Hard per-worker timeout: one hung API can't stall the mission. The worker's own signal is
+    // aborted too so its in-flight fetches stop; late findings after the timeout are dropped.
+    const wctl = new AbortController();
+    const onAbort = () => wctl.abort();
+    signal.addEventListener("abort", onAbort);
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const limitMs = w.id === PHOTO_AGENT ? PHOTO_TIMEOUT_MS : w.builtin ? WORKER_TIMEOUT_MS : GENERATED_TIMEOUT_MS;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => { timedOut = true; wctl.abort(); reject(new Error(`timed out after ${limitMs / 1000}s`)); }, limitMs);
+    });
+    try {
+      await Promise.race([timeout, w.run({
+        task,
+        signal: wctl.signal,
+        log: (text) => { logs.push(text.slice(0, 200)); if (logs.length > 4) logs.shift(); emit({ type: "agent_log", agentId: w.id, text }); },
+        emit: (f) => {
+          if (timedOut) return;
+          const v = validator.check(f, w);
+          if (!v.ok) return;
+          const finding: Finding = { ...v.finding, id: `F${++fid}`, worker_id: w.id };
+          findings.push(finding);
+          n++;
+          emit({ type: "finding", finding, dispatchId });
+        },
+      })]);
+      emit({ type: "agent_status", agentId: w.id, status: "done", dispatchId, detail: `${n} finding${n === 1 ? "" : "s"}` });
+      const o = { w, ok: n > 0, n, detail: n ? "" : "returned 0 findings", logs };
+      record(o);
+      return o;
+    } catch (e) {
+      if (signal.aborted) return;
+      const detail = timedOut ? `timed out after ${limitMs / 1000}s${n ? ` (${n} finding${n === 1 ? "" : "s"} kept)` : ""}` : (e as Error).message.slice(0, 140);
+      if (timedOut) think(`${w.name} timed out; continuing without it.`);
+      emit({ type: "agent_status", agentId: w.id, status: "error", dispatchId, detail });
+      const o = { w, ok: false, n, detail: timedOut ? detail : `error: ${detail}`, logs };
+      record(o);
+      return o;
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+    }
+  };
+
+  // ── 0b. Attached photo: locate it first, then let it shape the question every agent works on ──
+  if (req.photo) {
+    if (!client) think("A photo is attached, but reading it needs Claude (unavailable this run): researching the question only.");
+    else {
+      think("Reading the attached photo before planning…");
+      const o = await dispatch(getWorker(PHOTO_AGENT)!, { region, question: req.question, photo: req.photo });
+      if (signal.aborted) return;
+      const note = photoNote(o?.logs ?? [], findings.filter((f) => f.worker_id === PHOTO_AGENT));
+      if (note) {
+        think(note);
+        // Every later prompt (planner, agents, coverage check, answer) reads the question with the photo's place in it.
+        req = { ...req, question: `${req.question?.trim() || "What is the place in the attached photo, and what should I know about it?"}\n\n${note}` };
+      }
+    }
+  }
+
   // ── 1. Plan ───────────────────────────────────────────────────────────────
   // Agents whose API keys aren't set sit out of every plan (the Agents page still lists them as "Needs key").
-  const workers = allWorkers().filter(hasKeys);
+  const workers = allWorkers().filter((w) => hasKeys(w) && w.id !== PHOTO_AGENT);
   // Agents whose coverage (SF / Bay Area / California / US / listed cities) misses this box never reach the planner.
   const local = workers.filter((w) => covers(w, region));
   let steps: PlanStep[];
@@ -126,78 +211,15 @@ export async function runOrchestrator(input: RunRequest, emitRaw: (e: RunEvent) 
     if (workers.some((w) => w.id === extra)) steps.push({ agentId: extra, reason: "Added by you" });
     else if (getWorker(extra)) rationale += ` ${getWorker(extra)!.name} needs an API key, so it sits out.`;
   }
-  emit({ type: "plan", steps, rationale });
+  // The Photo Locator already ran: listed first so the plan shows the whole team.
+  const photoRan = findings.some((f) => f.worker_id === PHOTO_AGENT) || status.has(PHOTO_AGENT);
+  emit({ type: "plan", steps: photoRan ? [{ agentId: PHOTO_AGENT, reason: "Located the attached photo" }, ...steps] : steps, rationale });
   think(rationale);
 
   // ── 2. Dispatch ───────────────────────────────────────────────────────────
-  /** How a dispatch ended; failed generated agents feed the coverage check / one replacement spawn. */
-  type Outcome = { w: Worker; ok: boolean; n: number; detail: string; logs: string[] };
-  /** Per-agent outcome for the "coverage & failures" section of the insights/answer prompts. */
-  const status = new Map<string, { name: string; n: number; detail: string }>();
   // Out-of-coverage agents the plan or this profile's survey team would have used: reported as gaps, not as "none found".
   const outside = [...skipped.map((s) => getWorker(s.agentId)!), ...(req.mode === "insights" ? workers.filter((w) => profile.defaultAgents.includes(w.id) && !covered(w)) : [])];
   for (const w of outside) status.set(w.id, { name: w.name, n: 0, detail: `skipped: its coverage (${w.coverage}) doesn't include this area` });
-  const record = (o: Outcome) => {
-    const prev = status.get(o.w.id);
-    const n = (prev?.n ?? 0) + o.n;
-    status.set(o.w.id, { name: o.w.name, n, detail: o.ok || (prev && prev.n > 0) ? "" : o.detail });
-  };
-  const dispatch = async (w: Worker, rawTask: WorkerTask, delayMs = 0): Promise<Outcome | undefined> => {
-    // Generated agents read the label as the area's name: give them the span, not just the center's place.
-    const task = !w.builtin && area.label !== region.label ? { ...rawTask, region: { ...rawTask.region, label: area.label } } : rawTask;
-    const dispatchId = `${w.id}#${Math.random().toString(36).slice(2, 7)}`;
-    emit({ type: "agent_status", agentId: w.id, status: "queued", dispatchId, focus: task.focus, targets: task.targets });
-    await sleep(delayMs);
-    emit({ type: "agent_status", agentId: w.id, status: "deploying", dispatchId, focus: task.focus, targets: task.targets });
-    await sleep(700); // let the vehicle visibly travel in before results land
-    if (signal.aborted) return;
-    emit({ type: "agent_status", agentId: w.id, status: "scanning", dispatchId });
-    let n = 0;
-    const logs: string[] = [];
-    // Hard per-worker timeout: one hung API can't stall the mission. The worker's own signal is
-    // aborted too so its in-flight fetches stop; late findings after the timeout are dropped.
-    const wctl = new AbortController();
-    const onAbort = () => wctl.abort();
-    signal.addEventListener("abort", onAbort);
-    let timedOut = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const limitMs = w.builtin ? WORKER_TIMEOUT_MS : GENERATED_TIMEOUT_MS;
-    const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => { timedOut = true; wctl.abort(); reject(new Error(`timed out after ${limitMs / 1000}s`)); }, limitMs);
-    });
-    try {
-      await Promise.race([timeout, w.run({
-        task,
-        signal: wctl.signal,
-        log: (text) => { logs.push(text.slice(0, 200)); if (logs.length > 4) logs.shift(); emit({ type: "agent_log", agentId: w.id, text }); },
-        emit: (f) => {
-          if (timedOut) return;
-          const v = validator.check(f, w);
-          if (!v.ok) return;
-          const finding: Finding = { ...v.finding, id: `F${++fid}`, worker_id: w.id };
-          findings.push(finding);
-          n++;
-          emit({ type: "finding", finding, dispatchId });
-        },
-      })]);
-      emit({ type: "agent_status", agentId: w.id, status: "done", dispatchId, detail: `${n} finding${n === 1 ? "" : "s"}` });
-      const o = { w, ok: n > 0, n, detail: n ? "" : "returned 0 findings", logs };
-      record(o);
-      return o;
-    } catch (e) {
-      if (signal.aborted) return;
-      const detail = timedOut ? `timed out after ${limitMs / 1000}s${n ? ` (${n} finding${n === 1 ? "" : "s"} kept)` : ""}` : (e as Error).message.slice(0, 140);
-      if (timedOut) think(`${w.name} timed out; continuing without it.`);
-      emit({ type: "agent_status", agentId: w.id, status: "error", dispatchId, detail });
-      const o = { w, ok: false, n, detail: timedOut ? detail : `error: ${detail}`, logs };
-      record(o);
-      return o;
-    } finally {
-      clearTimeout(timer);
-      signal.removeEventListener("abort", onAbort);
-    }
-  };
-
   // Capability gaps → the factory reuses a library agent or creates one (factory.ts), dispatched as soon as it exists.
   let spawned = 0;
   /** Gap needs already handed to an agent this run, for within-run dedupe. */
@@ -676,4 +698,15 @@ function fallbackAnswer(findings: Finding[], insights: Insight[], quotaLimited =
   const list = [...areaLevel, ...notable].map((f) => `- ${f.claim} [${f.id}]`).join("\n");
   const agents = new Set(findings.map((f) => f.worker_id)).size;
   return `**${findings.length} findings from ${agents} agent${agents === 1 ? "" : "s"}.**${top ? `\n\n${top}` : ""}${list ? `\n\n${list}` : ""}\n\n${note}`;
+}
+
+/** What the Photo Locator found, as one line added to the question (and shown in the log). */
+export function photoNote(logs: string[], found: Pick<Finding, "id" | "geometry" | "props">[]): string | null {
+  const top = found[0];
+  // The full summary rides on the top guess (log lines are clipped); the log covers a photo that couldn't be placed.
+  const summary = (typeof top?.props?.summary === "string" ? top.props.summary : logs.find((l) => l.startsWith("Photo: "))?.slice(7))?.trim();
+  if (!summary && !top) return null;
+  const at = top?.geometry.type === "Point" ? (top.geometry.coordinates as number[]) : null;
+  const where = top ? ` Most likely taken at ${String(top.props?.place ?? "the marked spot")}${at ? ` (${at[1].toFixed(5)}, ${at[0].toFixed(5)})` : ""} [${top.id}]${top.props?.offRegion ? ", outside the selected area" : ""}.` : " It couldn't be placed.";
+  return `Attached photo: ${summary ?? ""}${where}`.replace(/\s+/g, " ").trim();
 }

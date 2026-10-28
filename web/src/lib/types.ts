@@ -69,7 +69,12 @@ export interface WorkerTask {
   /** Optional specific points to inspect (re-dispatch). */
   targets?: { id: string; lng: number; lat: number; label?: string }[];
   question?: string;
+  /** A photo attached to the question (base64 JPEG): only the Photo Locator reads it. */
+  photo?: RunPhoto;
 }
+
+/** Sent with the run request, never stored with the run or its events. */
+export type RunPhoto = { data: string; mediaType: "image/jpeg" | "image/png" | "image/webp" | "image/gif" };
 
 export interface WorkerContext {
   task: WorkerTask;
@@ -128,6 +133,8 @@ export interface RunRequest {
   question?: string;
   /** Extra agent ids the user wants included (e.g. custom ones from the hub). */
   includeAgents?: string[];
+  /** A photo to supplement the question: located by the Photo Locator before planning. */
+  photo?: RunPhoto;
 }
 
 /** README §2: one orchestrator per user type. */

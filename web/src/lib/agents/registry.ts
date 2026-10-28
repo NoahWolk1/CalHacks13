@@ -36,6 +36,7 @@ import { rentalsWorker } from "./workers/rentals";
 import { schoolsWorker } from "./workers/schools";
 import { envBurdenWorker } from "./workers/envBurden";
 import { disastersWorker } from "./workers/disasters";
+import { photoWorker } from "./workers/photo";
 import { createLibrary, type Library } from "./library";
 import { buildGeneratedWorker } from "./runtime";
 
@@ -50,6 +51,8 @@ export const BUILTIN_WORKERS: Worker[] = [
   groundHazardsWorker, seaLevelWorker, wildfireWorker, weatherWorker, landmarksWorker, rentalsWorker, schoolsWorker, envBurdenWorker, disastersWorker,
   // Global populated places (cities/towns/villages/hamlets) from OpenFreeMap tiles.
   settlementsWorker,
+  // Runs only when a photo is attached to the question (the orchestrator dispatches it before planning).
+  photoWorker,
 ];
 
 // Generated agents come in two kinds:
