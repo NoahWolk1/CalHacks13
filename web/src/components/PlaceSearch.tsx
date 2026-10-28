@@ -50,6 +50,11 @@ export default function PlaceSearch({ variant = "desktop", onClose }: { variant?
   const [photoBusy, setPhotoBusy] = useState(false);
   const [photoErr, setPhotoErr] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  // With an area selected, the photo is searched for inside it, at street level from the area's map names.
+  const region = useStore((s) => s.region);
+  const areaOk = !!region && region.bbox[2] - region.bbox[0] <= 0.5 && region.bbox[3] - region.bbox[1] <= 0.5;
+  const [inArea, setInArea] = useState(true);
+  const area = areaOk && inArea && region ? { bbox: region.bbox, center: region.center } : undefined;
   const wrap = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
 
@@ -94,7 +99,7 @@ export default function PlaceSearch({ variant = "desktop", onClose }: { variant?
   const findPhoto = (file: File | undefined) => {
     if (!file) return;
     setPhotoBusy(true); setPhotoErr(null); setPhoto(null); setQ(""); setOpen(true);
-    locatePhoto(file)
+    locatePhoto(file, area)
       .then((r) => { setPhoto(r); if (!r.guesses.length) setPhotoErr(r.summary || "No usable clues in that photo."); })
       .catch((e) => setPhotoErr((e as Error).message))
       .finally(() => setPhotoBusy(false));
@@ -108,7 +113,7 @@ export default function PlaceSearch({ variant = "desktop", onClose }: { variant?
     };
     window.addEventListener("paste", paste);
     return () => window.removeEventListener("paste", paste);
-  }, [open]);
+  }, [open, area]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Browser geolocation: fly to the user's position at the same zoom as a search result.
   const locate = () => {
@@ -163,15 +168,24 @@ export default function PlaceSearch({ variant = "desktop", onClose }: { variant?
               {photoBusy ? <Loader2 size={13} strokeWidth={1.5} className="shrink-0 animate-spin text-fg3" /> : <ImageUp size={13} strokeWidth={1.5} className="shrink-0 text-fg3" />}
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-[13px] text-fg1">{photoBusy ? "Reading the photo…" : "Find a place from a photo"}</span>
-                <span className="block truncate text-[12px] text-fg3">{photoErr ?? "Upload, drop or paste an image"}</span>
+                <span className="block truncate text-[12px] text-fg3">{photoErr ?? (area ? "Searched for inside the selected area" : "Upload, drop or paste an image")}</span>
               </span>
             </button>
+            {areaOk && (
+              <label className="flex cursor-pointer items-center gap-2 border-b border-line px-2 py-1.5 text-[12px] text-fg3 hover:text-fg1">
+                <input type="checkbox" checked={inArea} onChange={(e) => setInArea(e.target.checked)} className="accent-accent" />
+                Only look inside the selected area (street level)
+              </label>
+            )}
             {!showResults && photo && photo.guesses.length > 0 ? (
               <>
                 <div className="flex items-start gap-2 px-2 pb-1 pt-1.5">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img src={photo.preview} alt="Your photo" className="h-10 w-10 shrink-0 rounded-[3px] object-cover" />
-                  <span className="min-w-0 flex-1 text-[12px] leading-snug text-fg3">{photo.summary}</span>
+                  <span className="min-w-0 flex-1 text-[12px] leading-snug text-fg3">
+                    {photo.summary}
+                    {photo.capped && <span className="mt-0.5 block text-fg4">{photo.capped === "people" ? "People are in the photo" : "Taken inside a home"}: shown at city level only. Crop them out for a street-level match.</span>}
+                  </span>
                   <button onClick={() => { setPhoto(null); setPhotoErr(null); }} className="text-fg3 hover:text-fg1" aria-label="Clear photo"><X size={13} strokeWidth={1.5} /></button>
                 </div>
                 {photo.guesses.map((g, i) => (
@@ -182,7 +196,7 @@ export default function PlaceSearch({ variant = "desktop", onClose }: { variant?
                       <span className="block truncate text-[13px] text-fg1">{g.name}</span>
                       <span className="block text-[12px] text-fg3">{g.clues}</span>
                     </span>
-                    <span className="shrink-0 text-[11.5px] text-fg4">{g.confidence}</span>
+                    <span className="shrink-0 text-right text-[11.5px] text-fg4">{g.confidence}<span className="block">{g.via === "map" ? "map match" : g.precision}</span></span>
                   </button>
                 ))}
               </>
