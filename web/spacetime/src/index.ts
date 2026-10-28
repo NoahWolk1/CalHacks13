@@ -134,7 +134,18 @@ const sky_mission_events = table(
   },
 );
 
-const spacetimedb = schema({ runs, events, findings, llm_usage, writers, sky_surveys, sky_survey_stars, sky_missions, sky_mission_events });
+// Finished vetting reports (web/src/lib/sky/vetStore.ts): one per signal, the latest run wins.
+const sky_vets = table(
+  { name: "sky_vets", public: true },
+  {
+    vet_id: t.string().primaryKey(),
+    tic: t.string().index("btree"),
+    saved_ms: t.f64(),
+    report_json: t.string(), // VetReport
+  },
+);
+
+const spacetimedb = schema({ runs, events, findings, llm_usage, writers, sky_surveys, sky_survey_stars, sky_missions, sky_mission_events, sky_vets });
 export default spacetimedb;
 
 type Ctx = ReducerCtx<InferSchema<typeof spacetimedb>>;
@@ -411,3 +422,17 @@ export const edit_sky_mission = spacetimedb.reducer(
     ctx.db.sky_missions.mission_id.update({ ...row, meta_json: JSON.stringify(meta) });
   },
 );
+
+// ── vetting reports ──────────────────────────────────────────────────────────
+
+/** Saves a finished vetting report, replacing the one with the same id (the server picks the id of
+ *  the saved report for the same signal). */
+export const save_sky_vet = spacetimedb.reducer({ vet_id: t.string(), tic: t.string(), report_json: t.string() }, (ctx, a) => {
+  requireWriter(ctx);
+  if (!/^[A-Za-z0-9_-]{6,64}$/.test(a.vet_id)) throw new SenderError("bad vet_id");
+  if (!/^\d{1,12}$/.test(a.tic)) throw new SenderError("bad tic");
+  if (a.report_json.length > 1_000_000) throw new SenderError("report too large");
+  const row = { vet_id: a.vet_id, tic: a.tic, saved_ms: nowMs(ctx), report_json: a.report_json };
+  if (ctx.db.sky_vets.vet_id.find(a.vet_id)) ctx.db.sky_vets.vet_id.update(row);
+  else ctx.db.sky_vets.insert(row);
+});

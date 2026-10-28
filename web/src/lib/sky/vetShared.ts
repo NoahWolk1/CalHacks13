@@ -83,6 +83,7 @@ export type VetStreamEvent =
   | { type: "check"; check: VetCheck; ms: number }
   | { type: "events"; events: VetEventRow[]; ms: number }
   | { type: "report"; report: VetReport; ms: number }
+  | { type: "saved"; saved: SavedVet }
   | { type: "error"; message: string };
 
 export const STAGE_LABEL: Record<VetStage, string> = {
@@ -94,6 +95,19 @@ export const STAGE_LABEL: Record<VetStage, string> = {
 };
 
 /** What a find carries that vetting needs; null for finds that aren't transits (variables). */
+/** Whether two vet inputs are the same signal on the same star (a saved report applies to the find):
+ *  periodic within 0.5% in period; dips at the same times within a duration. */
+export function sameFind(a: VetInput, b: VetInput): boolean {
+  if (a.tic !== b.tic || a.kind !== b.kind) return false;
+  if (a.kind === "periodic") return !!a.period && !!b.period && Math.abs(a.period / b.period - 1) < 0.005;
+  const ta = a.times ?? [], tb = b.times ?? [];
+  const tol = Math.max(a.duration, b.duration, 0.1);
+  return ta.length > 0 && ta.length === tb.length && ta.every((t, i) => Math.abs(t - tb[i]) < tol);
+}
+
+/** A finished report as saved on the server (vetStore.ts). */
+export type SavedVet = { id: string; savedAt: number; report: VetReport };
+
 export function vetInputFrom(o: SkyObject): VetInput | null {
   if (o.category !== "candidate") return null;
   const p = o.props, num = (k: string) => (p[k] === undefined || p[k] === "" ? undefined : Number(p[k]));

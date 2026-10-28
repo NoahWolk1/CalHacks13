@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { ShieldCheck } from "lucide-react";
 import type { AnalysisStar, SkyNote, SkyObject } from "@/lib/sky/types";
+import { useSavedVet } from "@/lib/client/savedVets";
 import { vetInputFrom } from "@/lib/sky/vetShared";
 import VetPanel from "./VetPanel";
 
@@ -26,6 +27,7 @@ export function findLine(o: SkyObject) {
 export function FindCard({ o, onCite }: { o: SkyObject; onCite: (id: string) => void }) {
   const [vet, setVet] = useState(false);
   const input = vetInputFrom(o);
+  const saved = useSavedVet(input);
   return (
     <li className="rounded-md border border-[#f2c35b]/50 bg-[#f2c35b]/[0.06] px-2.5 py-1.5 text-[12.5px]">
       <div className="flex items-center gap-2">
@@ -34,9 +36,9 @@ export function FindCard({ o, onCite }: { o: SkyObject; onCite: (id: string) => 
           <span className="truncate text-[#f2c35b]">{o.type}</span>
         </button>
         {input && (
-          <button onClick={() => setVet((v) => !v)} title="Vet this find: host star, every transit, false-positive and blend tests, a tier"
+          <button onClick={() => setVet((v) => !v)} title={saved ? `Vetted: tier ${saved.report.tier}. Open the saved report` : "Vet this find: host star, every transit, false-positive and blend tests, a tier"}
             className={`flex shrink-0 items-center gap-1 rounded border px-1.5 py-px text-[11px] ${vet ? "border-[#7fd1b9]/60 text-[#7fd1b9]" : "border-line text-fg3 hover:text-fg1"}`}>
-            <ShieldCheck size={11} />vet
+            <ShieldCheck size={11} />{saved ? <>vetted <span className="num font-medium">{saved.report.tier}</span></> : "vet"}
           </button>
         )}
       </div>
