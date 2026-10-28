@@ -67,10 +67,17 @@ async function acquire(host: string, signal: AbortSignal) {
   return () => { h.inFlight--; h.waiters.splice(0).forEach((r) => r()); };
 }
 
+// When neither host answered, later queries fail at once for a few minutes instead of each waiting
+// out its deadline (the SIMBAD source then falls straight back to Gaia). A refusal (HTTP error) isn't
+// counted: only silence, which is how a network that blocks CDS looks.
+const DOWN_MS = 5 * 60_000;
+let downUntil = 0, downWhy = "";
+
 /** One SIMBAD TAP query (POST, so long ADQL is fine), sent to CDS and, if CDS hasn't answered within
  *  3 s or has already failed, to the CfA mirror too: the first good answer wins. `timeoutMs` bounds
  *  the whole query, mirror included. */
 export async function simbadTap(query: string, opts: { timeoutMs: number; signal: AbortSignal }): Promise<TapJson> {
+  if (Date.now() < downUntil) throw new Error(`SIMBAD unreachable (${downWhy}; retrying in ${Math.ceil((downUntil - Date.now()) / 60_000)} min)`);
   const ctl = new AbortController();
   const stop = () => ctl.abort();
   opts.signal.addEventListener("abort", stop);
@@ -101,7 +108,9 @@ export async function simbadTap(query: string, opts: { timeoutMs: number; signal
   try {
     return await Promise.any([primary, mirror]);
   } catch (e) {
-    throw new Error(`SIMBAD unreachable (${((e as AggregateError).errors ?? [e]).map((x: Error) => x.message).join("; ")})`);
+    const why = ((e as AggregateError).errors ?? [e]).map((x: Error) => x.message).join("; ");
+    if (timedOut && !opts.signal.aborted) { downUntil = Date.now() + DOWN_MS; downWhy = "no answer from CDS or the CfA mirror"; }
+    throw new Error(`SIMBAD unreachable (${why})`);
   } finally {
     clearTimeout(deadline);
     ctl.abort();

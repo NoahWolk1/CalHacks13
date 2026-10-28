@@ -43,4 +43,14 @@ describe("SIMBAD client", () => {
     expect(note).toMatch(/SIMBAD unreachable.*Gaia DR3/);
     expect(simbadQuery(c)).toContain("FROM basic");
   });
+
+  it("stops waiting on SIMBAD for a few minutes once neither host answers", async () => {
+    let calls = 0;
+    vi.stubGlobal("fetch", (_url: string, init?: RequestInit) => { calls++; return hang(init); });
+    await expect(simbadTap(`SELECT 2 -- ${Math.random()}`, { timeoutMs: 3_500, signal: new AbortController().signal })).rejects.toThrow(/no answer/);
+    const before = calls, t0 = Date.now();
+    await expect(simbadTap(`SELECT 3 -- ${Math.random()}`, { timeoutMs: 3_500, signal: new AbortController().signal })).rejects.toThrow(/retrying in 5 min/);
+    expect(calls).toBe(before);
+    expect(Date.now() - t0).toBeLessThan(100);
+  });
 });
