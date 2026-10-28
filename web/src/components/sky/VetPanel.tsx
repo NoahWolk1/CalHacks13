@@ -20,6 +20,7 @@ const STATUS: Record<VetStatus, { label: string; cls: string }> = {
   fail: { label: "fail", cls: "bg-risk/15 text-risk" },
   "not-run": { label: "not run", cls: "bg-fg4/15 text-fg3" },
   info: { label: "info", cls: "bg-[#5ec8d8]/15 text-[#5ec8d8]" },
+  na: { label: "n/a", cls: "bg-fg4/10 text-fg4" },
 };
 const TIER_CLS: Record<VetReport["tier"], string> = { A: "bg-ok/20 text-ok", B: "bg-[#7fd1b9]/20 text-[#7fd1b9]", C: "bg-[#f2c35b]/20 text-[#f2c35b]", X: "bg-risk/20 text-risk", K: "bg-[#5ec8d8]/20 text-[#5ec8d8]" };
 
@@ -112,7 +113,7 @@ export default function VetPanel({ input }: { input: VetInput }) {
             <details key={stage} open={bad > 0 || stage === 4 || !r}>
               <summary className="cursor-pointer text-[11px] text-fg3">
                 {STAGE_LABEL[stage]}
-                <span className="num ml-1.5 text-fg4">{(["fail", "flag", "pass", "not-run", "info"] as VetStatus[]).filter((s) => n(s)).map((s) => `${n(s)} ${STATUS[s].label}`).join(" · ")}</span>
+                <span className="num ml-1.5 text-fg4">{(["fail", "flag", "pass", "not-run", "info", "na"] as VetStatus[]).filter((s) => n(s)).map((s) => `${n(s)} ${STATUS[s].label}`).join(" · ")}</span>
               </summary>
               <ul className="mt-0.5 space-y-0.5 pl-1">
                 {checks.map((c) => (

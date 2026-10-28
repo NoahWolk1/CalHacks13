@@ -6,11 +6,15 @@
 //    stand out above it, above the next-deepest dip (MS2) and above the strongest brightening (MS3)
 //  - event consistency: the individual depths agree with one depth, and the signal survives
 //    dropping its 3 strongest events (one or a few outliers can't make a 100-transit signal)
+//  - single-event uniqueness: the model-shift idea for a dip with no period. A box of the dip's length
+//    at every other time in the data gives the red noise at that time scale and the strongest dip
+//    and brightening the noise makes; the dip has to beat the threshold noise reaches anywhere in
+//    that much data only 1% of the time, and the deepest other dip doubles as a search for a secondary eclipse
 //  - pulsation removal: sinusoids fitted out of transit (δ Scuti, γ Dor, rotation) are subtracted
 //    and the transit measured again, so a dip made of pulsations disappears
 import { lombScargle } from "./lombscargle";
 import { binSeries, type Series } from "./timeseries";
-import { combine } from "./transitFit";
+import { combine, measureEvent } from "./transitFit";
 
 /** Inverse standard normal CDF (Acklam's rational approximation, |rel. error| < 1.2e-9). */
 export function normInv(p: number): number {
@@ -137,4 +141,51 @@ export function harmonicOf(P: number, pulsations: Pulsation[], maxN = 4): { puls
     if (n > 1 && Math.abs((n * P) / p.period - 1) < 0.003) return { pulsation: p, relation: `is 1/${n} of` };
   }
   return null;
+}
+
+export type EventUniqueness = {
+  /** The weakest of the dips tested (a duotransit is only as unique as its weaker dip). */
+  event: { t: number; snr: number; depth: number };
+  /** Robust scatter of the box SNR away from the dips: 1 for white noise. */
+  fred: number;
+  /** Threshold (σ) for a 1% chance that noise anywhere in `trials` independent boxes reaches it. */
+  fa: number; trials: number; days: number;
+  /** Deepest other dip and strongest brightening (white-noise SNR, positive). */
+  other: { t: number; snr: number; depth: number }; up: { t: number; snr: number };
+  /** 3σ (red) depth limit for an eclipse of this length anywhere in the data. */
+  limit: number;
+};
+
+/** Single-event uniqueness on flattened light curves: boxes `dur` long every dur/3, at least 1.5
+ *  durations from each dip in `times`, against the local baseline (measureEvent). */
+export function eventUniqueness(parts: { flat: Series; cadence: number }[], times: number[], dur: number): EventUniqueness | null {
+  const step = dur / 3;
+  const grid: { t: number; snr: number; depth: number; err: number }[] = [];
+  for (const p of parts) {
+    const t = p.flat.t;
+    if (t.length < 50) continue;
+    for (let x = t[0] + dur; x < t[t.length - 1] - dur; x += step) {
+      if (times.some((tt) => Math.abs(x - tt) < 1.5 * dur)) continue;
+      const m = measureEvent(p.flat, x, dur, p.cadence);
+      if (m && m.coverage >= 0.8) grid.push({ t: x, snr: m.snr, depth: m.depth, err: m.err });
+    }
+  }
+  if (grid.length < 30) return null;
+  const evs = times.flatMap((tt) => {
+    const p = parts.find((q) => q.flat.t.length && tt >= q.flat.t[0] && tt <= q.flat.t[q.flat.t.length - 1]);
+    const m = p && measureEvent(p.flat, tt, dur, p.cadence);
+    return m ? [{ t: tt, snr: m.snr, depth: m.depth }] : [];
+  });
+  if (!evs.length) return null;
+  const event = evs.reduce((a, b) => (b.snr < a.snr ? b : a));
+  const sn = grid.map((g) => g.snr).sort((a, b) => a - b), med = sn[sn.length >> 1];
+  const fred = Math.max(1, 1.4826 * sn.map((x) => Math.abs(x - med)).sort((a, b) => a - b)[sn.length >> 1] || 1);
+  const days = grid.length * step, trials = Math.max(1, Math.round(days / dur));
+  const other = grid.reduce((a, b) => (b.snr > a.snr ? b : a)), low = grid.reduce((a, b) => (b.snr < a.snr ? b : a));
+  const errs = grid.map((g) => g.err).sort((a, b) => a - b);
+  return {
+    event, fred, fa: sigmaThreshold(0.02 / trials), trials, days,
+    other: { t: other.t, snr: other.snr, depth: other.depth }, up: { t: low.t, snr: -low.snr },
+    limit: 3 * fred * errs[errs.length >> 1],
+  };
 }
