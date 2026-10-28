@@ -66,6 +66,10 @@ export type AnalysisStar = {
 /** One periodic signal from the iterative search. */
 export type TransitSignal = { period: number; t0: number; duration: number; depth: number; snr: number; sde: number; transits: number; oddEven: number; oddEvenSigma: number; secondary: number; secondarySigma: number; detected: boolean };
 export type SingleDip = { t: number; duration: number; depth: number; snr: number };
+/** A known signal measured at its period in independent data (survey.ts), instead of re-discovered blind:
+ *  "recovered" clears the detection bar, "weak" has a consistent depth below it, "absent" should have
+ *  shown and didn't, "inconclusive" is too noisy to say. */
+export type ForcedCheck = { period: number; depth: number; err: number; snr: number; transits: number; result: "recovered" | "weak" | "absent" | "inconclusive" };
 
 /** What the Transit Hunter and Variability agents found on one star (measured, before vetting). */
 export type StarResult = {
@@ -152,6 +156,8 @@ export type SurveySeason = {
   coverage?: [number, number][];
   signals?: TransitSignal[];
   singles?: SingleDip[];
+  /** The star's signals from other seasons, measured at their periods in this one. */
+  forced?: ForcedCheck[];
   ls?: { period: number; amplitude: number; power: number; fap: number; variable: boolean };
   prewhitened?: number[];
   radius?: number;

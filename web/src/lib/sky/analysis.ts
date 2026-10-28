@@ -24,11 +24,12 @@ import {
   acceptPlan, claudePlan, claudeReview, heuristicFollowups, heuristicPlan, heuristicStrategy, PLAYBOOK_LABEL, PLAYBOOK_SECTORS, prospects,
   type FollowAction, type Followable, type PlanPick,
 } from "./strategy";
+import { redNoise } from "./transitFit";
 import { binSeries, cleanSeries, clipUpper, flatten, maskTransits, stitch, trimGaps, type Ephemeris, type Series } from "./timeseries";
 import { CONTAM_ARCMIN, ebNeighbours, impliedRadiusEarth, knownPlanetsNear, MAX_PLANET_REARTH, periodsMatch, toisNear, vetSignal, type KnownSignal, type Verdict } from "./vetting";
 import { VARIABLE_OTYPES, variablesNear, vsxEntry, type VsxStar } from "./vsx";
 import { separation } from "./geom";
-import { isNewFind as isNew, type AnalysisStar, type Cone, type SkyAgentReport, type SkyAnalysis, type SkyEvent, type SkyNote, type SkyObject, type SkyPlan, type StarResult, type TransitSignal } from "./types";
+import { isNewFind as isNew, type AnalysisStar, type Cone, type SkyAgentReport, type SkyAnalysis, type SkyEvent, type SkyNote, type SkyObject, type SkyPlan, type ForcedCheck, type StarResult, type TransitSignal } from "./types";
 
 export const ANALYSIS_MAX_STARS = 16;
 export const ANALYSIS_CONCURRENCY = 4;
@@ -215,6 +216,35 @@ export function recheckSignal(parts: Pick<LightCurve, "time" | "flux" | "quality
   const r = bls(flat, { minPeriod: period * 0.99, maxPeriod: period * 1.01 });
   const recovered = r.snr >= 6 && r.transits >= 2 && r.depth > 0.4 * depth && r.depth < 2.5 * depth;
   return { recovered, snr: r.snr, depth: r.depth, transits: r.transits };
+}
+
+/** Measures a known signal in independent data without re-discovering it: a box search held to its
+ *  duration and to ±0.5% of its period, phase free (an ephemeris from one season drifts by more than
+ *  a transit over a year). Errors include red noise at the transit's time scale. A free-phase search
+ *  always finds some dip, so "weak" has to beat the noise floor: the same search on the flux turned
+ *  upside down and at nearby wrong periods. The free phase biases the depth up, so "absent" is conservative. */
+export function forcedCheck(parts: Pick<LightCurve, "time" | "flux" | "quality">[], sig: Pick<TransitSignal, "period" | "duration" | "depth">): ForcedCheck {
+  const { flat } = searchable(stitch(parts.map((lc) => prepare(lc, parts.length > 1 ? BIN_DAYS_MULTI : BIN_DAYS))));
+  const beta = redNoise(flat, sig.duration);
+  const at = (s: Series, P: number) => {
+    const r = bls(s, { minPeriod: P * 0.995, maxPeriod: P * 1.005, durations: [sig.duration] });
+    const err = (r.depthErr || Math.abs(r.depth) / Math.max(r.snr, 1e-3)) * beta;
+    return { r, err, snr: r.depth / err };
+  };
+  const flipped = { t: flat.t, f: flat.f.map((v) => 2 - v) };
+  const { r, err, snr } = at(flat, sig.period);
+  // 13 null searches: pure noise beats their maximum ~1 time in 14, and the margin cuts that further.
+  const offsets = [1.031, 0.969, 1.067, 0.937, 1.103, 0.907];
+  const nulls = [at(flipped, sig.period), ...offsets.flatMap((k) => [at(flat, sig.period * k), at(flipped, sig.period * k)])];
+  const floor = Math.max(3, ...nulls.map((x) => x.snr)) + 0.25;
+  const D = sig.depth, d = r.depth;
+  const result: ForcedCheck["result"] =
+    r.transits >= 2 && r.snr >= BLS_MIN_SNR && snr > floor && d > 0.4 * D && d < 2.5 * D ? "recovered"
+    : r.transits >= 2 && D / err >= 5 && d < D - 3 * err && d < 0.5 * D ? "absent"
+    : r.transits >= 2 && snr > floor && Math.abs(d - D) < 3 * err ? "weak"
+    : "inconclusive";
+  const p = (n: number) => +n.toPrecision(4);
+  return { period: p(r.period), depth: p(d), err: p(err), snr: p(snr), transits: r.transits, result };
 }
 
 export async function runAnalysis(c: Cone, signal: AbortSignal, emit: (e: SkyEvent) => void, t0 = Date.now(), useClaude: Promise<boolean> = Promise.resolve(false)): Promise<SkyAnalysis> {
