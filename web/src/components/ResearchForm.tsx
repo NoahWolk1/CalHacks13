@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import { X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ImagePlus, X } from "lucide-react";
+import { toJpeg } from "@/lib/client/locateImage";
 import { useStore, agentById, pickProfile } from "@/lib/client/store";
 import { startRun } from "@/lib/client/runClient";
 import { regionAreaKm2 } from "@/lib/geo";
@@ -25,11 +26,21 @@ export function useRegionLabel() {
   }, [region]);
 }
 
-export const useCanRun = () => useStore((s) => !!s.region && (s.mode === "insights" || s.question.trim().length > 2));
+export const useCanRun = () => useStore((s) => !!s.region && (s.mode === "insights" || s.question.trim().length > 2 || !!s.photo));
 
 /** Area, question and focus, then start. The first step of the research panel (desktop and mobile). */
 export function ResearchForm({ onBack }: { onBack?: () => void }) {
-  const { profiles, profileId, mode, question, region, running, routed, set } = useStore();
+  const { profiles, profileId, mode, question, photo, region, running, routed, set } = useStore();
+  const [photoErr, setPhotoErr] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const attach = (file: File | undefined) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) { setPhotoErr("That file isn't an image."); return; }
+    setPhotoErr(null);
+    toJpeg(file).then((url) => set({ photo: { url, name: file.name || "Pasted photo" } })).catch(() => setPhotoErr("Couldn't read that image."));
+  };
+  const imageIn = (files: FileList | undefined | null) => [...(files ?? [])].find((f) => f.type.startsWith("image/"));
   // "auto" (default) lets the orchestrator route the question; a stale saved id also means auto.
   const sel = profiles.some((p) => p.id === profileId) ? profileId : "auto";
   const auto = sel === "auto";
@@ -74,10 +85,33 @@ export function ResearchForm({ onBack }: { onBack?: () => void }) {
         </div>
         {mode === "ask" ? (
           <>
-            <textarea value={question} onChange={(e) => set({ question: e.target.value })} rows={3}
-              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && canRun) { e.preventDefault(); startRun(); } }}
-              placeholder={auto ? "What do you want to know about this area? It goes to the right specialist." : "What do you want to know about this area?"}
-              className="w-full resize-none rounded-md border border-line bg-bg px-3 py-2 text-[13px] text-fg1 max-lg:text-base placeholder:text-fg4 focus:border-fg4 focus:outline-none focus-visible:outline-none" />
+            <div className="relative">
+              <textarea value={question} onChange={(e) => set({ question: e.target.value })} rows={3}
+                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && canRun) { e.preventDefault(); startRun(); } }}
+                onPaste={(e) => { const f = imageIn(e.clipboardData?.files); if (f) { e.preventDefault(); attach(f); } }}
+                onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) { e.preventDefault(); setDragging(true); } }}
+                onDragLeave={() => setDragging(false)}
+                onDrop={(e) => { const f = imageIn(e.dataTransfer.files); setDragging(false); if (f) { e.preventDefault(); attach(f); } }}
+                placeholder={photo ? "What do you want to know about the place in this photo? (optional)" : auto ? "What do you want to know about this area? It goes to the right specialist. Drop a photo here to add it." : "What do you want to know about this area? Drop a photo here to add it."}
+                className={`w-full resize-none rounded-md border bg-bg px-3 py-2 pr-9 text-[13px] text-fg1 max-lg:text-base placeholder:text-fg4 focus:border-fg4 focus:outline-none focus-visible:outline-none ${dragging ? "border-accent" : "border-line"}`} />
+              <input ref={fileInput} type="file" accept="image/*" className="hidden" onChange={(e) => { attach(e.target.files?.[0]); e.target.value = ""; }} />
+              <button onClick={() => fileInput.current?.click()} disabled={running} title="Attach a photo" aria-label="Attach a photo"
+                className="absolute bottom-2.5 right-2 rounded-[4px] p-1 text-fg3 transition-colors hover:bg-raised hover:text-fg1 disabled:opacity-40">
+                <ImagePlus size={15} strokeWidth={1.5} />
+              </button>
+            </div>
+            {photo && (
+              <div className="mt-1.5 flex items-center gap-2 rounded-md border border-line bg-bg p-1.5">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={photo.url} alt="Attached photo" className="h-10 w-10 shrink-0 rounded-[3px] object-cover" />
+                <div className="min-w-0 flex-1 text-[12px] leading-snug">
+                  <div className="truncate text-fg1">{photo.name}</div>
+                  <div className="text-fg3">Located first, then every agent researches the place it shows.</div>
+                </div>
+                <button onClick={() => set({ photo: null })} disabled={running} aria-label="Remove photo" className="rounded-[4px] p-1 text-fg3 transition-colors hover:bg-raised hover:text-fg1"><X size={14} strokeWidth={1.5} /></button>
+              </div>
+            )}
+            {photoErr && <div className="mt-1 text-[12px] text-fg3">{photoErr}</div>}
             {!question.trim() && (
               <div className="mt-1.5 flex flex-wrap gap-1">
                 {samples.slice(0, 4).map((q) => (

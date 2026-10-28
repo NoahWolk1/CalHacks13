@@ -1,5 +1,6 @@
 import { after } from "next/server";
-import type { RunEvent, RunRequest } from "@/lib/types";
+import type { RunEvent, RunPhoto, RunRequest } from "@/lib/types";
+import { LOCATE_MAX_B64, LOCATE_TYPES } from "@/lib/locate";
 import { runOrchestrator } from "@/lib/orchestrator/run";
 import { liveStore, startLiveRun } from "@/lib/server/liveRun";
 import { decideLlm } from "@/lib/server/llmQuota";
@@ -16,7 +17,9 @@ export const maxDuration = 300; // Vercel Hobby max (Fluid compute); Pro allows 
 export async function POST(req: Request) {
   const raw = (await req.json()) as RunRequest;
   // Unknown or omitted profile → "auto" (stored on the run row until the `routed` event updates it).
-  const body: RunRequest = { ...raw, profileId: normalizeProfileId(raw.profileId) };
+  // An attached photo is checked here and only ever handed to the orchestrator (never stored with the run).
+  const { photo, ...rest } = raw;
+  const body: RunRequest = { ...rest, profileId: normalizeProfileId(raw.profileId), ...(cleanPhoto(photo) ? { photo: cleanPhoto(photo)! } : {}) };
   // Hourly Claude caps (per IP + global); over the cap the run proceeds in heuristic mode.
   const store = liveStore();
   const decision = await decideLlm(req, store);
@@ -52,4 +55,12 @@ export async function POST(req: Request) {
     cancel() { ctl.abort(); },
   });
   return new Response(stream, { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", "X-Accel-Buffering": "no" } });
+}
+
+/** A photo the request may carry: base64 of an allowed image type, under the size cap; anything else is dropped. */
+function cleanPhoto(v: unknown): RunPhoto | null {
+  const p = v as { data?: unknown; mediaType?: unknown } | null;
+  if (!p || typeof p.data !== "string" || !LOCATE_TYPES.includes(p.mediaType as RunPhoto["mediaType"])) return null;
+  const data = p.data.replace(/^data:[^,]*,/, "");
+  return data && data.length <= LOCATE_MAX_B64 ? { data, mediaType: p.mediaType as RunPhoto["mediaType"] } : null;
 }

@@ -121,7 +121,7 @@ export async function startRun() {
     const res = await fetch("/api/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: s.mode, profileId: s.profileId, region: s.region, question: s.mode === "ask" ? s.question : undefined }),
+      body: JSON.stringify({ mode: s.mode, profileId: s.profileId, region: s.region, question: s.mode === "ask" ? s.question : undefined, ...(s.mode === "ask" && s.photo ? { photo: { data: s.photo.url, mediaType: "image/jpeg" } } : {}) }),
       signal: ctl.signal,
     });
 

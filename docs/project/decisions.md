@@ -82,6 +82,8 @@
 
 - **2026-10-28: Find a place from a photo.** The place search takes an uploaded, dropped or pasted image (`web/src/app/api/locate/route.ts`, `web/src/lib/locate.ts`): Claude names up to 3 places from the visual clues and they go on the map. Anywhere, guesses are geocoded with Nominatim. With an area selected (up to 0.5° across), the area's OpenStreetMap street and place names (OpenFreeMap tiles) go to Claude as a gazetteer, and a matched place, street or street crossing is placed from the map data at street level (for finding hazards or places known only from photos). Places only: people are never identified, and the server caps a photo with people in it, or taken inside a private home, at city level whatever the model says. The browser re-encodes the photo before upload, which strips EXIF/GPS. Counts against the hourly Claude caps.
 
+- **2026-10-28: A photo can go with the question.** Drop, paste or attach an image in the Ask box. Before planning, a built-in Photo Locator agent (`web/src/lib/agents/workers/photo.ts`, using `web/src/lib/locate.ts`) places it as findings on the map; the orchestrator then adds what the photo shows and its most likely spot to the question, so the planner, every agent and the answer research that place. The planner never picks the Photo Locator itself. The photo goes only to the orchestrator, never into the run row or its events; replays show the photo's findings, not the image. Without Claude (no key or over the hourly cap) the photo is skipped and the run says so.
+
 ## Open
 
 - [ ] **Named community for the pitch** (needed for Anthropic/Microsoft). Candidates in [submission/tracks.md](../submission/tracks.md).
