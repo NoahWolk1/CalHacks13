@@ -2,10 +2,12 @@
 
 import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Search, MapPin, Loader2, X, LocateFixed } from "lucide-react";
+import { Search, MapPin, Loader2, X, LocateFixed, ImageUp } from "lucide-react";
 import { useStore } from "@/lib/client/store";
 import { flyTo, fitBox } from "@/lib/client/camera";
 import { searchPlaces, type Place } from "@/lib/client/geocode";
+import { locatePhoto } from "@/lib/client/locateImage";
+import type { LocateResult } from "@/lib/locate";
 import { DEMO_SPOTS, regionForSpot, type DemoSpot } from "@/lib/client/demoSpots";
 
 export function pickSpot(s: DemoSpot) {
@@ -43,6 +45,11 @@ export default function PlaceSearch({ variant = "desktop", onClose }: { variant?
   const [active, setActive] = useState(0);
   const [locating, setLocating] = useState(false);
   const [locErr, setLocErr] = useState<string | null>(null);
+  // Photo search: Claude reads the photo's clues, the guesses are geocoded (see /api/locate).
+  const [photo, setPhoto] = useState<(LocateResult & { preview: string }) | null>(null);
+  const [photoBusy, setPhotoBusy] = useState(false);
+  const [photoErr, setPhotoErr] = useState<string | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
   const wrap = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
 
@@ -83,6 +90,25 @@ export default function PlaceSearch({ variant = "desktop", onClose }: { variant?
     onClose?.();
   };
   const showResults = q.trim().length >= 3;
+
+  const findPhoto = (file: File | undefined) => {
+    if (!file) return;
+    setPhotoBusy(true); setPhotoErr(null); setPhoto(null); setQ(""); setOpen(true);
+    locatePhoto(file)
+      .then((r) => { setPhoto(r); if (!r.guesses.length) setPhotoErr(r.summary || "No usable clues in that photo."); })
+      .catch((e) => setPhotoErr((e as Error).message))
+      .finally(() => setPhotoBusy(false));
+  };
+  // Pasting an image while the search is open runs a photo search.
+  useEffect(() => {
+    if (!open) return;
+    const paste = (e: ClipboardEvent) => {
+      const f = [...(e.clipboardData?.files ?? [])].find((x) => x.type.startsWith("image/"));
+      if (f) { e.preventDefault(); findPhoto(f); }
+    };
+    window.addEventListener("paste", paste);
+    return () => window.removeEventListener("paste", paste);
+  }, [open]);
 
   // Browser geolocation: fly to the user's position at the same zoom as a search result.
   const locate = () => {
@@ -129,7 +155,38 @@ export default function PlaceSearch({ variant = "desktop", onClose }: { variant?
                 {locErr && <span className="block truncate text-[12px] text-fg3">{locErr}</span>}
               </span>
             </button>
-            {showResults ? (
+            <input ref={fileInput} type="file" accept="image/*" className="hidden"
+              onChange={(e) => { findPhoto(e.target.files?.[0]); e.target.value = ""; }} />
+            <button onClick={() => fileInput.current?.click()} disabled={photoBusy}
+              onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); findPhoto(e.dataTransfer.files[0]); }}
+              className={`flex w-full items-center gap-2 rounded-[4px] border-b border-line px-2 ${mobile ? "py-2.5" : "py-1.5"} text-left hover:bg-raised disabled:opacity-60`}>
+              {photoBusy ? <Loader2 size={13} strokeWidth={1.5} className="shrink-0 animate-spin text-fg3" /> : <ImageUp size={13} strokeWidth={1.5} className="shrink-0 text-fg3" />}
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[13px] text-fg1">{photoBusy ? "Reading the photo…" : "Find a place from a photo"}</span>
+                <span className="block truncate text-[12px] text-fg3">{photoErr ?? "Upload, drop or paste an image"}</span>
+              </span>
+            </button>
+            {!showResults && photo && photo.guesses.length > 0 ? (
+              <>
+                <div className="flex items-start gap-2 px-2 pb-1 pt-1.5">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={photo.preview} alt="Your photo" className="h-10 w-10 shrink-0 rounded-[3px] object-cover" />
+                  <span className="min-w-0 flex-1 text-[12px] leading-snug text-fg3">{photo.summary}</span>
+                  <button onClick={() => { setPhoto(null); setPhotoErr(null); }} className="text-fg3 hover:text-fg1" aria-label="Clear photo"><X size={13} strokeWidth={1.5} /></button>
+                </div>
+                {photo.guesses.map((g, i) => (
+                  <button key={`${g.center.join()}-${i}`} onClick={() => go(g)} title={g.clues}
+                    className={`flex w-full items-start gap-2 rounded-[4px] px-2 ${mobile ? "py-2.5" : "py-1.5"} text-left hover:bg-raised`}>
+                    <MapPin size={13} strokeWidth={1.5} className="mt-0.5 shrink-0 text-fg3" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13px] text-fg1">{g.name}</span>
+                      <span className="block text-[12px] text-fg3">{g.clues}</span>
+                    </span>
+                    <span className="shrink-0 text-[11.5px] text-fg4">{g.confidence}</span>
+                  </button>
+                ))}
+              </>
+            ) : showResults ? (
               <>
                 <div className="px-2 pb-1 pt-1.5 text-[12px] text-fg3">Places</div>
                 {results.map((p, i) => (
