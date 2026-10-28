@@ -4,7 +4,8 @@
 //  - ExoFOP: TOIs, confirmed planets, other names (KOI/K2), known stellar companions, and the
 //    follow-up already on file (imaging, spectroscopy, ground photometry)
 //  - ExoFOP's community TOI (CTOI) table, with periods: one ~2 MB CSV, cached per process
-//  - the TESS eclipsing-binary catalog (Prša et al. 2022, VizieR J/ApJS/258/16)
+//  - the TESS eclipsing-binary catalog (Prša et al. 2022): its own site at Villanova (kept current,
+//    with eclipse depths and phases), VizieR J/ApJS/258/16 as the fallback
 //  - NASA Exoplanet Archive KOIs (only in the Kepler field)
 //  - TIC stars around the target (blend bookkeeping)
 // Each lookup throws on failure; the caller records the check as "not run" rather than passed.
@@ -29,7 +30,8 @@ export type ExofopTarget = {
   spectra: number; photometry: number; contamination?: number;
 };
 export type Ctoi = { name: string; period?: number; epoch?: number; depthPpm?: number; durationH?: number; disposition: string };
-export type TessEb = { period: number; t0: number; morph?: number };
+/** t0 in BTJD; depth (fraction) and phase of the primary and, when found, the secondary eclipse. */
+export type TessEb = { period: number; t0: number; morph?: number; depth?: number; secPhase?: number; secDepth?: number };
 export type Koi = { name: string; period?: number; disposition: string };
 export type TicNeighbour = { tic: string; tmag: number; sep: number /* arcsec */ };
 
@@ -150,13 +152,49 @@ export async function ctoisFor(tic: string, signal: AbortSignal): Promise<Ctoi[]
 
 // ── binaries and KOIs ───────────────────────────────────────────────────────
 
-/** The star's entry in the TESS eclipsing-binary catalog (sectors 1-26), if any. */
+const TESS_EBS = "https://tessebs.villanova.edu";
+
+/** The star's entry in the TESS eclipsing-binary catalog, if any: the catalog's own site first
+ *  (VizieR is at CDS, which goes down), VizieR's copy (sectors 1-26) when the site fails. */
 export async function tessEb(tic: string, signal: AbortSignal): Promise<TessEb | null> {
-  const rows = await vizier(`SELECT TOP 1 Per, BJD0, Morph FROM "J/ApJS/258/16/tess-ebs" WHERE TIC = ${Number(tic)}`, signal);
-  const r = rows[0];
-  const P = num(r?.Per), t0 = num(r?.BJD0);
-  // BJD0 there is BJD - 2457000 already (values ~1400-2000).
-  return r && P ? { period: P, t0: t0 ?? NaN, morph: num(r.Morph) } : null;
+  try {
+    return parseTessEbPage(await getText(`${TESS_EBS}/${tic.padStart(10, "0")}`, { timeoutMs: 12_000, signal, retries: 1 }));
+  } catch (site) {
+    try {
+      const rows = await vizier(`SELECT TOP 1 Per, BJD0, Morph FROM "J/ApJS/258/16/tess-ebs" WHERE TIC = ${Number(tic)}`, signal);
+      const r = rows[0];
+      const P = num(r?.Per), t0 = num(r?.BJD0);
+      // BJD0 there is BJD - 2457000 already (values ~1400-2000).
+      return r && P ? { period: P, t0: t0 ?? NaN, morph: num(r.Morph) } : null;
+    } catch (viz) {
+      throw new Error(`Villanova: ${(site as Error).message.slice(0, 60)}; VizieR: ${(viz as Error).message.slice(0, 60)}`);
+    }
+  }
+}
+
+/** A star's page on the Villanova site: signal rows (in catalog?, t0, σt0, P, σP, morphology, date),
+ *  then the eclipse fits (polyfit: wp, ws, dp, ds, φp, φs; then the 2-Gaussian fit). A star that isn't
+ *  in the catalog gets a page with no rows. Null when no signal is marked as in the catalog. */
+export function parseTessEbPage(html: string): TessEb | null {
+  if (!/<title>\s*TIC \d+ details/.test(html)) throw new Error("unexpected TESS EB page");
+  const tables = html.split(/<table class="details-table">/).slice(1);
+  const cells = (t: string) => [...t.matchAll(/<td>([\s\S]*?)<\/td>/g)].map((m) => m[1].replace(/<[^>]+>/g, "").trim());
+  const sigTable = tables.find((t) => /In catalog\?/.test(t));
+  if (!sigTable) return null;
+  const sig = cells(sigTable);
+  for (let i = 0; i + 6 < sig.length; i += 8) {
+    if (sig[i + 1] !== "True") continue;
+    const P = num(sig[i + 4]), t0 = num(sig[i + 2]);
+    if (!P) continue;
+    const fit = tables.find((t) => /Polyfit width of the primary/.test(t));
+    const f = fit ? cells(fit) : [];
+    const pick = (a: string | undefined, b: string | undefined) => num(a) ?? num(b);
+    // Polyfit columns 0-5, 2-Gaussian 6-11: depth p/s at 2/3 (8/9), phase p/s at 4/5 (10/11).
+    const depth = pick(f[2], f[8]), secDepth = pick(f[3], f[9]), phP = pick(f[4], f[10]), phS = pick(f[5], f[11]);
+    const secPhase = phS !== undefined ? (((phS - (phP ?? 0)) % 1) + 1) % 1 : undefined;
+    return { period: P, t0: t0 ?? NaN, morph: num(sig[i + 6]), depth, secDepth, secPhase };
+  }
+  return null;
 }
 
 /** Roughly the Kepler field: KOIs exist nowhere else. */

@@ -28,7 +28,9 @@ export type VetInput = {
   id?: string; label?: string;
 };
 
-export type VetStatus = "pass" | "flag" | "fail" | "not-run" | "info";
+/** "na": the check doesn't apply to this kind of signal (e.g. odd/even for a single transit), as
+ *  opposed to "not-run" (it applies but couldn't run); "na" isn't an open item. */
+export type VetStatus = "pass" | "flag" | "fail" | "not-run" | "info" | "na";
 export type VetStage = 0 | 1 | 2 | 3 | 4;
 export type VetCheck = { id: string; stage: VetStage; name: string; status: VetStatus; value?: string; detail: string };
 
@@ -171,7 +173,7 @@ export function parseVetInput(b: unknown): VetInput | null {
 }
 
 const pct = (x: number) => (x < 0.001 ? `${(x * 100).toPrecision(1)}%` : `${(x * 100).toPrecision(2)}%`);
-const ICON: Record<VetStatus, string> = { pass: "PASS", flag: "FLAG", fail: "FAIL", "not-run": "NOT RUN", info: "info" };
+const ICON: Record<VetStatus, string> = { pass: "PASS", flag: "FLAG", fail: "FAIL", "not-run": "NOT RUN", info: "info", na: "n/a" };
 
 /** The report as plain text (for a CTOI note, a notebook or a chat), every check included. */
 export function reportText(r: VetReport): string {

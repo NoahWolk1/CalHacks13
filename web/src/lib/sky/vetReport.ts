@@ -11,7 +11,7 @@ import { download } from "./analysis";
 import { apogeeNear, fitK, minMassFromK, gaiaCone, gaiaRvLimit, gaiaStar, gaiaStarVizier, ztfDepths, ztfLightCurve, type GaiaNeighbour, type GaiaStar } from "./archives";
 import { falsePositiveProbability, starFromGaia, type FppData } from "./fpp";
 import { combineSectors, differenceImage, fetchCutout, testSector, type PixStar, type SectorPixels } from "./pixels";
-import { eventStats, harmonicOf, modelShift, removePulsations, type ModelShift } from "./robust";
+import { eventStats, eventUniqueness, harmonicOf, modelShift, removePulsations, type EventUniqueness, type ModelShift } from "./robust";
 import { bls } from "./bls";
 import { ctoisFor, exofopTarget, inKeplerField, koisNear, tessEb, ticNeighbours, ticStar, type Koi } from "./hostStar";
 import { ticProducts, type LcProduct, type LightCurve } from "./lightcurves";
@@ -177,9 +177,20 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     // ExoFOP names TOIs "TOI 144.01", the archive "TOI-144.01": anything ExoFOP has that the archive didn't match.
     if (exo.v) for (const t of exo.v.tois) if (!ks.some((k) => k.name === t.replace(" ", "-"))) other.push(t.replace(" ", "-"));
     if (eb.v) {
-      const ebHit = periodic ? periodsMatch(input.period!, eb.v.period, 0.01) : matchesEphem(eb.v.period, eb.v.t0);
-      if (ebHit) fail ??= `the TESS eclipsing-binary catalog lists the star with P ${eb.v.period.toFixed(4)} d: this is its eclipse`;
-      else lines.push(`the TESS EB catalog lists the star as an eclipsing binary (P ${eb.v.period.toFixed(4)} d)`);
+      const e = eb.v, ebHit = periodic ? periodsMatch(input.period!, e.period, 0.01) : matchesEphem(e.period, e.t0);
+      const prim = e.depth ? `, primary eclipse ${Math.round(e.depth * 1000)} ppt` : "";
+      if (ebHit) fail ??= `the TESS eclipsing-binary catalog lists the star with P ${e.period.toFixed(4)} d${prim}: this is its eclipse`;
+      else if (!periodic && Number.isFinite(e.t0)) {
+        // A lone dip on a catalogued binary, away from its primary eclipse: its secondary, unless it's
+        // deeper than the primary (a secondary can't be).
+        const phases = (input.times ?? []).map((t) => ((((t - e.t0) / e.period) % 1) + 1) % 1);
+        const tol = (1.5 * d0) / e.period + 0.01;
+        const atSec = e.secPhase !== undefined && phases.some((ph) => Math.abs(ph - e.secPhase!) < tol || 1 - Math.abs(ph - e.secPhase!) < tol);
+        const phTxt = phases.map((ph) => ph.toFixed(3)).join(", ");
+        if (atSec) fail ??= `the TESS EB catalog lists the star as an eclipsing binary (P ${e.period.toFixed(4)} d${prim}); this dip at phase ${phTxt} is its secondary eclipse`;
+        else if (!e.depth || input.depth < e.depth) fail ??= `the TESS EB catalog lists the star as an eclipsing binary (P ${e.period.toFixed(4)} d${prim}); this dip falls at phase ${phTxt} of that orbit, shallower than the primary: most likely the secondary eclipse of an eccentric orbit${e.secPhase === undefined ? " (the catalog lists no secondary)" : ""}`;
+        else lines.push(`the TESS EB catalog lists the star as an eclipsing binary (P ${e.period.toFixed(4)} d${prim}), and this dip (phase ${phTxt}) is deeper than its primary`);
+      } else lines.push(`the TESS EB catalog lists the star as an eclipsing binary (P ${e.period.toFixed(4)} d${prim})`);
     }
     const g = gaia.v;
     const atP = (p?: number) => !!p && (periodic ? [1, 2].some((m) => periodsMatch(input.period! * m, p, 0.01)) : matchesEphem(p));
@@ -408,7 +419,8 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
   }
 
   // Event consistency: one depth for every transit, and the signal not resting on a few outliers.
-  if (!periodic || N < 5) add(1, "consistency", "Event consistency", "not-run", periodic ? "fewer than 5 transits" : "needs a periodic signal");
+  if (!periodic) add(1, "consistency", "Event consistency", "na", "compares transits with each other: a periodic signal only");
+  else if (N < 5) add(1, "consistency", "Event consistency", "not-run", "fewer than 5 transits");
   else {
     const es = eventStats(measured.map((r) => r.m!));
     const red = es.dof ? es.chi2 / es.dof : 1;
@@ -419,6 +431,7 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     else add(1, "consistency", "Event consistency", "pass", `the transits share one depth${red > 2 ? " (to within 10%: the excess scatter is small next to the depth)" : " within their errors"}, and the signal survives dropping its 3 strongest events`, v);
   }
 
+  const eventTimes0 = measured.map((r) => r.t);
   // Model-shift uniqueness (Robovetter): the transit against every other phase, in units of the red noise.
   let shift: ModelShift | null = null;
   let shiftRaw: ModelShift | null = null;
@@ -426,8 +439,22 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     shift = modelShift(primary.map((p) => cleaned.get(p)?.flat ?? p.flat), P, T0, shape?.T14 ?? dur);
     if (removedAll.length) shiftRaw = modelShift(primary.map((p) => p.flat), P, T0, shape?.T14 ?? dur);
   }
-  if (!shift) add(1, "uniqueness", "Signal uniqueness (model-shift)", "not-run", periodic ? (N < 3 ? "fewer than 3 transits" : "too little data or time") : "needs a period");
-  else {
+  // Without a period, the same idea on the time axis: the dip against a box of its length at every
+  // other time in every sector (robust.ts: eventUniqueness).
+  let lone: EventUniqueness | null = null;
+  if (!periodic && eventTimes0.length) {
+    lone = eventUniqueness(primary.map((p) => { const c = cleaned.get(p); return c ? { flat: c.flat, cadence: c.cadence } : { flat: p.flat, cadence: p.cadence }; }), eventTimes0, shape?.T14 ?? dur);
+    if (!lone) add(1, "uniqueness", "Signal uniqueness (single event)", "not-run", "too little data around the dip");
+    else {
+      const ev = lone.event, red = ev.snr / lone.fred;
+      const v = `the dip ${ev.snr.toFixed(1)}σ white, ${red.toFixed(1)}σ red (F_red ${lone.fred.toFixed(2)} from ${lone.trials} box positions over ${lone.days.toFixed(0)} d); threshold ${lone.fa.toFixed(1)}σ (noise reaches it anywhere in that much data 1% of the time); strongest brightening ${(lone.up.snr / lone.fred).toFixed(1)}σ red at BTJD ${lone.up.t.toFixed(2)}`;
+      if (red < lone.fa) add(1, "uniqueness", "Signal uniqueness (single event)", "fail", `only ${red.toFixed(1)}σ against the light curve's own red noise: in ${lone.days.toFixed(0)} days of data, noise makes a dip this big (needs ${lone.fa.toFixed(1)}σ)`, v);
+      else if (lone.up.snr / lone.fred > lone.fa) add(1, "uniqueness", "Signal uniqueness (single event)", "flag", `a brightening at BTJD ${lone.up.t.toFixed(2)} is also above the false-alarm threshold: the systematics make events this size in both directions`, v);
+      else add(1, "uniqueness", "Signal uniqueness (single event)", "pass", `the dip stands out from every other moment of the data by more than the red noise allows${lone.fred > 1.5 ? `, though the noise is ${lone.fred.toFixed(1)}× white at this time scale` : ""}`, v);
+    }
+  }
+  if (!shift && periodic) add(1, "uniqueness", "Signal uniqueness (model-shift)", "not-run", N < 3 ? "fewer than 3 transits" : "too little data or time");
+  else if (shift) {
     const v = `${removedAll.length ? `after removing ${removedAll.length} pulsation signal${removedAll.length === 1 ? "" : "s"}${shiftRaw ? ` (before: ${(shiftRaw.pri / shiftRaw.fred).toFixed(1)}σ red, F_red ${shiftRaw.fred.toFixed(2)})` : ""}: ` : ""}primary ${shift.pri.toFixed(1)}σ white, ${(shift.pri / shift.fred).toFixed(1)}σ red (F_red ${shift.fred.toFixed(2)}); next dip ${shift.ter.sig.toFixed(1)}σ, strongest brightening ${shift.pos.sig.toFixed(1)}σ; thresholds ${shift.fa1.toFixed(1)}σ / ${shift.fa2.toFixed(1)}σ; MS1 ${shift.ms1.toFixed(1)}, MS2 ${shift.ms2.toFixed(1)}, MS3 ${shift.ms3.toFixed(1)}`;
     const why: string[] = [];
     if (shift.ms1 <= 0) why.push(`only ${(shift.pri / shift.fred).toFixed(1)}σ against the light curve's own red noise (needs ${shift.fa1.toFixed(1)}σ)`);
@@ -437,7 +464,8 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     else add(1, "uniqueness", "Signal uniqueness (model-shift)", "pass", `the transit stands out from every other phase by more than the red noise allows${shift.fred > 1.5 ? `, though the noise is ${shift.fred.toFixed(1)}× white at this time scale` : ""}`, v);
   }
 
-  if (!periodic || N < 2) add(1, "snr", "SNR growth", "not-run", periodic ? "fewer than 2 transits" : "needs a periodic signal");
+  if (!periodic) add(1, "snr", "SNR growth", "na", "how the SNR builds over transits: a periodic signal only");
+  else if (N < 2) add(1, "snr", "SNR growth", "not-run", "fewer than 2 transits");
   else {
     const pos = measured.map((r) => Math.max(0, r.snr ?? 0) ** 2), sum = pos.reduce((a, b) => a + b, 0);
     const share = sum ? Math.max(...pos) / sum : 1;
@@ -470,10 +498,12 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
   } else if (input.kind === "duo") {
     const r = rows.filter((x) => x.oc !== undefined);
     add(1, "period", "Period consistency", "info", r.length ? `the dips' fitted times move by ${r.map((x) => `${(x.oc! * 1440).toFixed(0)} min`).join(" and ")}` : "two dips: no period to test beyond their spacing", `spacing ${((input.times![1] - input.times![0])).toFixed(3)} d`);
-  } else add(1, "period", "Period consistency", "not-run", periodic ? "fewer than 2 transits" : "one transit: no period");
+  } else if (periodic) add(1, "period", "Period consistency", "not-run", "fewer than 2 transits");
+  else add(1, "period", "Period consistency", "na", input.kind === "single" ? "one transit: there's no period to check (the alias and shape checks bound it instead)" : "two dips: the alias check lists the periods they allow");
 
   // Aliases.
   let duoAliases: number[] = [];
+  const minCovP = input.kind === "single" ? minPeriodFromCoverage(input.times![0], coverage, dur) : 0;
   const minPdur = rho && shape ? minPeriodFromDuration(shape.T14, rho, Math.sqrt(D)) : rho ? minPeriodFromDuration(dur, rho, Math.sqrt(D)) : undefined;
   if (periodic && N >= 2) {
     const survive: string[] = [], excluded: string[] = [];
@@ -533,7 +563,7 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
       return [...g].map(([k, rs]) => ({ k, ...combine(rs.map((r) => r.m!)) }));
     };
     const groups = [{ name: "sector", gs: by((r) => `s${r.sector}`) }, { name: "camera", gs: by((r) => `camera ${r.camera ?? "?"}`) }, { name: "pipeline", gs: by((r) => r.pipeline) }].filter((x) => x.gs.length >= 2);
-    if (!groups.length) add(1, "depth", "Depth stability", "not-run", "transits in only one sector");
+    if (!groups.length) add(1, "depth", "Depth stability", input.kind === "single" ? "na" : "not-run", input.kind === "single" ? "one transit: nothing to compare its depth with (the pipeline and detrending checks test it instead)" : "transits in only one sector");
     else {
       const bad: string[] = [];
       for (const { name, gs } of groups) for (const g of gs) {
@@ -580,8 +610,16 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     else if (worst.snr > 4 && worst.depth > 0.1 * D) add(2, "secondary", "Secondary eclipse", "flag", `a ${worst.snr.toFixed(1)}σ dip at phase ${worst.ph.toFixed(2)}: a secondary eclipse on an eccentric orbit?`, v);
     else add(2, "secondary", "Secondary eclipse", "pass", sec.snr > 3 ? "a shallow occultation at phase 0.5 (under 10% of the depth): consistent with a hot planet's thermal emission" : "no secondary eclipse at phase 0.5 or elsewhere", v);
   } else {
-    add(2, "oddeven", "Odd/even depths", "not-run", "needs a periodic signal with 2+ transits");
-    add(2, "secondary", "Secondary eclipse", "not-run", "needs a period");
+    add(2, "oddeven", "Odd/even depths", "na", input.kind === "single" ? "one transit: there are no alternate transits to compare" : "two dips: each could be the odd or the even one, and the depth stability check compares them");
+    // No phase to look at: the deepest other dip anywhere in the data (the single-event scan).
+    if (!lone) add(2, "secondary", "Secondary eclipse", "not-run", "the single-event scan didn't run");
+    else {
+      const o = lone.other, red = o.snr / lone.fred;
+      const v = `deepest other dip: BTJD ${o.t.toFixed(2)}, ${ppt(o.depth)} (${red.toFixed(1)}σ red); limit for an eclipse anywhere in ${lone.days.toFixed(0)} d of data: ${ppt(lone.limit)} (3σ red)`;
+      if (red > lone.fa && o.depth > 1.5 * D) add(2, "secondary", "Secondary eclipse", "fail", `a deeper eclipse at BTJD ${o.t.toFixed(2)} (${ppt(o.depth)}, ${(o.depth / D).toFixed(1)}× this dip): the star eclipses, and this dip is most likely its secondary eclipse`, v);
+      else if (red > lone.fa && o.depth > 0.1 * D) add(2, "secondary", "Secondary eclipse", "flag", `another significant dip at BTJD ${o.t.toFixed(2)} (${Math.round((o.depth / D) * 100)}% of the depth): a secondary eclipse of a binary, or a second transit`, v);
+      else add(2, "secondary", "Secondary eclipse", "info", `no other eclipse-like dip deeper than ${ppt(lone.limit)} anywhere in the data (a binary's secondary under ${Math.round((lone.limit / D) * 100)}% of the depth, or one in a gap, isn't excluded)`, v);
+    }
   }
 
   const totalSnr = comb.snr;
@@ -606,7 +644,26 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     else add(2, "duration", "Duration vs expected", "pass", "consistent with a transit across this star", v);
   }
 
-  if (!periodic || !shape) add(2, "density", "Stellar density", "not-run", !periodic ? "needs a period" : "no shape fit");
+  let pShape: number | undefined;
+  if (!periodic) {
+    // The transit shape gives a/R★ per unit period, the catalog density fixes a/R★: so a period
+    // (circular orbit; the photo-eccentric effect makes it uncertain by ~2x either way).
+    const minP = Math.max(minCovP, minPdur ?? 0);
+    if (!shape || !rho) add(2, "density", "Period from the transit shape", "not-run", !shape ? "no shape fit" : "no catalog density");
+    else if (!(totalSnr >= 15) || shape.T12 < 1.5 * Math.min(...measured.map((r) => r.part!.cadence))) add(2, "density", "Period from the transit shape", "not-run", `ingress not resolved (SNR ${totalSnr.toFixed(1)}, ingress ${hours(shape.T12)})`);
+    else {
+      const at = (Pt: number) => densityFromTransit(Pt, shape.depth, shape.T14, shape.T12)?.rho;
+      let lo = Math.max(2.2 * shape.T14, 0.2), hi = 20_000;
+      if (at(lo) === undefined) add(2, "density", "Period from the transit shape", "not-run", "the fitted shape has no flat bottom, so the impact parameter is unconstrained");
+      else {
+        for (let k = 0; k < 60; k++) { const mid = Math.sqrt(lo * hi), r = at(mid); if (r === undefined || r > rho) hi = mid; else lo = mid; }
+        pShape = Math.sqrt(lo * hi);
+        const v = `P ≈ ${r3(pShape)} d (range ~${r3(pShape / 2)}-${r3(pShape * 2)} d for modest eccentricity) from T14 ${hours(shape.T14)}, ingress ${hours(shape.T12)} and ρ★ ${r3(rho)} ρ☉; the data allow P > ${r3(minP)} d`;
+        if (pShape * 2 < minP) add(2, "density", "Period from the transit shape", "flag", `the shape wants P ≈ ${r3(pShape)} d, but a period that short would have shown another transit: an eccentric orbit seen near periastron, a larger (blended) host, or a wrong stellar density`, v);
+        else add(2, "density", "Period from the transit shape", "pass", `the transit's shape on this star implies P ≈ ${r3(pShape)} d, consistent with the data showing no other transit`, v);
+      }
+    }
+  } else if (!shape) add(2, "density", "Stellar density", "not-run", "no shape fit");
   else if (!rho) add(2, "density", "Stellar density", "not-run", "no catalog density");
   else if (!(totalSnr >= 15) || shape.T12 < 1.5 * Math.min(...measured.map((r) => r.part!.cadence))) add(2, "density", "Stellar density", "not-run", `ingress not resolved (SNR ${totalSnr.toFixed(1)}, ingress ${hours(shape.T12)})`);
   else {
@@ -672,7 +729,8 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
   const apogee = await apogeeP;
   let kMaxKms: number | undefined;
   {
-    const Pk = ephem?.period ?? P;
+    // Without a period, the shortest one allowed: K only shrinks for longer ones (said in the text).
+    const Pk = ephem?.period ?? (periodic ? P : duoAliases.length ? Math.min(...duoAliases) : Math.max(minCovP, minPdur ?? 0) || NaN);
     const kStellar = M && Number.isFinite(Pk) ? rvSemiAmplitude(Pk, 0.08 * 333_000, M) / 1000 : undefined;
     const lines: string[] = [], vals: string[] = [];
     let status: VetStatus | null = null;
@@ -709,9 +767,14 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     else if (status) add(2, "archivalrv", "Archival radial velocities", status, lines.join("; "), vals.join(" · "));
     else if (kMaxKms !== undefined && kStellar !== undefined) {
       const mMax = 0.08 * (kMaxKms / kStellar);
-      add(2, "archivalrv", "Archival radial velocities", kMaxKms < kStellar ? "pass" : "info",
+      if (!periodic && !ephem) {
+        // K ∝ P^(-1/3): a stellar companion is excluded up to the period where its K drops to the limit.
+        const pMax = Pk * (kStellar / kMaxKms) ** 3;
+        add(2, "archivalrv", "Archival radial velocities", kMaxKms < kStellar && pMax >= 1000 ? "pass" : "info",
+          kMaxKms < kStellar ? `K < ${r3(kMaxKms)} km/s rules out a stellar (≥ 0.08 M☉) companion on the target for P up to ~${r3(Math.min(pMax, 99_999))} d${pMax >= 1000 ? ", i.e. any period this transit allows that Gaia's 34-month baseline could see" : `; the transit allows longer periods (P > ${r3(Pk)} d)`}` : `the archival RVs allow K up to ${r3(kMaxKms)} km/s: even at the shortest allowed period (${r3(Pk)} d) a stellar companion isn't excluded`, vals.join(" · "));
+      } else add(2, "archivalrv", "Archival radial velocities", kMaxKms < kStellar ? "pass" : "info",
         kMaxKms < kStellar ? `no RV variation big enough for a star: K < ${r3(kMaxKms)} km/s rules out a companion above ~${r3(mMax * 1047.6)} M_J (${r3(mMax)} M☉) on the target at this period` : `the archival RVs allow K up to ${r3(kMaxKms)} km/s: companions up to ~${r3(mMax)} M☉ on the target aren't excluded`, vals.join(" · "));
-    } else add(2, "archivalrv", "Archival radial velocities", "info", "archival RVs found but no stellar mass to turn them into a companion mass limit", vals.join(" · "));
+    } else add(2, "archivalrv", "Archival radial velocities", "info", !M ? "archival RVs found but no stellar mass to turn them into a companion mass limit" : kMaxKms === undefined ? "archival RVs found, but too few to bound the amplitude" : "archival RVs found but no period bound to turn them into a companion mass limit", vals.join(" · "));
   }
 
   // ── Stage 3: contamination and blends ──
@@ -765,7 +828,7 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
       if (img) secs.push(testSector(img, pixStars));
     }
     if (!pixSectors.length) add(3, "diffimage", "Difference imaging", "not-run", "no sector with a transit to cut out");
-    else if (!secs.length) add(3, "diffimage", "Difference imaging", "not-run", errs.length ? `TESScut cutouts unavailable (${errs[0]})` : "too few transits in the cutouts' sectors to build a difference image");
+    else if (!secs.length) add(3, "diffimage", "Difference imaging", "not-run", errs.length ? `TESScut cutouts unavailable (${errs[0]})` : "the transit's cutout has too little clean data around it to build a difference image");
     else {
       pixCombined = combineSectors(secs);
       const det = Math.hypot(...secs.map((x) => x.detection));
@@ -861,7 +924,7 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
   // ZTF: a second photometric system in g and r, for transits deep enough on stars faint enough.
   {
     const g = gaia.v?.g ?? (star?.tmag !== undefined ? star.tmag + 0.4 : undefined);
-    if (!periodic || !ephem) add(3, "ztf", "Ground photometry (ZTF archive)", "not-run", "needs an ephemeris");
+    if (!periodic || !ephem) add(3, "ztf", "Ground photometry (ZTF archive)", periodic ? "not-run" : "na", periodic ? "needs an ephemeris" : "folds ZTF on an ephemeris: none yet without a period");
     else if (g === undefined || g < 12.5) add(3, "ztf", "Ground photometry (ZTF archive)", "not-run", `the star (G ${g?.toFixed(1) ?? "?"}) saturates ZTF (G < 12.5)`);
     else if (D < 3e-3) add(3, "ztf", "Ground photometry (ZTF archive)", "not-run", `${ppt(D)} is too shallow for ZTF's ~1-2% per-point precision`);
     else if (Date.now() > deadline - 25_000) add(3, "ztf", "Ground photometry (ZTF archive)", "not-run", "time budget used up");
@@ -927,14 +990,16 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
 
   // Statistical validation: how likely each false-positive scenario is, given everything above.
   let fppOut: VetReport["fpp"];
-  if (!periodic || N < 3 || !shape) add(3, "fpp", "False-positive probability", "not-run", !periodic ? "needs a period" : N < 3 ? "fewer than 3 transits" : "no transit shape");
+  // Without a period, the calculation assumes one: the shape's estimate, else the shortest allowed.
+  const pFpp = periodic ? P : ephem?.period ?? (duoAliases.length ? Math.min(...duoAliases) : Math.max(pShape ?? 0, minCovP, minPdur ?? 0) || undefined);
+  if ((periodic && N < 3) || !shape || !pFpp) add(3, "fpp", "False-positive probability", "not-run", !shape ? "no transit shape" : !pFpp ? "no period or period bound to assume" : "fewer than 3 transits");
   else if (!M || !R || !star?.teff || star.tmag === undefined) add(3, "fpp", "False-positive probability", "not-run", "needs the star's mass, radius, Teff and Tmag");
   else if (Date.now() > deadline - 15_000) add(3, "fpp", "False-positive probability", "not-run", "time budget used up");
   else {
     try {
-      const noise = Math.max(median(primary.map((p) => p.beta)), shift?.fred ?? 1);
-      const binned = (center: number): FppData | undefined => {
-        const pts = stack(epochs(P, center, from, to).flatMap(({ t }) => { const part = partAt(primary, t, dur); return part ? [{ t, part }] : []; }), Math.max(2.5 * shape!.T14, 0.1));
+      const noise = Math.max(median(primary.map((p) => p.beta)), shift?.fred ?? lone?.fred ?? 1);
+      const binned = (center: number, times = epochs(P, center, from, to).map((e) => e.t)): FppData | undefined => {
+        const pts = stack(times.flatMap((t) => { const part = partAt(primary, t, dur); return part ? [{ t, part }] : []; }), Math.max(2.5 * shape!.T14, 0.1));
         if (pts.dt.length < 20) return undefined;
         const width = Math.max(cadenceOf(primary[0].flat.t), shape!.T14 / 25), reach = Math.max(2.5 * shape!.T14, 0.1);
         const nb = Math.ceil((2 * reach) / width), sum = new Float64Array(nb), cnt = new Float64Array(nb), sw = new Float64Array(nb);
@@ -942,18 +1007,18 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
         const keep = [...cnt.keys()].filter((k) => cnt[k] >= 3);
         return { dt: Float64Array.from(keep, (k) => -reach + (k + 0.5) * width), f: Float64Array.from(keep, (k) => sum[k] / cnt[k]), err: Float64Array.from(keep, (k) => (noise * Math.sqrt(sw[k] / cnt[k])) / Math.sqrt(cnt[k])) };
       };
-      const primaryData = binned(T0);
+      const primaryData = periodic ? binned(T0) : binned(NaN, eventTimes0);
       if (!primaryData) throw new Error("too few points around the transit");
       const bg = gcone.v ? others.filter((g) => g.sep <= 120) : [];
       const res = falsePositiveProbability({
-        P, T14: shape.T14, depth: D, primary: primaryData, secondary: binned(T0 + P / 2), oddEven,
+        P: pFpp, T14: shape.T14, depth: D, primary: primaryData, secondary: periodic ? binned(T0 + P / 2) : undefined, oddEven,
         star: { radius: R, mass: M, teff: star.teff, tmag: star.tmag, distance: star.distance },
         kMaxKms, neighbours: nbWeights, background: { count: bg.length, radiusArcsec: 120, tmags: bg.map((g) => g.tmag) }, seed: Number(input.tic) % 2 ** 31,
       });
       fppOut = { fpp: res.fpp, nfpp: res.nfpp, scenarios: res.scenarios.slice(0, 8).map(({ id, label, prob }) => ({ id, label, prob })), notes: res.notes };
       const pc = (x: number) => (x < 0.001 ? "< 0.1%" : `${(x * 100).toPrecision(2)}%`);
       const v = `FPP ${pc(res.fpp)}, NFPP ${pc(res.nfpp)}; most likely: ${res.scenarios.slice(0, 3).map((x) => `${x.label} ${pc(x.prob)}`).join(", ")}`;
-      const tail = " (an approximate TRICERATOPS-style calculation: run TRICERATOPS with a contrast curve before claiming validation)";
+      const tail = ` (an approximate TRICERATOPS-style calculation${periodic ? "" : `, assuming P ≈ ${r3(pFpp)} d as TRICERATOPS does for single transits`}: run TRICERATOPS with a contrast curve before claiming validation)`;
       if (res.nfpp > 0.5 || (res.fpp > 0.95 && comb.snr >= 15)) add(3, "fpp", "False-positive probability", "fail", `${res.nfpp > 0.5 ? "a nearby star is the most likely source" : "a false positive is far more likely than a planet"}${tail}`, v);
       else if (res.fpp < 0.015 && res.nfpp < 0.001) add(3, "fpp", "False-positive probability", "pass", `low enough for statistical validation by TRICERATOPS's thresholds (FPP < 1.5%, NFPP < 0.1%)${tail}`, v);
       else add(3, "fpp", "False-positive probability", "flag", `${res.fpp < 0.5 && res.nfpp < 0.001 ? "a likely planet, but not validated" : res.nfpp > 0.1 ? "a nearby false positive is plausible" : "a false positive is about as likely as a planet"}${tail}`, v);

@@ -156,7 +156,7 @@ export type DiffImage = {
 /** Mean difference image over the transits at `times` (BTJD) in this cutout: in transit is the
  *  central 70% of T14, out of transit a window of max(T14, 2.4 h) on each side, 0.25 T14 clear
  *  of the transit. Pixel errors from the scatter between transits (≥ 5), else from difference
- *  images at off-transit times. Null with fewer than 2 usable transits. */
+ *  images at off-transit times (so a single transit works too). Null with no usable transit. */
 export function differenceImage(c: Cutout, times: number[], T14: number, avoid: number[] = times): DiffImage | null {
   const np = c.nx * c.ny, half = T14 / 2, width = Math.max(T14, 0.1);
   const good = (i: number) => c.quality[i] === 0 && Number.isFinite(c.t[i]) && Number.isFinite(c.flux[i * np + (np >> 1)]);
@@ -179,7 +179,7 @@ export function differenceImage(c: Cutout, times: number[], T14: number, avoid: 
   };
   const inRange = (t: number) => t > c.t[0] && t < c.t[c.t.length - 1];
   const each = times.filter(inRange).flatMap((t) => { const d = one(t); return d ? [d] : []; });
-  if (each.length < 2) return null;
+  if (!each.length) return null;
   const mean = (ds: Float64Array[]) => Float64Array.from({ length: np }, (_, p) => ds.reduce((k, d) => k + d[p], 0) / ds.length);
   let diff: Float64Array, err: Float64Array;
   if (each.length >= 5) {
