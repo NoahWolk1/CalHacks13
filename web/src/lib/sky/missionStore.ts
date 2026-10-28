@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { callReducer, spacetimeConfig, sql } from "@/lib/server/spacetimeRun";
 import { validSurveyId } from "./surveyStore";
-import type { MissionMeta, MissionStatus, SkyEvent } from "./types";
+import { applyMissionEdit, type MissionEdit, type MissionMeta, type MissionStatus, type SkyEvent } from "./types";
 
 export interface MissionStore {
   name: "spacetime" | "file";
@@ -19,7 +19,14 @@ export interface MissionStore {
   events(id: string, since: number): Promise<{ events: SkyEvent[]; next: number }>;
   /** Most recent first. */
   list(limit: number): Promise<MissionMeta[]>;
+  /** Renames / categorizes a mission; returns the updated meta (null: no such mission). */
+  edit(id: string, edit: MissionEdit): Promise<MissionMeta | null>;
 }
+
+/** The recorder saves the run's own meta, which has no name or category: keep the stored ones. */
+const keepEdits = (stored: MissionMeta, incoming: MissionMeta): MissionMeta => ({
+  ...incoming, ...(stored.name ? { name: stored.name } : {}), ...(stored.category ? { category: stored.category } : {}),
+});
 
 export const validMissionId = validSurveyId;
 
@@ -50,7 +57,14 @@ export function fileMissionStore(dir = join(process.env.SKY_SURVEY_DIR || join(t
       const d = await read(id);
       if (!d) throw new Error("unknown mission");
       if (from > d.events.length) throw new Error(`seq gap: expected ${d.events.length}, got ${from}`);
-      await write({ meta: { ...meta, status }, events: [...d.events, ...events.slice(d.events.length - from)] });
+      await write({ meta: { ...keepEdits(d.meta, meta), status }, events: [...d.events, ...events.slice(d.events.length - from)] });
+    }),
+    edit: (id, edit) => locked(id, async () => {
+      const d = await read(id);
+      if (!d) return null;
+      d.meta = applyMissionEdit(d.meta, edit);
+      await write(d);
+      return d.meta;
     }),
     async get(id) { return (await read(id))?.meta ?? null; },
     async events(id, since) { const d = await read(id); return { events: d?.events.slice(since) ?? [], next: d?.events.length ?? 0 }; },
@@ -85,6 +99,16 @@ export const spacetimeMissionStore: MissionStore = {
   async list(limit) {
     const rows = await sql(`SELECT status, meta_json, updated_ms FROM sky_missions`, 15_000);
     return rows.map(metaOf).sort((a, b) => b.createdAt - a.createdAt).slice(0, limit);
+  },
+  async edit(id, edit) {
+    if (!validMissionId(id)) return null;
+    try {
+      await callReducer("edit_sky_mission", [id, edit.name !== undefined, edit.name ?? "", edit.category !== undefined, edit.category ?? ""]);
+    } catch (e) {
+      if (/unknown mission/.test((e as Error).message)) return null;
+      throw e;
+    }
+    return spacetimeMissionStore.get(id);
   },
 };
 

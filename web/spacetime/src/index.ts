@@ -378,6 +378,36 @@ export const append_sky_mission_events = spacetimedb.reducer(
       ctx.db.sky_mission_events.insert({ id: 0n, mission_id: a.mission_id, seq, event_json });
       next = seq + 1;
     }
-    ctx.db.sky_missions.mission_id.update({ ...row, next_seq: next, status: a.status, updated_ms: nowMs(ctx), meta_json: a.meta_json || row.meta_json });
+    ctx.db.sky_missions.mission_id.update({ ...row, next_seq: next, status: a.status, updated_ms: nowMs(ctx), meta_json: a.meta_json ? keepMissionEdits(row.meta_json, a.meta_json) : row.meta_json });
+  },
+);
+
+/** The recorder's meta has no name or category (people set those): carry the stored ones over. */
+function keepMissionEdits(stored: string, incoming: string): string {
+  try {
+    const old = JSON.parse(stored) as { name?: string; category?: string };
+    const next = JSON.parse(incoming) as Record<string, unknown>;
+    if (old.name) next.name = old.name;
+    if (old.category) next.category = old.category;
+    return JSON.stringify(next);
+  } catch {
+    return incoming;
+  }
+}
+
+/** Renames / categorizes a mission: a field is changed only when its set_ flag is true, and "" clears it. */
+export const edit_sky_mission = spacetimedb.reducer(
+  { mission_id: t.string(), set_name: t.bool(), name: t.string(), set_category: t.bool(), category: t.string() },
+  (ctx, a) => {
+    requireWriter(ctx);
+    const row = ctx.db.sky_missions.mission_id.find(a.mission_id);
+    if (!row) throw new SenderError("unknown mission");
+    if (a.name.length > 80 || a.category.length > 32) throw new SenderError("too long");
+    const meta = JSON.parse(row.meta_json) as Record<string, unknown>;
+    for (const [k, set, v] of [["name", a.set_name, a.name], ["category", a.set_category, a.category]] as const) {
+      if (!set) continue;
+      if (v) meta[k] = v; else delete meta[k];
+    }
+    ctx.db.sky_missions.mission_id.update({ ...row, meta_json: JSON.stringify(meta) });
   },
 );
