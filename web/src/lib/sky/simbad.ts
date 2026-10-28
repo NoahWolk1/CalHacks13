@@ -1,9 +1,12 @@
 // SIMBAD (CDS Strasbourg) TAP: notable objects in a cone — galaxies, nebulae, clusters, and stars
 // brighter than V=9 — ranked by how much literature cites them (nbref), which tracks "notable".
+import { getJson, sleep } from "@/lib/http";
 import { adqlNum } from "./geom";
 import type { Cone, SkyCategory, SkyObject } from "./types";
 
 export const SIMBAD_TAP = "https://simbad.cds.unistra.fr/simbad/sim-tap/sync";
+/** SIMBAD's official mirror at the Harvard CfA: same database, different network and load. */
+export const SIMBAD_MIRROR = "https://simbad.cfa.harvard.edu/simbad/sim-tap/sync";
 export const SIMBAD_CAP = 50;
 
 const GALAXY = ["G", "GiG", "GiC", "GiP", "BiC", "IG", "PaG", "GrG", "CGG", "ClG", "SCG", "SBG", "H2G", "EmG", "AGN", "SyG", "Sy1", "Sy2", "QSO", "Bla", "BLL", "LIN", "LSB", "rG", "PoG"];
@@ -41,17 +44,75 @@ export function simbadQuery(c: Cone, cap = SIMBAD_CAP) {
     + `AND b.ra IS NOT NULL AND (f.V < 9 OR b.otype IN (${types})) ORDER BY rank DESC`;
 }
 
-export function simbadUrl(c: Cone, cap = SIMBAD_CAP) {
-  const p = new URLSearchParams({ REQUEST: "doQuery", LANG: "ADQL", FORMAT: "json", QUERY: simbadQuery(c, cap) });
-  return `${SIMBAD_TAP}?${p}`;
+export type TapJson = { metadata?: { name: string }[]; data?: unknown[][] };
+
+// CDS blacklists an IP that sends more than ~5-6 queries a second, and one research run asks SIMBAD
+// from several agents at once: per host, starts are spaced and at most 3 queries are in flight (per
+// host, so requests hanging on CDS don't hold back the mirror).
+const GAP_MS = 300, MAX_IN_FLIGHT = 3, HEDGE_MS = 3_000;
+const hosts = new Map<string, { next: number; inFlight: number; waiters: (() => void)[] }>();
+
+async function acquire(host: string, signal: AbortSignal) {
+  const h = hosts.get(host) ?? { next: 0, inFlight: 0, waiters: [] };
+  hosts.set(host, h);
+  while (h.inFlight >= MAX_IN_FLIGHT) {
+    await new Promise<void>((r) => { h.waiters.push(r); signal.addEventListener("abort", () => r(), { once: true }); });
+    if (signal.aborted) throw new Error("no slot in time");
+  }
+  h.inFlight++;
+  const wait = Math.max(0, h.next - Date.now());
+  h.next = Math.max(Date.now(), h.next) + GAP_MS;
+  if (wait) await sleep(wait);
+  // Wake every waiter to re-check (one that gave up on abort must not swallow the wake-up).
+  return () => { h.inFlight--; h.waiters.splice(0).forEach((r) => r()); };
+}
+
+/** One SIMBAD TAP query (POST, so long ADQL is fine), sent to CDS and, if CDS hasn't answered within
+ *  3 s or has already failed, to the CfA mirror too: the first good answer wins. `timeoutMs` bounds
+ *  the whole query, mirror included. */
+export async function simbadTap(query: string, opts: { timeoutMs: number; signal: AbortSignal }): Promise<TapJson> {
+  const ctl = new AbortController();
+  const stop = () => ctl.abort();
+  opts.signal.addEventListener("abort", stop);
+  let timedOut = false;
+  const deadline = setTimeout(() => { timedOut = true; ctl.abort(); }, opts.timeoutMs);
+  const body = new URLSearchParams({ REQUEST: "doQuery", LANG: "ADQL", FORMAT: "json", QUERY: query });
+  const ask = async (url: string): Promise<TapJson> => {
+    const t0 = Date.now(), host = new URL(url).host;
+    let release = () => {};
+    try {
+      release = await acquire(host, ctl.signal);
+      const t = await getJson<TapJson>(url, { init: { method: "POST", body, headers: { "Content-Type": "application/x-www-form-urlencoded" } }, timeoutMs: opts.timeoutMs, signal: ctl.signal, retries: 0 });
+      if (!t?.metadata || !Array.isArray(t.data)) throw new Error("unexpected response");
+      return t;
+    } catch (e) {
+      const why = timedOut || ((e as Error).name === "AbortError" && !ctl.signal.aborted) ? `no answer in ${Math.round((Date.now() - t0) / 1000)}s` : (e as Error).message;
+      throw new Error(`${host}: ${why.slice(0, 80)}`);
+    } finally {
+      release();
+    }
+  };
+  const primary = ask(SIMBAD_TAP);
+  const mirror = (async () => {
+    await Promise.race([sleep(HEDGE_MS), primary.catch(() => {})]);
+    if (ctl.signal.aborted) throw new Error(timedOut ? "no answer in time" : "not needed");
+    return ask(SIMBAD_MIRROR);
+  })();
+  try {
+    return await Promise.any([primary, mirror]);
+  } catch (e) {
+    throw new Error(`SIMBAD unreachable (${((e as AggregateError).errors ?? [e]).map((x: Error) => x.message).join("; ")})`);
+  } finally {
+    clearTimeout(deadline);
+    ctl.abort();
+    opts.signal.removeEventListener("abort", stop);
+  }
 }
 
 /** SIMBAD pads catalog prefixes ("M  42", "NAME Orion Nebula Cluster"): tidy for display. */
 export function tidyName(id: string) {
   return id.replace(/^NAME\s+/, "").replace(/^\*\s+/, "").replace(/\s+/g, " ").trim();
 }
-
-type TapJson = { metadata?: { name: string }[]; data?: unknown[][] };
 
 /** Parses a SIMBAD TAP JSON response into SkyObjects (ids left blank for the route to assign). */
 export function parseSimbad(json: unknown): SkyObject[] {

@@ -9,7 +9,7 @@
 import { getJson } from "@/lib/http";
 import { EXO_TAP } from "./exoplanets";
 import { adqlNum, separation } from "./geom";
-import { SIMBAD_TAP } from "./simbad";
+import { simbadTap } from "./simbad";
 import type { BlsResult } from "./bls";
 import type { LsResult } from "./lombscargle";
 import type { FieldStar } from "./lightcurves";
@@ -198,9 +198,8 @@ export async function ebNeighbours(c: Cone, signal: AbortSignal): Promise<EbNeig
   const g = grown(c);
   const q = `SELECT TOP 2000 main_id, otype, ra, dec FROM basic WHERE CONTAINS(POINT('ICRS', ra, dec), CIRCLE('ICRS', ${adqlNum(g.ra)}, ${adqlNum(g.dec)}, ${adqlNum(g.radius)})) = 1 `
     + `AND otype IN (${EB_OTYPES.map((t) => `'${t}'`).join(",")})`;
-  const t = await getJson<{ metadata?: { name: string }[]; data?: unknown[][] }>(`${SIMBAD_TAP}?${new URLSearchParams({ REQUEST: "doQuery", LANG: "ADQL", FORMAT: "json", QUERY: q })}`, { timeoutMs: 12_000, signal, retries: 1 });
-  if (!t?.metadata || !Array.isArray(t.data)) throw new Error("unexpected SIMBAD response");
-  const col = Object.fromEntries(t.metadata.map((m, i) => [m.name, i]));
-  return t.data.flatMap((r) => (typeof r[col.ra] === "number" && typeof r[col.dec] === "number"
+  const t = await simbadTap(q, { timeoutMs: 12_000, signal });
+  const col = Object.fromEntries(t.metadata!.map((m, i) => [m.name, i]));
+  return t.data!.flatMap((r) => (typeof r[col.ra] === "number" && typeof r[col.dec] === "number"
     ? [{ name: String(r[col.main_id]).trim(), otype: String(r[col.otype]).trim(), ra: r[col.ra] as number, dec: r[col.dec] as number }] : []));
 }
