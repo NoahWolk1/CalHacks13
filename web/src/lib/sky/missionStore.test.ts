@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { fileMissionStore, missionRecorder, type MissionStore } from "./missionStore";
-import type { MissionMeta, SkyEvent } from "./types";
+import { cleanMissionEdit, type MissionMeta, type SkyEvent } from "./types";
 
 const meta = (id: string, createdAt = 1000): MissionMeta => ({ id, cone: { ra: 83.8, dec: -5.4, radius: 0.5 }, label: "Orion", createdAt, updatedAt: createdAt, status: "running" });
 const note = (text: string): SkyEvent => ({ type: "analysis-note", note: { agent: "strategist", text }, ms: 1 } as unknown as SkyEvent);
@@ -29,6 +29,29 @@ describe("fileMissionStore", () => {
     await s.create(meta("cccccccccccc", 2));
     expect((await s.list(10)).map((m) => m.id)).toEqual(["cccccccccccc", "bbbbbbbbbbbb"]);
     expect(await s.get("../etc/passwd")).toBeNull();
+  });
+});
+
+describe("renaming and categorizing", () => {
+  it("cleans edits: trims, collapses spaces, caps length, ignores other fields", () => {
+    expect(cleanMissionEdit({ name: "  Orion   deep ", category: "x".repeat(50), status: "done" })).toEqual({ name: "Orion deep", category: "x".repeat(32) });
+    expect(cleanMissionEdit({ category: "" })).toEqual({ category: "" });
+    expect(cleanMissionEdit({ name: 5 })).toBeNull();
+    expect(cleanMissionEdit(null)).toBeNull();
+  });
+
+  it("keeps a rename made while the run is still recording, and clears with an empty string", async () => {
+    const s = store(), id = "eeeeeeeeeeee";
+    await s.create(meta(id));
+    expect(await s.edit(id, { name: "Orion nebula sweep", category: "Demo" })).toMatchObject({ name: "Orion nebula sweep", category: "Demo", label: "Orion" });
+    // The recorder saves the run's own meta, which never has a name or category.
+    await s.append(id, 0, [note("a")], "done", { ...meta(id), headline: "done" });
+    expect(await s.get(id)).toMatchObject({ name: "Orion nebula sweep", category: "Demo", headline: "done", status: "done" });
+    await s.edit(id, { category: "" });
+    const m = await s.get(id);
+    expect(m?.category).toBeUndefined();
+    expect(m?.name).toBe("Orion nebula sweep");
+    expect(await s.edit("zzzzzzzzzzzz", { name: "x" })).toBeNull();
   });
 });
 

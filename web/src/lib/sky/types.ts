@@ -66,6 +66,10 @@ export type AnalysisStar = {
 /** One periodic signal from the iterative search. */
 export type TransitSignal = { period: number; t0: number; duration: number; depth: number; snr: number; sde: number; transits: number; oddEven: number; oddEvenSigma: number; secondary: number; secondarySigma: number; detected: boolean };
 export type SingleDip = { t: number; duration: number; depth: number; snr: number };
+/** A known signal measured at its period in independent data (survey.ts), instead of re-discovered blind:
+ *  "recovered" clears the detection bar, "weak" has a consistent depth below it, "absent" should have
+ *  shown and didn't, "inconclusive" is too noisy to say. */
+export type ForcedCheck = { period: number; depth: number; err: number; snr: number; transits: number; result: "recovered" | "weak" | "absent" | "inconclusive" };
 
 /** What the Transit Hunter and Variability agents found on one star (measured, before vetting). */
 export type StarResult = {
@@ -126,7 +130,31 @@ export type MissionMeta = {
   id: string; cone: Cone; question?: string; label: string; createdAt: number; updatedAt: number; status: MissionStatus;
   /** Filled in as the run goes. */
   finds?: number; objects?: number; headline?: string; llm?: boolean;
+  /** Set by people (rename / categorize), kept when the recorder saves the run's own meta. */
+  name?: string; category?: string;
 };
+export type MissionEdit = { name?: string; category?: string };
+/** Trims and caps a rename / category; "" clears it. Null when there's nothing valid to apply. */
+export function cleanMissionEdit(body: unknown): MissionEdit | null {
+  const b = body as Record<string, unknown> | null;
+  if (!b || typeof b !== "object") return null;
+  const out: MissionEdit = {};
+  const one = (k: "name" | "category", max: number) => {
+    if (typeof b[k] === "string") out[k] = (b[k] as string).replace(/\s+/g, " ").trim().slice(0, max);
+  };
+  one("name", 80);
+  one("category", 32);
+  return Object.keys(out).length ? out : null;
+}
+/** Applies an edit: "" removes the field. */
+export function applyMissionEdit(meta: MissionMeta, edit: MissionEdit): MissionMeta {
+  const out = { ...meta };
+  for (const k of ["name", "category"] as const) {
+    if (edit[k] === undefined) continue;
+    if (edit[k]) out[k] = edit[k]; else delete out[k];
+  }
+  return out;
+}
 export type MissionView = { mission: MissionMeta; events: SkyEvent[]; next: number };
 
 /** The analysis results that would be new if they hold up (the rest are known or rejected). */
@@ -152,6 +180,8 @@ export type SurveySeason = {
   coverage?: [number, number][];
   signals?: TransitSignal[];
   singles?: SingleDip[];
+  /** The star's signals from other seasons, measured at their periods in this one. */
+  forced?: ForcedCheck[];
   ls?: { period: number; amplitude: number; power: number; fap: number; variable: boolean };
   prewhitened?: number[];
   radius?: number;

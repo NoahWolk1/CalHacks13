@@ -7,13 +7,17 @@
 // (lightcurves.ts: seasonsFor), with the same analysis as the quick run (analysis.ts: analyseStar).
 // Searching seasons separately keeps the BLS affordable on stars with years of data, and makes a
 // signal seen in several seasons independently confirmed (the quick run's held-out re-check, built in).
+// A blind search misses weak signals in seasons with fewer transits or more noise, so each signal is
+// also measured at its period in the star's other seasons (forcedCheck): recovered, present but
+// below the detection bar, absent where it should show, or inconclusive. Seasons searched before the
+// signal turned up are re-downloaded for that check.
 // Two lone dips on one star are paired into a duotransit: the possible periods are Δt/n, pruned to
 // those whose other transits would have fallen where TESS wasn't looking (duotransitAliases).
 //
 // The Strategist plans the order (Claude picks the first stars, the heuristic score orders the rest),
 // bumps a star whose season turned something up so its other seasons come next, and at each quarter
 // of progress Claude reviews the finds, writes notebook notes and can move stars up the queue.
-import { analyseStar, download, signalObject, singleObject, variableObject } from "./analysis";
+import { analyseStar, download, forcedCheck, signalObject, singleObject, variableObject } from "./analysis";
 import { seasonsFor, surveyInventory, type LcProduct, type LightCurve } from "./lightcurves";
 import { variabilityClass, type LsResult } from "./lombscargle";
 import { LABEL as OTYPE_LABEL } from "./simbad";
@@ -23,7 +27,7 @@ import { VARIABLE_OTYPES, variablesNear, vsxEntry } from "./vsx";
 import { separation } from "./geom";
 import type { SurveyField, SurveyStore } from "./surveyStore";
 import {
-  isNewFind, type AnalysisStar, type Cone, type SingleDip, type SkyNote, type SkyObject, type SurveySeason, type SurveyStar, type SurveyStarRow,
+  isNewFind, type AnalysisStar, type Cone, type ForcedCheck, type SingleDip, type SkyNote, type SkyObject, type SurveySeason, type SurveyStar, type SurveyStarRow,
   type SurveySummary, type TransitSignal,
 } from "./types";
 
@@ -113,6 +117,41 @@ const compactSignal = (t: TransitSignal): TransitSignal => ({ ...t, period: roun
 /** Downloads per season before it counts as failed. */
 export const DOWNLOAD_TRIES = 2;
 
+/** Signals from the star's other seasons that `season` hasn't found or measured yet, and whose period
+ *  it covers at least twice (deduplicated by period). */
+export function forcedTargets(star: SurveyStar, season: SurveySeason): TransitSignal[] {
+  const out: TransitSignal[] = [];
+  for (const other of star.seasons) {
+    if (other === season || other.status !== "ok") continue;
+    for (const sig of other.signals ?? []) {
+      if (out.some((x) => periodsMatch(x.period, sig.period, 0.01))) continue;
+      if ((season.signals ?? []).some((x) => periodsMatch(x.period, sig.period, 0.01))) continue;
+      if ((season.forced ?? []).some((x) => periodsMatch(x.period, sig.period, 0.01))) continue;
+      if (season.status === "ok" && coveredDays(season) / sig.period < 2) continue;
+      out.push(sig);
+    }
+  }
+  return out;
+}
+
+const forcedAll = (lcs: LightCurve[], targets: TransitSignal[]): ForcedCheck[] => targets.flatMap((t) => {
+  try { return [forcedCheck(lcs, t)]; } catch { return []; }
+});
+/** Recorded when a re-check can't run, so the season isn't queued for it again. */
+const unmeasured = (t: TransitSignal): ForcedCheck => ({ period: t.period, depth: 0, err: 0, snr: 0, transits: 0, result: "inconclusive" });
+
+/** Measures the star's signals from other seasons in an already-searched season (re-downloaded). */
+export async function recheckSeason(star: SurveyStar, season: SurveySeason, signal: AbortSignal, deadline: number): Promise<SurveySeason> {
+  const targets = forcedTargets(star, season);
+  if (!targets.length) return season;
+  const products: LcProduct[] = season.files.map((f) => ({ tic: star.tic, sector: f.sector, pipeline: f.pipeline, cadence: 0, uri: f.uri }));
+  const { lcs } = await download(products, signal, deadline);
+  await new Promise<void>((r) => setImmediate(r));
+  const got = lcs.length ? forcedAll(lcs, targets) : [];
+  const forced = [...(season.forced ?? []), ...got, ...targets.filter((t) => !got.some((g) => periodsMatch(g.period, t.period, 0.01))).map(unmeasured)];
+  return { ...season, forced };
+}
+
 export async function searchSeason(star: SurveyStar, season: SurveySeason, signal: AbortSignal, deadline: number): Promise<SurveySeason> {
   const ts = Date.now();
   const products: LcProduct[] = season.files.map((f) => ({ tic: star.tic, sector: f.sector, pipeline: f.pipeline, cadence: 0, uri: f.uri }));
@@ -122,9 +161,13 @@ export async function searchSeason(star: SurveyStar, season: SurveySeason, signa
   try {
     const a = analyseStar(lcs, star.masks);
     const ls = { period: round(a.ls.period, 7), amplitude: round(a.ls.amplitude, 4), power: round(a.ls.power, 3), fap: a.ls.fap, variable: a.ls.fap < 1e-3 && a.ls.power > 0.1 && a.ls.amplitude >= 5e-4 };
+    const signals = a.signals.map((t) => compactSignal({ period: t.period, t0: t.t0, duration: t.duration, depth: t.depth, snr: t.snr, sde: t.sde, transits: t.transits, oddEven: t.oddEven, oddEvenSigma: t.oddEvenSigma, secondary: t.secondary, secondarySigma: t.secondarySigma, detected: true }));
+    const coverage = coverageOf(lcs);
+    const searched = { ...season, status: "ok" as const, signals, coverage, forced: [] };
+    const forced = forcedAll(lcs, forcedTargets(star, searched));
     return {
-      ...season, sectors: lcs.map((l) => l.sector), status: "ok", points: a.points, days: +a.days.toFixed(2), coverage: coverageOf(lcs),
-      signals: a.signals.map((t) => compactSignal({ period: t.period, t0: t.t0, duration: t.duration, depth: t.depth, snr: t.snr, sde: t.sde, transits: t.transits, oddEven: t.oddEven, oddEvenSigma: t.oddEvenSigma, secondary: t.secondary, secondarySigma: t.secondarySigma, detected: true })),
+      ...season, sectors: lcs.map((l) => l.sector), status: "ok", points: a.points, days: +a.days.toFixed(2), coverage,
+      signals, ...(forced.length ? { forced } : {}),
       singles: a.singles.map((e) => ({ t: round(e.t, 9), duration: round(e.duration), depth: round(e.depth), snr: round(e.snr, 4) })),
       ls, prewhitened: a.prewhitened.map((p) => round(p, 6)),
       ...(lcs.find((l) => l.radius) ? { radius: lcs.find((l) => l.radius)!.radius } : {}), ...(lcs.find((l) => l.logg) ? { logg: lcs.find((l) => l.logg)!.logg } : {}),
@@ -196,11 +239,23 @@ export function surveyObjects(stars: SurveyStar[], field: SurveyField) {
     if (v.kind === "candidate" && star.masked.length) v = { ...v, label: "Candidate additional planet", reasons: [`found after masking ${star.masked.join(", ")}: a possible sibling in a known system`, ...v.reasons] };
     const o = signalObject("", asAnalysisStar(star, season), rep, v, season.radius);
     const searched = oks(star);
-    // Other seasons that covered at least two transits but didn't find it.
-    const missed = searched.filter((s) => !seen.includes(s) && coveredDays(s) / rep.period >= 2);
-    o.props.seasons = `seen in ${seen.length} of ${searched.length} season${searched.length === 1 ? "" : "s"} searched (sectors ${seen.map(sectorsLabel).join(" | ")})`;
-    if (missed.length) o.props["not recovered"] = `sectors ${missed.map(sectorsLabel).join(" | ")}, which covered ≥ 2 transits`;
-    if (v.kind === "candidate") o.type += seen.length >= 2 ? ` · seen in ${seen.length} seasons` : missed.length ? " · not seen in other seasons" : "";
+    // Every other season that covered at least two transits: measured at the period (forced), else unchecked.
+    const rest = searched.filter((x) => !seen.includes(x) && coveredDays(x) / rep.period >= 2)
+      .map((x) => ({ season: x, f: (x.forced ?? []).find((f) => f.transits > 0 && periodsMatch(f.period, rep.period, 0.01)) }));
+    const by = (r: ForcedCheck["result"]) => rest.filter((x) => x.f?.result === r);
+    const recovered = by("recovered"), weak = by("weak"), absent = by("absent"), unchecked = rest.filter((x) => !x.f);
+    const total = seen.length + recovered.length;
+    o.props.seasons = `found blind in ${seen.length} of ${searched.length} season${searched.length === 1 ? "" : "s"} searched (sectors ${seen.map(sectorsLabel).join(" | ")})`;
+    const ppm = (x: number) => `${Math.round(x * 1e6)} ppm`;
+    const line = (x: (typeof rest)[number]) => `s${sectorsLabel(x.season)}: ${!x.f ? "not checked yet" : `${x.f.result === "recovered" ? "recovered" : x.f.result === "weak" ? "present, below the detection bar" : x.f.result} (${ppm(x.f.depth)} ± ${ppm(x.f.err)}, ${x.f.transits} transits)`}`;
+    if (rest.length) o.props["at the period in other seasons"] = rest.map(line).join("; ");
+    if (absent.length) o.props["not recovered"] = `sectors ${absent.map((x) => sectorsLabel(x.season)).join(" | ")}: should show at ${ppm(rep.depth)} and doesn't`;
+    if (v.kind === "candidate") {
+      o.type += absent.length ? ` · absent in ${absent.length} other season${absent.length === 1 ? "" : "s"}`
+        : total >= 2 ? ` · seen in ${total} seasons`
+        : weak.length ? ` · weak in ${weak.length} other season${weak.length === 1 ? "" : "s"}`
+        : unchecked.length ? " · other seasons not checked yet" : "";
+    }
     out.push(o);
   }
 
@@ -332,11 +387,17 @@ export function starRows(stars: SurveyStar[]): SurveyStarRow[] {
 }
 
 /** Pending seasons, highest-priority star first, latest season first within a star. */
-export function nextSeason(stars: SurveyStar[], busy: Set<string>): { star: SurveyStar; index: number } | null {
-  let best: { star: SurveyStar; index: number } | null = null;
+/** The next work unit: a pending season of the highest-priority star, or (`recheck`) a searched
+ *  season that still has to measure a signal another season of its star found. */
+export function nextSeason(stars: SurveyStar[], busy: Set<string>): { star: SurveyStar; index: number; recheck?: boolean } | null {
+  let best: { star: SurveyStar; index: number; recheck?: boolean } | null = null;
   for (const star of stars) {
-    const index = star.seasons.findIndex((x, i) => x.status === "pending" && !busy.has(`${star.tic}:${i}`));
-    if (index >= 0 && (!best || star.priority > best.star.priority)) best = { star, index };
+    if (best && star.priority <= best.star.priority) continue;
+    const free = (i: number) => !busy.has(`${star.tic}:${i}`);
+    const index = star.seasons.findIndex((x, i) => x.status === "pending" && free(i));
+    if (index >= 0) { best = { star, index }; continue; }
+    const again = star.seasons.findIndex((x, i) => x.status === "ok" && free(i) && forcedTargets(star, x).length > 0);
+    if (again >= 0) best = { star, index: again, recheck: true };
   }
   return best;
 }
@@ -427,6 +488,15 @@ export async function runSurveyStep(store: SurveyStore, id: string, owner: strin
         busy.add(key);
         const season = next.star.seasons[next.index];
         const tc = Date.now();
+        if (next.recheck) {
+          next.star.seasons[next.index] = await recheckSeason(next.star, season, ctl.signal, deadline);
+          cpuMs += Date.now() - tc;
+          busy.delete(key);
+          searched++;
+          dirty.add(next.star.tic);
+          await save();
+          continue;
+        }
         let done = await searchSeason(next.star, season, ctl.signal, deadline);
         cpuMs += Date.now() - tc;
         // A failed download goes back in the queue once; a failed analysis would only fail again.
@@ -446,7 +516,7 @@ export async function runSurveyStep(store: SurveyStore, id: string, owner: strin
       }
     };
     await Promise.all(Array.from({ length: SURVEY_CONCURRENCY }, worker));
-    const left = stars.some((s) => s.seasons.some((x) => x.status === "pending"));
+    const left = nextSeason(stars, new Set()) !== null;
     if (!left && !stopped) {
       summary.status = "done";
       summary.finishedAt = Date.now();

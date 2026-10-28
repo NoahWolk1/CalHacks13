@@ -62,9 +62,24 @@ describe("survey finds across seasons", () => {
     const a = objects.find((o) => o.props.TIC === "1")!;
     expect(a.type).toBe("Unvetted transit candidate · seen in 2 seasons");
     const b = objects.find((o) => o.props.TIC === "2")!;
-    expect(b.type).toBe("Unvetted transit candidate · not seen in other seasons");
-    expect(String(b.props["not recovered"])).toMatch(/40/);
+    expect(b.type).toBe("Unvetted transit candidate · other seasons not checked yet");
+    expect(String(b.props["at the period in other seasons"])).toMatch(/s40: not checked yet/);
     expect(candidates).toBe(2);
+  });
+  it("labels other seasons by the forced check at the period, not by the blind search", () => {
+    const f = (result: "recovered" | "weak" | "absent", depth: number) => ({ forced: [{ period: 5.5003, depth, err: 1e-4, snr: depth / 1e-4, transits: 4, result }] });
+    const label = (other: Partial<SurveySeason>) => surveyObjects([star("2", [season([10], 2000, { signals: [sig(5.5)] }), season([40], 2900, other)])], field).objects[0];
+    expect(label(f("recovered", 9e-4)).type).toBe("Unvetted transit candidate · seen in 2 seasons");
+    expect(label(f("weak", 4e-4)).type).toBe("Unvetted transit candidate · weak in 1 other season");
+    const absent = label(f("absent", 1e-5));
+    expect(absent.type).toBe("Unvetted transit candidate · absent in 1 other season");
+    expect(String(absent.props["not recovered"])).toMatch(/40: should show at 1000 ppm/);
+  });
+  it("queues searched seasons that still have to measure another season's signal", () => {
+    const a = star("1", [season([10], 2000, { signals: [sig(3.21)] }), season([40], 2900)]);
+    expect(nextSeason([a], new Set())).toMatchObject({ star: a, index: 1, recheck: true });
+    a.seasons[1].forced = [{ period: 3.21, depth: 0, err: 0, snr: 0, transits: 0, result: "inconclusive" }];
+    expect(nextSeason([a], new Set())).toBeNull();
   });
   it("pairs two lone dips into a duotransit with possible periods", () => {
     const s1 = star("1", [season([10], 2000, { singles: [{ t: 2010, duration: 0.2, depth: 2e-3, snr: 11 }] }), season([40], 2900, { singles: [{ t: 2910, duration: 0.2, depth: 1.8e-3, snr: 10 }] })]);
