@@ -1,13 +1,16 @@
 "use client";
 // Follow-up vetting of one find, inside its card: streams /api/sky/vet (Stage 0 catalogs, then every
 // TESS sector of the star) and shows each check as it's decided, the individual-transit table, the
-// tier and what's still open. Finished reports are kept per find for the session.
+// tier and what's still open. Finished reports are saved on the server: opening a find that was
+// vetted before (here or on another device) shows the saved report, and the re-run button refreshes it.
 import { useEffect, useRef, useState } from "react";
 import { Copy, RotateCw } from "lucide-react";
+import { rememberVet, savedVetFor } from "@/lib/client/savedVets";
 import { STAGE_LABEL, TIER_LABEL, reportText, type VetCheck, type VetEventRow, type VetInput, type VetReport, type VetStage, type VetStatus, type VetStreamEvent } from "@/lib/sky/vetShared";
 
-type State = { checks: VetCheck[]; events: VetEventRow[]; progress: string; report: VetReport | null; error: string | null; running: boolean };
+type State = { checks: VetCheck[]; events: VetEventRow[]; progress: string; report: VetReport | null; error: string | null; running: boolean; savedAt?: number; loading?: boolean };
 const empty = (): State => ({ checks: [], events: [], progress: "", report: null, error: null, running: false });
+const fromReport = (report: VetReport, savedAt?: number): State => ({ ...empty(), report, checks: report.checks, events: report.events, savedAt });
 const done = new Map<string, State>();
 const keyOf = (i: VetInput) => JSON.stringify([i.tic, i.kind, i.period, i.t0, i.times]);
 
@@ -19,6 +22,11 @@ const STATUS: Record<VetStatus, { label: string; cls: string }> = {
   info: { label: "info", cls: "bg-[#5ec8d8]/15 text-[#5ec8d8]" },
 };
 const TIER_CLS: Record<VetReport["tier"], string> = { A: "bg-ok/20 text-ok", B: "bg-[#7fd1b9]/20 text-[#7fd1b9]", C: "bg-[#f2c35b]/20 text-[#f2c35b]", X: "bg-risk/20 text-risk", K: "bg-[#5ec8d8]/20 text-[#5ec8d8]" };
+
+function savedAgo(t: number) {
+  const m = Math.round((Date.now() - t) / 60_000);
+  return m < 1 ? "just now" : m < 60 ? `${m}m ago` : m < 48 * 60 ? `${Math.round(m / 60)}h ago` : new Date(t).toLocaleDateString();
+}
 
 export default function VetPanel({ input }: { input: VetInput }) {
   const key = keyOf(input);
@@ -50,6 +58,7 @@ export default function VetPanel({ input }: { input: VetInput }) {
           else if (e.type === "check") update({ checks: [...s.checks, e.check] });
           else if (e.type === "events") update({ events: e.events });
           else if (e.type === "report") update({ report: e.report, checks: e.report.checks, events: e.report.events });
+          else if (e.type === "saved") { update({ savedAt: e.saved.savedAt }); rememberVet(e.saved); }
           else if (e.type === "error") update({ error: e.message });
         }
       }
@@ -61,7 +70,17 @@ export default function VetPanel({ input }: { input: VetInput }) {
   };
 
   useEffect(() => {
-    if (!done.has(key)) void run();
+    // Saved before (any device): show that report; otherwise run now.
+    if (!done.has(key)) {
+      let live = true;
+      setSt({ ...empty(), loading: true, progress: "Looking for a saved report" });
+      void savedVetFor(input).then((v) => {
+        if (!live) return;
+        if (v) { const s = fromReport(v.report, v.savedAt); done.set(key, s); setSt(s); }
+        else void run();
+      });
+      return () => { live = false; ctl.current?.abort(); };
+    }
     return () => ctl.current?.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
@@ -75,7 +94,8 @@ export default function VetPanel({ input }: { input: VetInput }) {
           : <span className="caret text-[11.5px] text-fg3">{st.progress || "Vetting"}</span>}
         <div className="flex-1" />
         {r && <CopyButton text={reportText(r)} />}
-        {!st.running && <button onClick={() => void run()} title="Run the vetting again" className="text-fg3 hover:text-fg1"><RotateCw size={11} /></button>}
+        {st.savedAt && !st.running && <span className="num text-[10.5px] text-fg4" title={new Date(st.savedAt).toLocaleString()}>saved {savedAgo(st.savedAt)}</span>}
+        {!st.running && !st.loading && <button onClick={() => void run()} title="Run the vetting again (replaces the saved report)" className="text-fg3 hover:text-fg1"><RotateCw size={11} /></button>}
       </div>
       {st.error && <div className="mt-1 text-[11.5px] text-risk">{st.error}</div>}
       {r && <div className="mt-1 text-[11.5px] text-fg2">{r.tierReason}</div>}
