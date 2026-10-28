@@ -2,7 +2,8 @@
 import { getJson } from "@/lib/http";
 import { EXO_TAP, exoRequest, parseExoplanets } from "./exoplanets";
 import { BODIES, bodyObject, HORIZONS_API, horizonsUrl, parseHorizons } from "./horizons";
-import { parseSimbad, SIMBAD_TAP, simbadUrl } from "./simbad";
+import { gaiaBright } from "./archives";
+import { parseSimbad, SIMBAD_TAP, simbadQuery, simbadTap } from "./simbad";
 import { fieldInventory, inventoryObject } from "./lightcurves";
 import { fetchMast, MAST_API, MAST_DEADLINE_MS } from "./telescopes";
 import type { Cone, SkyObject, SkySourceId, SkySourceReport } from "./types";
@@ -28,8 +29,26 @@ export async function telescopes(c: Cone, signal: AbortSignal): Promise<SkyObjec
   return { objects: lc, note: `TESS light curves only so far: ${why}` };
 }
 
+/** SIMBAD (CDS, or its CfA mirror). If neither answers in time, the cone's bright stars come from
+ *  Gaia DR3 at ESA instead, so the run still has its stars (without SIMBAD's galaxies, nebulae and names). */
+export async function simbad(c: Cone, signal: AbortSignal): Promise<SkyObject[] | { objects: SkyObject[]; note: string }> {
+  try {
+    return parseSimbad(await simbadTap(simbadQuery(c), { timeoutMs: SOURCE_TIMEOUT_MS - 7_000, signal }));
+  } catch (e) {
+    if (signal.aborted) throw e;
+    const why = (e as Error).message;
+    const stars = await gaiaBright(c.ra, c.dec, c.radius, signal).catch((g: Error) => { throw new Error(`${why}; Gaia fallback failed: ${g.message}`); });
+    const objects: SkyObject[] = stars.map((s) => ({
+      id: "", name: `Gaia DR3 ${s.source}`, type: "Star", category: "star", ra: s.ra, dec: s.dec, source: "simbad",
+      url: `https://sky.esa.int/esasky/?target=${s.ra.toFixed(5)}%20${s.dec.toFixed(5)}&fov=0.1`,
+      props: { "Gaia G mag": +s.g.toFixed(2), ...(s.bpRp !== undefined ? { "BP-RP": +s.bpRp.toFixed(2) } : {}), ...(s.parallax !== undefined && s.parallax > 0.5 ? { "parallax (mas)": +s.parallax.toFixed(3), "distance (ly)": Math.round(3261.56 / s.parallax) } : {}) },
+    }));
+    return { objects, note: `${why}. Showing the brightest stars from Gaia DR3 (ESA) instead` };
+  }
+}
+
 export const SOURCES: Source[] = [
-  { id: "simbad", label: "SIMBAD (CDS)", endpoint: SIMBAD_TAP, run: async (c, signal) => parseSimbad(await getJson(simbadUrl(c), { timeoutMs: SOURCE_TIMEOUT_MS, signal, retries: 1 })) },
+  { id: "simbad", label: "SIMBAD (CDS)", endpoint: SIMBAD_TAP, run: simbad },
   { id: "exoplanets", label: "NASA Exoplanet Archive", endpoint: EXO_TAP, run: async (c, signal) => parseExoplanets(await getJson(EXO_TAP, { init: exoRequest(c), timeoutMs: SOURCE_TIMEOUT_MS, signal, retries: 1 })) },
   {
     id: "horizons", label: "JPL Horizons", endpoint: HORIZONS_API,

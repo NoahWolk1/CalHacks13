@@ -103,6 +103,15 @@ export async function gaiaCone(ra: number, dec: number, arcsec: number, signal: 
   });
 }
 
+/** The brightest Gaia DR3 stars in a cone (degrees): stands in for SIMBAD's stars when CDS is down. */
+export async function gaiaBright(ra: number, dec: number, radius: number, signal: AbortSignal, gMax = 9, cap = 50, timeoutMs = 6_000) {
+  const rows = await gaia(`SELECT TOP ${cap} source_id, ra, dec, phot_g_mean_mag, bp_rp, parallax FROM gaiadr3.gaia_source WHERE 1 = CONTAINS(POINT('ICRS', ra, dec), CIRCLE('ICRS', ${ra}, ${dec}, ${radius})) AND phot_g_mean_mag < ${gMax} ORDER BY phot_g_mean_mag`, signal, timeoutMs);
+  return rows.flatMap((x) => {
+    const g = num(x.phot_g_mean_mag), xr = num(x.ra), xd = num(x.dec);
+    return g === undefined || xr === undefined || xd === undefined ? [] : [{ source: String(x.source_id), ra: xr, dec: xd, g, bpRp: num(x.bp_rp), parallax: num(x.parallax) }];
+  });
+}
+
 /** Upper limit on an RV semi-amplitude (km/s) from Gaia's epoch summary: with ≥ 10 epochs at
  *  effectively random phases, the robust peak-to-peak amplitude is at least ~1.6K for a circular
  *  orbit, so K ≤ amplitude / 1.6 plus twice the per-epoch error. Null when there isn't enough. */

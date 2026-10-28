@@ -10,7 +10,7 @@ import { getBuffer, getJson } from "@/lib/http";
 import { adqlNum, separation } from "./geom";
 import { readHdus, readTable } from "./fits";
 import { MAST_API, mastPortalUrl } from "./telescopes";
-import { SIMBAD_TAP, tidyName } from "./simbad";
+import { simbadTap, tidyName } from "./simbad";
 import type { Cone, SkyObject } from "./types";
 
 export type FieldStar = { tic: string; name: string; otype: string; ra: number; dec: number; vmag?: number };
@@ -111,9 +111,6 @@ export function fieldStarsQuery(c: Cone, cap = FIELD_CAP, vmax = FIELD_VMAX) {
     + `WHERE CONTAINS(POINT('ICRS', b.ra, b.dec), CIRCLE('ICRS', ${adqlNum(c.ra)}, ${adqlNum(c.dec)}, ${adqlNum(c.radius)})) = 1 `
     + `AND f.V < ${vmax} AND i.id LIKE 'TIC %' ORDER BY rank`;
 }
-
-export const fieldStarsUrl = (c: Cone, cap = FIELD_CAP, vmax = FIELD_VMAX) =>
-  `${SIMBAD_TAP}?${new URLSearchParams({ REQUEST: "doQuery", LANG: "ADQL", FORMAT: "json", QUERY: fieldStarsQuery(c, cap, vmax) })}`;
 
 export function parseFieldStars(json: unknown): FieldStar[] {
   const t = json as { metadata?: { name: string }[]; data?: unknown[][] };
@@ -244,7 +241,7 @@ export async function fetchLightCurve(product: LcProduct, signal: AbortSignal, t
 export type FieldInventory = { stars: FieldStar[]; products: LcProduct[]; simbad: boolean };
 
 async function enrich(c: Cone, signal: AbortSignal): Promise<{ stars: FieldStar[]; hlsp: LcProduct[] }> {
-  const stars = parseFieldStars(await getJson(fieldStarsUrl(c), { timeoutMs: ENRICH_TIMEOUT_MS, signal, retries: 0 }));
+  const stars = parseFieldStars(await simbadTap(fieldStarsQuery(c), { timeoutMs: ENRICH_TIMEOUT_MS, signal }));
   if (!stars.length) return { stars, hlsp: [] };
   const hlsp = parseLcProducts(await getJson(MAST_API, { init: hlspRequest(stars.map((s) => s.tic)), timeoutMs: 8_000, signal, retries: 1 }));
   return { stars, hlsp };
@@ -323,7 +320,7 @@ export async function surveyInventory(c: Cone, signal: AbortSignal): Promise<Fie
   let stars: FieldStar[] = [];
   const hlsp: LcProduct[] = [];
   try {
-    stars = parseFieldStars(await getJson(fieldStarsUrl(c, SURVEY_STAR_CAP, SURVEY_VMAX), { timeoutMs: 45_000, signal, retries: 1 }));
+    stars = parseFieldStars(await simbadTap(fieldStarsQuery(c, SURVEY_STAR_CAP, SURVEY_VMAX), { timeoutMs: 45_000, signal }));
     if (stars.length >= SURVEY_STAR_CAP) notes.push(`SIMBAD star list capped at ${SURVEY_STAR_CAP} stars`);
     const chunks: string[][] = [];
     for (let i = 0; i < stars.length; i += HLSP_CHUNK) chunks.push(stars.slice(i, i + HLSP_CHUNK).map((s) => s.tic));
