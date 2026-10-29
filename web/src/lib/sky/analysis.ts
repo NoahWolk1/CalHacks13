@@ -249,7 +249,7 @@ export function forcedCheck(parts: Pick<LightCurve, "time" | "flux" | "quality">
     : r.transits >= 2 && snr > floor && Math.abs(d - D) < 3 * err ? "weak"
     : "inconclusive";
   const p = (n: number) => +n.toPrecision(4);
-  return { period: p(r.period), depth: p(d), err: p(err), snr: p(snr), transits: r.transits, result };
+  return { period: p(r.period), depth: p(d), err: p(err), snr: p(snr), transits: r.transits, result, ...(Number.isFinite(r.t0) ? { t0: r.t0 } : {}) };
 }
 
 export async function runAnalysis(c: Cone, signal: AbortSignal, emit: (e: SkyEvent) => void, t0 = Date.now(), useClaude: Promise<boolean> = Promise.resolve(false)): Promise<SkyAnalysis> {
@@ -276,7 +276,7 @@ export async function runAnalysis(c: Cone, signal: AbortSignal, emit: (e: SkyEve
   const pool0 = prospects(c, inv.stars, inv.products, knownAll, vsx ?? []);
   if (!pool0.length) {
     const msg = inv.stars.length
-      ? `None of the ${inv.stars.length} stars found here has a TESS SPOC, TESS-SPOC or QLP light curve at MAST.`
+      ? `None of the ${inv.stars.length} stars found here has a TESS light curve at MAST (SPOC, TESS-SPOC, QLP, TGLC, eleanor-lite or CDIPS).`
       : "MAST has no TESS SPOC light curves in this cone and SIMBAD lists no bright stars with TIC ids, so there are no light curves to analyse.";
     report("lightcurves", "empty", msg, Date.now() - start);
     return done({ note: msg });

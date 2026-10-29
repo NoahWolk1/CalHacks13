@@ -1,4 +1,5 @@
 // Shared types for the /sky page: a cone on the celestial sphere and what sky agents found in it.
+import type { Pipeline } from "./lightcurves";
 
 export type Cone = { ra: number; dec: number; radius: number }; // degrees, ICRS
 
@@ -69,7 +70,7 @@ export type SingleDip = { t: number; duration: number; depth: number; snr: numbe
 /** A known signal measured at its period in independent data (survey.ts), instead of re-discovered blind:
  *  "recovered" clears the detection bar, "weak" has a consistent depth below it, "absent" should have
  *  shown and didn't, "inconclusive" is too noisy to say. */
-export type ForcedCheck = { period: number; depth: number; err: number; snr: number; transits: number; result: "recovered" | "weak" | "absent" | "inconclusive" };
+export type ForcedCheck = { period: number; depth: number; err: number; snr: number; transits: number; result: "recovered" | "weak" | "absent" | "inconclusive"; /** Best epoch (BTJD), for linking ephemerides across data sets. */ t0?: number };
 
 /** What the Transit Hunter and Variability agents found on one star (measured, before vetting). */
 export type StarResult = {
@@ -169,7 +170,7 @@ export type SurveySeason = {
   sectors: number[];
   pipeline: string;
   /** The light-curve files (MAST URIs), one per sector. */
-  files: { sector: number; pipeline: "SPOC" | "TESS-SPOC" | "QLP"; uri: string }[];
+  files: { sector: number; pipeline: Pipeline; uri: string }[];
   status: "pending" | "ok" | "error";
   error?: string;
   /** Failed downloads so far (MAST times out now and then; a season gets one more try). */
