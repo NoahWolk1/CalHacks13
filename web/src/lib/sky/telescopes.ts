@@ -20,8 +20,8 @@ export const MAST_CAP = 10;
  *  query (20-35 s) would otherwise hold back SIMBAD/Exoplanet results that arrive in ~1-2 s. */
 export const MAST_DEADLINE_MS = 4_000;
 
-const LABEL: Record<string, string> = { SPITZER_SHA: "Spitzer", PS1: "Pan-STARRS1", SWIFT: "Swift" };
-const missionLabel = (m: string) => LABEL[m] ?? m;
+const LABEL: Record<string, string> = { SPITZER_SHA: "Spitzer", PS1: "Pan-STARRS1", SWIFT: "Swift", XMM: "XMM-Newton" };
+export const missionLabel = (m: string) => LABEL[m] ?? m;
 
 export function mastRequest(c: Cone): RequestInit {
   const request = {

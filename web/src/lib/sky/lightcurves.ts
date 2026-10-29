@@ -11,6 +11,7 @@ import { adqlNum, separation } from "./geom";
 import { readHdus, readTable } from "./fits";
 import { MAST_API, mastPortalUrl } from "./telescopes";
 import { simbadTap, tidyName } from "./simbad";
+import { ticNeighbours } from "./hostStar";
 import type { Cone, SkyObject } from "./types";
 
 export type FieldStar = { tic: string; name: string; otype: string; ra: number; dec: number; vmag?: number };
@@ -32,6 +33,8 @@ export const FIELD_CAP = 80;
 /** SIMBAD's latency swings from ~1 s to 10+ s; the SPOC inventory doesn't wait longer than this for it. */
 export const ENRICH_TIMEOUT_MS = 8_000;
 export const LC_TIMEOUT_MS = 10_000;
+/** How long the quick inventory waits on MAST's box search before also asking by TIC id. */
+const BOX_FAST_MS = 4_000;
 const PIPELINES = ["SPOC", "TESS-SPOC", "QLP"] as const;
 
 const mastForm = (request: unknown): RequestInit => ({
@@ -192,17 +195,44 @@ export const mastDownloadUrl = (uri: string) => `https://mast.stsci.edu/api/v0.1
 
 /** CAOM by TIC id (target_name): every TESS light curve of one star, SPOC and FFI pipelines both. */
 export function ticProductsRequest(tic: string): RequestInit {
+  return ticListRequest([tic]);
+}
+
+/** TESS + HLSP light curves for a list of TIC ids (one target_name filter: fast even when the box search hangs). */
+export function ticListRequest(tics: string[]): RequestInit {
   return mastForm({
-    service: "Mast.Caom.Filtered", format: "json", pagesize: 2000, page: 1,
+    service: "Mast.Caom.Filtered", format: "json", pagesize: 5000, page: 1,
     params: {
       columns: LC_COLUMNS,
       filters: [
         { paramName: "obs_collection", values: ["TESS", "HLSP"] },
         { paramName: "dataproduct_type", values: ["timeseries"] },
-        { paramName: "target_name", values: [tic] },
+        // Only the pipelines read here: bright stars carry dozens of other HLSPs, which slow MAST down a lot.
+        { paramName: "provenance_name", values: [...PIPELINES] },
+        { paramName: "target_name", values: tics },
       ],
     },
   });
+}
+
+/** MAST's box search on the TESS tables hangs in dense fields now and then; its TIC-id filter doesn't.
+ *  Fallback: the cone's brightest TIC stars, then their light curves by id. */
+export async function productsByTic(c: Cone, signal: AbortSignal, cap = 200, chunk = 25): Promise<LcProduct[]> {
+  const stars = (await ticNeighbours(c.ra, c.dec, c.radius * 60, signal)).filter((s) => s.sep <= c.radius * 3600).slice(0, cap);
+  const chunks: string[][] = [];
+  for (let i = 0; i < stars.length; i += chunk) chunks.push(stars.slice(i, i + chunk).map((s) => s.tic));
+  const out: LcProduct[] = [];
+  let next = 0, failed = 0;
+  // Small lists, a few at a time: 25 ids answer in about a second, 100 can take 30.
+  await Promise.all(Array.from({ length: Math.min(4, chunks.length) }, async () => {
+    while (next < chunks.length) {
+      const ids = chunks[next++];
+      try { out.push(...parseLcProducts(await getJson(MAST_API, { init: ticListRequest(ids), timeoutMs: 15_000, signal, retries: 1 }))); }
+      catch { failed++; }
+    }
+  }));
+  if (chunks.length && failed === chunks.length) throw new Error("MAST light-curve lookup by TIC id failed");
+  return out;
 }
 
 export async function ticProducts(tic: string, signal: AbortSignal): Promise<LcProduct[]> {
@@ -258,9 +288,18 @@ export function fieldInventory(c: Cone, signal: AbortSignal): Promise<FieldInven
   const p = (async () => {
     const enriching = enrich(c, signal);
     enriching.catch(() => {});
-    const spoc = await getJson(MAST_API, { init: spocBoxRequest(c), timeoutMs: 12_000, signal, retries: 1 })
-      .then(parseLcProducts)
-      .catch((e: Error) => { console.warn(`[sky] SPOC light-curve inventory failed: ${e.message}`); return null; });
+    const box = getJson(MAST_API, { init: spocBoxRequest(c), timeoutMs: 12_000, signal, retries: 1 }).then(parseLcProducts);
+    box.catch(() => {});
+    // If the box search hasn't answered in BOX_FAST_MS, look the cone's stars up by TIC id as well
+    // and take whichever answers first (the box search's SPOC rows, or every pipeline by id).
+    let fast: ReturnType<typeof setTimeout> | undefined;
+    const byTic = new Promise<LcProduct[]>((resolve, reject) => {
+      fast = setTimeout(() => productsByTic(c, signal).then(resolve, reject), BOX_FAST_MS);
+    });
+    byTic.catch(() => {});
+    const spoc = await Promise.any([box, byTic])
+      .catch(() => { console.warn("[sky] SPOC light-curve inventory failed (box search and TIC-id lookup)"); return null; })
+      .finally(() => clearTimeout(fast));
     // Enrichment gets at most ENRICH_TIMEOUT_MS more once SPOC is in (or is all we have if SPOC failed).
     let timer: ReturnType<typeof setTimeout> | undefined;
     const extra = await Promise.race([enriching, new Promise<null>((r) => { timer = setTimeout(() => r(null), ENRICH_TIMEOUT_MS); })])
@@ -293,7 +332,9 @@ export function inventoryObject(c: Cone, inv: FieldInventory): SkyObject | null 
     sectors: sectors.join(", "),
   };
   if (named.length) props["brightest targets"] = named.join(", ");
-  if (!inv.simbad) props.note = "SIMBAD star list unavailable this run: SPOC 2-min targets only";
+  if (!inv.simbad) props.note = inv.products.some((p) => p.pipeline !== "SPOC")
+    ? "SIMBAD star list unavailable this run: the brightest TIC stars instead"
+    : "SIMBAD star list unavailable this run: SPOC 2-min targets only";
   return { id: "", name: "TESS light curves", type: "TESS photometry", category: "observation", ra: c.ra, dec: c.dec, source: "telescopes", url: mastPortalUrl(c.ra, c.dec, c.radius), props };
 }
 
@@ -311,11 +352,19 @@ const HLSP_CHUNK = 80;
 export async function surveyInventory(c: Cone, signal: AbortSignal): Promise<FieldInventory & { notes: string[] }> {
   const notes: string[] = [];
   const spoc: LcProduct[] = [];
-  for (let page = 1; page <= SURVEY_PAGES; page++) {
-    const rows = parseLcProducts(await getJson(MAST_API, { init: spocBoxRequest(c, page), timeoutMs: 30_000, signal, retries: 1 }));
-    spoc.push(...rows);
-    if (rows.length < 4000) break; // last page (5000 rows a page, some filtered out in parsing)
-    if (page === SURVEY_PAGES) notes.push(`SPOC inventory stopped at ${SURVEY_PAGES} pages`);
+  try {
+    for (let page = 1; page <= SURVEY_PAGES; page++) {
+      const rows = parseLcProducts(await getJson(MAST_API, { init: spocBoxRequest(c, page), timeoutMs: 30_000, signal, retries: 1 }));
+      spoc.push(...rows);
+      if (rows.length < 4000) break; // last page (5000 rows a page, some filtered out in parsing)
+      if (page === SURVEY_PAGES) notes.push(`SPOC inventory stopped at ${SURVEY_PAGES} pages`);
+    }
+  } catch (e) {
+    if (signal.aborted) throw e;
+    // MAST's box search timed out: the cone's TIC stars by id instead (every pipeline, brightest 2000).
+    spoc.length = 0;
+    spoc.push(...(await productsByTic(c, signal, SURVEY_STAR_CAP)).filter((p) => p.pipeline === "SPOC"));
+    notes.push(`MAST's position search timed out: light curves looked up by TIC id for the ${SURVEY_STAR_CAP} brightest TIC stars instead`);
   }
   let stars: FieldStar[] = [];
   const hlsp: LcProduct[] = [];
