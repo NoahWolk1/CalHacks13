@@ -19,7 +19,7 @@ export function findLine(o: SkyObject) {
   const when = p["period (days)"] !== undefined ? `P ${p["period (days)"]} d`
     : p["times (BTJD)"] !== undefined ? `BTJD ${p["times (BTJD)"]}${p["possible periods"] ? ` · ${p["possible periods"]} possible periods, longest ${String(p["longest possible periods (days)"]).split(", ").slice(0, 3).join(", ")} d` : ""}`
       : `BTJD ${p["time (BTJD)"]}`;
-  return `TIC ${p.TIC} · ${when} · depth ${p["depth (ppt)"]} ppt · ${p["duration (hours)"]} h · SNR ${p.SNR}${p["implied radius (Earth = 1)"] ? ` · ~${p["implied radius (Earth = 1)"]} R⊕` : ""}`;
+  return `TIC ${p.TIC} · ${when} · depth ${p["depth (ppt)"]} ppt · ${p["duration (hours)"]} h · search SNR ${p.SNR}${p["implied radius (Earth = 1)"] ? ` · ~${p["implied radius (Earth = 1)"]} R⊕` : ""}`;
 }
 
 /** A new find: labelled as a candidate needing follow-up, never as a discovery. Transit finds can be

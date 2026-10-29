@@ -22,7 +22,8 @@ import { seasonsFor, surveyInventory, type LcProduct, type LightCurve } from "./
 import { variabilityClass, type LsResult } from "./lombscargle";
 import { LABEL as OTYPE_LABEL } from "./simbad";
 import { claudePlan, claudeSurveyReview, PLAYBOOK_LABEL, prospects } from "./strategy";
-import { CONTAM_ARCMIN, ebNeighbours, impliedRadiusEarth, knownPlanetsNear, MAX_PLANET_REARTH, periodsMatch, toisNear, vetSignal } from "./vetting";
+import { CONTAM_ARCMIN, ebNeighbours, impliedRadiusEarth, knownPlanetsNear, knownTransitAt, knownTransitLabel, MAX_PLANET_REARTH, periodsMatch, toisNear, transitVariability, unreliableHost, vetSignal } from "./vetting";
+import { ctoiSignals } from "./hostStar";
 import { VARIABLE_OTYPES, variablesNear, vsxEntry } from "./vsx";
 import { separation } from "./geom";
 import type { SurveyField, SurveyStore } from "./surveyStore";
@@ -60,9 +61,11 @@ export async function planSurvey(c: Cone, signal: AbortSignal, useClaude: boolea
   const [inv, kp, ti, nb, vx] = await Promise.all([
     surveyInventory(c, signal), settle(knownPlanetsNear(c, signal)), settle(toisNear(c, signal)), settle(ebNeighbours(c, signal)), settle(variablesNear(c, signal)),
   ]);
+  // Community TOIs too (one cached ExoFOP download): masked and matched like the archive's TOIs.
+  const ct = await settle(ctoiSignals(inv.stars, signal));
   const field: SurveyField = {
-    known: [...(kp.v ?? []), ...(ti.v ?? [])], neighbours: nb.v ?? [], vsx: vx.v ?? undefined,
-    unchecked: [kp.err && "Exoplanet Archive", ti.err && "TOI list", nb.err && "SIMBAD binaries", vx.err && "AAVSO VSX"].filter(Boolean) as string[],
+    known: [...(kp.v ?? []), ...(ti.v ?? []), ...(ct.v ?? [])], neighbours: nb.v ?? [], vsx: vx.v ?? undefined,
+    unchecked: [kp.err && "Exoplanet Archive", ti.err && "TOI list", ct.err && "CTOI list", nb.err && "SIMBAD binaries", vx.err && "AAVSO VSX"].filter(Boolean) as string[],
   };
   const pool = prospects(c, inv.stars, inv.products, field.known, field.vsx ?? []);
   const first = new Map<string, { rank: number; playbook?: SurveyStar["playbook"]; why?: string }>();
@@ -295,11 +298,14 @@ export function surveyObjects(stars: SurveyStar[], field: SurveyField) {
       const rp = impliedRadiusEarth(depth, a.season.radius);
       const own = catalogued(star);
       const isDeep = deep(star, a.season, a.e);
-      const label = !aliases.length ? "Two dips with no consistent period" : unexplained >= 2 && !pinned.length ? "Repeated dips (no single period)" : isDeep ? (own || VARIABLE_OTYPES.has(star.otype) ? "Eclipsing binary (two eclipses)" : "Uncatalogued eclipsing binary (two eclipses)") : "Duotransit candidate";
+      // Either dip on a known planet's or TOI's (drifted) ephemeris, or a host where lone dips can't be trusted: not new.
+      const kn = knownTransitAt(star, a.e.t, dur, field.known) ?? knownTransitAt(star, b.e.t, dur, field.known);
+      const bad = unreliableHost({ vmag: star.vmag, radius: a.season.radius, logg: a.season.logg });
+      const label = kn ? knownTransitLabel(kn).label : bad ? bad.label : !aliases.length ? "Two dips with no consistent period" : unexplained >= 2 && !pinned.length ? "Repeated dips (no single period)" : isDeep ? (own || VARIABLE_OTYPES.has(star.otype) ? "Eclipsing binary (two eclipses)" : "Uncatalogued eclipsing binary (two eclipses)") : "Duotransit candidate";
       const props: Record<string, string | number> = {
         verdict: label,
-        status: label === "Duotransit candidate" ? "two transits of one long-period object: needs more data to pin the period" : label.startsWith("Uncatalogued") ? "not in any variable-star catalog checked" : "rejected as a new candidate",
-        vetting: !aliases.length ? "every period that fits both dips predicts another transit where TESS was watching and saw none" : isDeep ? `star-sized (${(depth * 100).toFixed(1)}% deep)${own ? `; VSX lists ${own.name} (${own.type})` : ""}` : "two similar lone dips, not simultaneous with other stars",
+        status: label === "Duotransit candidate" ? "two transits of one long-period object: needs more data to pin the period" : label.startsWith("Uncatalogued") ? "not in any variable-star catalog checked" : kn ? "already catalogued: not new" : "rejected as a new candidate",
+        vetting: kn ? knownTransitLabel(kn).reason : bad ? bad.reason : !aliases.length ? "every period that fits both dips predicts another transit where TESS was watching and saw none" : isDeep ? `star-sized (${(depth * 100).toFixed(1)}% deep)${own ? `; VSX lists ${own.name} (${own.type})` : ""}` : "two similar lone dips, not simultaneous with other stars",
         TIC: star.tic, "times (BTJD)": `${a.e.t.toFixed(3)}, ${b.e.t.toFixed(3)}`, "depth (ppt)": +(depth * 1000).toPrecision(3), "duration (hours)": +(dur * 24).toFixed(1),
         SNR: +Math.min(a.e.snr, b.e.snr).toFixed(1), "possible periods": aliases.length,
         ...(pinned.length ? { "third dip": `another dip on the star falls on ${pinned.length === 1 ? "this period" : "these periods"}` } : {}),
@@ -316,7 +322,10 @@ export function surveyObjects(stars: SurveyStar[], field: SurveyField) {
       const sameTime = systematic(x);
       const rp = impliedRadiusEarth(e.depth, season.radius);
       let label = "Single-transit event", reason = "one transit-shaped dip, no repeat in any season searched";
+      const kn = knownTransitAt(star, e.t, e.duration, field.known), bad = unreliableHost({ vmag: star.vmag, radius: season.radius, logg: season.logg });
       if (sameTime) { label = "Likely systematic (simultaneous dips)"; reason = `${sameTime} other star${sameTime === 1 ? "" : "s"} dip at the same time: spacecraft or scattered light, not the star`; }
+      else if (kn) ({ label, reason } = knownTransitLabel(kn));
+      else if (bad) ({ label, reason } = bad);
       else if (deep(star, season, e)) {
         const own = catalogued(star);
         const d = `${(e.depth * 100).toFixed(1)}% deep${rp ? `, implied radius ${rp.toFixed(0)} R⊕` : ""}: star-sized`;
@@ -342,7 +351,9 @@ export function surveyObjects(stars: SurveyStar[], field: SurveyField) {
     const shared = vars.filter((x) => x.star !== star && Math.abs(x.season.ls!.period / v.period - 1) < 0.02).length;
     const near = (field.vsx ?? []).find((x) => x !== own && x.period && periodsMatch(v.period, x.period, 0.02) && separation(x.ra, x.dec, star.ra, star.dec) * 60 <= CONTAM_ARCMIN);
     let census: { label: string; reason: string };
+    const fromTransits = transitVariability(star, v.period, season.days ?? 27, field.known, season.signals ?? []);
     if (own) census = { label: `Catalogued variable: ${own.name} (${own.type})`, reason: `AAVSO VSX lists it${own.period ? ` with P ${own.period} d${periodsMatch(v.period, own.period, 0.03) ? ", which this period matches" : ", unlike this period"}` : ""}` };
+    else if (fromTransits) census = { label: "Variability at a transit period", reason: fromTransits };
     else if (VARIABLE_OTYPES.has(star.otype)) census = { label: `Catalogued variable (SIMBAD: ${OTYPE_LABEL[star.otype] ?? star.otype})`, reason: "SIMBAD already types the star as variable" };
     else if (near) census = { label: `Light from ${near.name}`, reason: `VSX variable ${near.name} (${near.type}, P ${near.period} d) is ${(separation(near.ra, near.dec, star.ra, star.dec) * 60).toFixed(1)}′ away at this period` };
     else if (shared >= 2) census = { label: "Likely systematic variability", reason: `${shared} other stars vary at the same period: instrumental` };
