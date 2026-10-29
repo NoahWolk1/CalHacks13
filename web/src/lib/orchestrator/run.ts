@@ -15,7 +15,7 @@ import { AUTO, DEFAULT_PROFILE, isProfileId, normalizeProfileId, routeByKeywords
 import { crossReference, redispatchTargets, type Link } from "./crossref";
 import { MAX_FOLLOWUPS, pickFollowups } from "./followups";
 import { answerCitationSummary, checkInsight, createFindingValidator, insightSummary } from "./validate";
-import { llm, MODEL, FALLBACK } from "@/lib/llm";
+import { llm, MODEL, FALLBACK, logUsage, withUsageTally } from "@/lib/llm";
 
 const QUOTA_NOTE = "Claude quota reached for this hour — running in heuristic mode.";
 import { getJson, sleep } from "@/lib/http";
@@ -38,7 +38,11 @@ export type RunOptions = {
   quotaLimited?: boolean;
 };
 
-export async function runOrchestrator(input: RunRequest, emitRaw: (e: RunEvent) => void, signal: AbortSignal, opts: RunOptions = {}) {
+export function runOrchestrator(input: RunRequest, emitRaw: (e: RunEvent) => void, signal: AbortSignal, opts: RunOptions = {}) {
+  return withUsageTally(`orchestrator:${input.mode}`, () => orchestrate(input, emitRaw, signal, opts));
+}
+
+async function orchestrate(input: RunRequest, emitRaw: (e: RunEvent) => void, signal: AbortSignal, opts: RunOptions = {}) {
   const t0 = Date.now();
   // Once the user recalls the agents nothing more goes out (the caller ends the run for viewers).
   const emit = (e: RunEvent) => { if (!signal.aborted) emitRaw(e); };
@@ -566,6 +570,7 @@ async function llmPlan(req: RunRequest, workers: Worker[], area: Area) {
     system: `${intro}\n\nPick ONLY the worker agents needed to answer the user's question about the selected map area (usually 2–5). For each, give a one-sentence reason and an optional narrower focus (empty string if none). In "gaps", list any data the question needs that NO agent below can provide, phrased as a one-line spec for a new agent (e.g. "scrape Yelp reviews for cafés in the area"); usually empty. "rationale" is one sentence a user will read.\n\nAvailable agents:\n${roster}`,
     messages: [{ role: "user", content: `${area.prompt}\nQuestion: ${req.question}` }],
   });
+  logUsage("orch:plan", MODEL, res.usage);
   const out = res.parsed_output as (z.infer<typeof PlanSchema> & Partial<z.infer<typeof RoutedPlanSchema>>) | null;
   if (!out) throw new Error(`planner returned no parse (${res.stop_reason})`);
   const routedId = auto && isProfileId(out.profileId) ? out.profileId : null;
@@ -602,6 +607,7 @@ async function llmGapCheck(req: RunRequest, findings: Finding[], used: Worker[],
       content: `${area.prompt}\nQuestion: ${req.question}\n\nDISPATCHED AGENTS\n${dispatched}\n\nFAILED AGENTS\n${failed.map((f) => `- ${f.w.id} | ${f.w.name} | task: ${f.need.slice(0, 160)} | sources: ${f.w.dataSources.join("; ").slice(0, 160) || "?"} | ${f.detail}${f.logs.length ? ` | last log: ${f.logs.join(" | ").slice(0, 300)}` : ""}`).join("\n") || "(none)"}\n\nOTHER LIBRARY AGENTS\n${roster(library.filter((w) => !used.includes(w)))}\n\nFINDINGS SO FAR\n${compactFindings(findings, 60)}`,
     }],
   });
+  logUsage("orch:gap-check", MODEL, res.usage);
   return res.parsed_output ?? { gap: "", replaces: "", followups: [] };
 }
 
@@ -663,6 +669,7 @@ async function llmInsights(req: RunRequest, findings: Finding[], links: Link[], 
     while (seen < items.length - 1) accept(items[seen++]);
   }
   const final = await stream.finalMessage();
+  logUsage("orch:insights", MODEL, final.usage);
   const all = final.parsed_output?.insights ?? [];
   while (seen < all.length) accept(all[seen++]);
   return { insights: out, check };
@@ -684,6 +691,7 @@ async function llmAnswer(req: RunRequest, findings: Finding[], links: Link[], on
   for await (const ev of stream) {
     if (ev.type === "content_block_delta" && ev.delta.type === "text_delta") onText(ev.delta.text);
   }
+  logUsage("orch:answer", MODEL, (await stream.finalMessage()).usage);
 }
 
 function fallbackAnswer(findings: Finding[], insights: Insight[], quotaLimited = false) {

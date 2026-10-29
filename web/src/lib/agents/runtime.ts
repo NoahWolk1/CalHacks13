@@ -5,7 +5,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import type { AgentConfig, Worker, WorkerContext } from "@/lib/types";
-import { llm, WORKER_MODEL, FALLBACK } from "@/lib/llm";
+import { llm, WORKER_MODEL, FALLBACK, logUsage } from "@/lib/llm";
 import { getText } from "@/lib/http";
 import { assertPublicUrl } from "./urlGuard";
 import { placeFinding, type Geocode } from "./placement";
@@ -104,7 +104,7 @@ const EmitInput = z.object({ findings: z.array(z.unknown()) });
 function toolsFor(cfg: AgentConfig, brightData: boolean): Anthropic.Beta.Messages.BetaToolUnion[] {
   const tools: Anthropic.Beta.Messages.BetaToolUnion[] = [];
   if (cfg.tools.includes("search")) tools.push({ type: "web_search_20260209", name: "web_search", max_uses: 4 });
-  if (cfg.tools.includes("scrape")) tools.push(brightData ? FETCH_PAGE : { type: "web_fetch_20260209", name: "web_fetch", max_uses: 4, max_content_tokens: 20_000 });
+  if (cfg.tools.includes("scrape")) tools.push(brightData ? FETCH_PAGE : { type: "web_fetch_20260209", name: "web_fetch", max_uses: 4, max_content_tokens: 6_000 });
   if (cfg.tools.includes("http_get")) tools.push(HTTP_GET);
   if (cfg.tools.includes("osm")) tools.push(OSM_TOOL);
   tools.push(EMIT_FINDINGS);
@@ -159,12 +159,13 @@ export function buildGeneratedWorker(cfg: AgentConfig, deps: RuntimeDeps = defau
         model: WORKER_MODEL,
         max_tokens: 8000,
         output_config: { effort: "low" },
+        cache_control: { type: "ephemeral" }, // each turn resends the whole history: later turns read it from cache
         ...FALLBACK,
         system: SYSTEM(cfg),
         tools,
         messages,
         ...extra,
-      }, { signal: sig });
+      }, { signal: sig }).then((res) => { logUsage(`agent:${cfg.id}`, WORKER_MODEL, res.usage); return res; });
 
       const emitFindings = async (input: unknown): Promise<string> => {
         const rows = EmitInput.safeParse(input);

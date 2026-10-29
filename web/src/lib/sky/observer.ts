@@ -5,7 +5,7 @@
 import { z } from "zod";
 import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { getBuffer } from "@/lib/http";
-import { FALLBACK, llm, WORKER_MODEL } from "@/lib/llm";
+import { FALLBACK, llm, WORKER_MODEL, logUsage } from "@/lib/llm";
 import { formatDec, formatRa } from "./geom";
 import { compactObjects } from "./summary";
 import type { Cone, SkyObject, SkyObserver } from "./types";
@@ -61,6 +61,7 @@ export async function skyObserver(c: Cone, objects: SkyObject[], signal: AbortSi
       ],
     }],
   }, { signal });
+  logUsage("sky:observer", WORKER_MODEL, res.usage);
   const text = res.content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join("");
   const parsed = ObserverSchema.safeParse(JSON.parse(text));
   if (!parsed.success) throw new Error("observer output did not match schema");

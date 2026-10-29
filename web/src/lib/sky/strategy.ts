@@ -8,7 +8,7 @@
 // Follow-up agent: re-test a signal on a held-out sector, or extend a star's search with more sectors.
 import { z } from "zod";
 import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
-import { FALLBACK, llm, MODEL } from "@/lib/llm";
+import { FALLBACK, llm, MODEL, logUsage } from "@/lib/llm";
 import { separation } from "./geom";
 import { sectorsFor, type FieldStar, type LcProduct } from "./lightcurves";
 import { LABEL as OTYPE_LABEL } from "./simbad";
@@ -118,6 +118,7 @@ export async function claudePlan(c: Cone, pool: Prospect[], n: number, signal: A
     system: PLAN_SYSTEM,
     messages: [{ role: "user", content: `FIELD: RA ${c.ra.toFixed(3)}°, Dec ${c.dec.toFixed(3)}°, radius ${c.radius.toFixed(2)}°. BUDGET: ${n} stars.\n\nCANDIDATE STARS (ranked by a heuristic)\n${prospectTable(pool)}` }],
   }, { signal });
+  logUsage("sky:plan", MODEL, res.usage);
   const text = res.content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join("");
   const parsed = PlanSchema.safeParse(JSON.parse(text));
   if (!parsed.success) throw new Error("plan did not match schema");
@@ -180,6 +181,7 @@ export async function claudeReview(lines: string, items: Followable[], max: numb
     system: REVIEW_SYSTEM,
     messages: [{ role: "user", content: `FOLLOW-UP BUDGET: at most ${max} actions.\nFOLLOW-UP OPTIONS\n${items.map((i) => `${i.object.id}: ${[i.canRecheck && "recheck", i.canExtend && "extend"].filter(Boolean).join(", ") || "none"}`).join("\n")}\n\nRESULTS\n${lines}` }],
   }, { signal });
+  logUsage("sky:review", MODEL, res.usage);
   const text = res.content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join("");
   const parsed = ReviewSchema.safeParse(JSON.parse(text));
   if (!parsed.success) throw new Error("review did not match schema");
@@ -213,6 +215,7 @@ export async function claudeSurveyReview(progress: string, lines: string, valid:
     system: SURVEY_REVIEW_SYSTEM,
     messages: [{ role: "user", content: `PROGRESS\n${progress}\n\nRESULTS\n${lines}` }],
   }, { signal });
+  logUsage("sky:survey-review", MODEL, res.usage);
   const text = res.content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join("");
   const parsed = SurveyReviewSchema.safeParse(JSON.parse(text));
   if (!parsed.success) throw new Error("review did not match schema");

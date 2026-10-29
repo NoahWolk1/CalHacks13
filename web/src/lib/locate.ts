@@ -12,7 +12,7 @@ import { z } from "zod";
 import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
 import type { Feature, Position } from "geojson";
 import { getJson, sleep } from "@/lib/http";
-import { FALLBACK, llm, WORKER_MODEL } from "@/lib/llm";
+import { FALLBACK, llm, WORKER_MODEL, logUsage } from "@/lib/llm";
 import { planTiles, readTileLayers } from "@/lib/agents/workers/tiles";
 
 export const LOCATE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"] as const;
@@ -237,6 +237,7 @@ export async function locateImage(data: string, mediaType: LocateType, signal: A
       { type: "text", text: ask },
     ] }],
   }, { signal });
+  logUsage("locate", WORKER_MODEL, res.usage);
   const text = res.content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join("");
   const parsed = LocateSchema.safeParse(JSON.parse(text || "{}"));
   if (!parsed.success) throw new Error("locate output did not match schema");
