@@ -4,25 +4,30 @@
 //     3° cone, no other service needed. Rows outside the circle are dropped here.
 //  2. Optional enrichment, time-boxed: SIMBAD lists the cone's brighter stars with their TIC
 //     cross-ids (names, V mag, object type), and CAOM filtered by target_name (~0.3 s) finds their
-//     TESS-SPOC / QLP full-frame-image light curves, for stars that have no SPOC light curve.
+//     TESS-SPOC / QLP full-frame-image light curves, for stars that have no SPOC light curve, and
+//     the fainter-star FFI pipelines (TGLC, eleanor-lite, CDIPS) in a request of their own.
 //     (The same HLSPs by RA/Dec range take ~45 s: tens of thousands of rows.)
 import { getBuffer, getJson } from "@/lib/http";
 import { adqlNum, separation } from "./geom";
-import { readHdus, readTable } from "./fits";
+import { readHdus, readTable, type FitsHdu } from "./fits";
+import { median } from "./timeseries";
 import { MAST_API, mastPortalUrl } from "./telescopes";
 import { simbadTap, tidyName } from "./simbad";
 import { ticNeighbours } from "./hostStar";
 import type { Cone, SkyObject } from "./types";
 
 export type FieldStar = { tic: string; name: string; otype: string; ra: number; dec: number; vmag?: number };
-export type LcProduct = { tic: string; pipeline: "SPOC" | "TESS-SPOC" | "QLP"; sector: number; cadence: number; uri: string; ra?: number; dec?: number;
+export type Pipeline = (typeof PIPELINES)[number];
+export type LcProduct = { tic: string; pipeline: Pipeline; sector: number; cadence: number; uri: string; ra?: number; dec?: number;
   /** Time range the file covers (BTJD), when the inventory has it. */
   tmin?: number; tmax?: number };
 export type LightCurve = { tic: string; pipeline: LcProduct["pipeline"]; sector: number; time: Float64Array; flux: Float64Array; quality: Float64Array; tessmag?: number; teff?: number; radius?: number; logg?: number;
   camera?: number; ccd?: number;
   /** SPOC's estimate of the fraction of aperture flux that is the target's (PDCSAP is already corrected for the rest). */
   crowdsap?: number;
-  /** Flux-weighted centroid (pixels: SPOC MOM_CENTR1/2, QLP SAP_X/SAP_Y), for the centroid-shift test. */
+  /** Flux-weighted centroid (pixels: SPOC MOM_CENTR1/2, QLP SAP_X/SAP_Y), for the centroid-shift test.
+   *  None from TGLC (no centroid columns), eleanor-lite or CDIPS (their position columns are the
+   *  aperture's tracked or whole-cutout positions, not the target's measured centroid). */
   cx?: Float64Array; cy?: Float64Array;
   /** QLP's small- and large-aperture fluxes, for the aperture-dependence test. */
   small?: Float64Array; large?: Float64Array };
@@ -35,7 +40,18 @@ export const ENRICH_TIMEOUT_MS = 8_000;
 export const LC_TIMEOUT_MS = 10_000;
 /** How long the quick inventory waits on MAST's box search before also asking by TIC id. */
 const BOX_FAST_MS = 4_000;
-const PIPELINES = ["SPOC", "TESS-SPOC", "QLP"] as const;
+/** Best first. SPOC 2-min, then the FFI pipelines: TESS-SPOC and QLP stop near Tmag 13.5; TGLC
+ *  (PSF fits on Gaia positions, decontaminated) and GSFC eleanor-lite reach Tmag 16, but MAST has
+ *  them for year 1 only (sectors 1-12 seen, none in 14-40; checked 2026-10-29); CDIPS covers
+ *  cluster and young-star targets only (sectors 14-55 seen). TGLC above eleanor-lite: on TOI-4988
+ *  (Tmag 14.9) TGLC's decontaminated flux keeps the catalogued 46 ppt transit depth, eleanor-lite's
+ *  shows 8 ppt (a crowded aperture). */
+export const PIPELINES = ["SPOC", "TESS-SPOC", "QLP", "TGLC", "GSFC-ELEANOR-LITE", "CDIPS"] as const;
+const BRIGHT: Pipeline[] = ["SPOC", "TESS-SPOC", "QLP"];
+/** Asked for in a request of their own: MAST answers {TESS-SPOC, QLP} and {TGLC, eleanor-lite, CDIPS}
+ *  in ~0.5 s each by TIC id, but all of them in one request in 5-30 s (eleanor-lite next to the
+ *  others is what does it; measured 2026-10-29 on fresh 25-id lists). */
+const FAINT: Pipeline[] = ["TGLC", "GSFC-ELEANOR-LITE", "CDIPS"];
 
 const mastForm = (request: unknown): RequestInit => ({
   method: "POST",
@@ -75,8 +91,10 @@ export function spocBoxRequest(c: Cone, page = 1): RequestInit {
   });
 }
 
-/** CAOM filtered by TIC id (target_name): the QLP / TESS-SPOC full-frame-image light curves. */
-export function hlspRequest(tics: string[]): RequestInit {
+/** CAOM filtered by TIC id (target_name): the QLP / TESS-SPOC full-frame-image light curves (or,
+ *  with `provenances`, others: see FAINT). TGLC and CDIPS name their files by Gaia id, but MAST's
+ *  target_name is the bare TIC id for all of them. */
+export function hlspRequest(tics: string[], provenances: Pipeline[] = ["TESS-SPOC", "QLP"]): RequestInit {
   return mastForm({
     service: "Mast.Caom.Filtered", format: "json", pagesize: 2000, page: 1,
     params: {
@@ -84,12 +102,15 @@ export function hlspRequest(tics: string[]): RequestInit {
       filters: [
         { paramName: "obs_collection", values: ["HLSP"] },
         { paramName: "dataproduct_type", values: ["timeseries"] },
-        { paramName: "provenance_name", values: ["TESS-SPOC", "QLP"] },
+        { paramName: "provenance_name", values: provenances },
         { paramName: "target_name", values: tics },
       ],
     },
   });
 }
+
+/** The fainter-star FFI pipelines for a list of TIC ids (see FAINT for why it's a separate request). */
+export const faintRequest = (tics: string[]) => hlspRequest(tics, FAINT);
 
 export function parseLcProducts(json: unknown): LcProduct[] {
   const j = json as { status?: string; data?: Record<string, unknown>[] } | null;
@@ -99,6 +120,7 @@ export function parseLcProducts(json: unknown): LcProduct[] {
     const uri = typeof r.dataURL === "string" ? r.dataURL : "";
     const pipeline = PIPELINES.find((p) => p === r.provenance_name);
     // Light-curve files only (SPOC 20 s "fast-lc" files are skipped: 120 s carries the same transits at 1/6 the size).
+    // eleanor-lite's are _lc.fits, TGLC's and CDIPS's _llc.fits.
     if (!pipeline || !/(_lc|_llc)\.fits$/.test(uri) || /fast-lc/.test(uri)) continue;
     const p: LcProduct = { tic: String(r.target_name).replace(/^0+/, ""), pipeline, sector: Number(r.sequence_number) || 0, cadence: Number(r.t_exptime) || 0, uri };
     if (typeof r.s_ra === "number" && typeof r.s_dec === "number") { p.ra = r.s_ra; p.dec = r.s_dec; }
@@ -142,10 +164,10 @@ export function mergeStars(c: Cone, simbad: FieldStar[], products: LcProduct[]):
   return [...out.values()];
 }
 
-const RANK: Record<LcProduct["pipeline"], number> = { SPOC: 0, "TESS-SPOC": 1, QLP: 2 };
+const RANK = Object.fromEntries(PIPELINES.map((p, i) => [p, i])) as Record<Pipeline, number>;
 
-/** One light curve per star, best pipeline first (SPOC 2-min > TESS-SPOC > QLP), latest sector
- *  within a pipeline. SPOC targets first (they were picked for TESS's planet search), then nearest
+/** One light curve per star, best pipeline first (PIPELINES order: SPOC 2-min > TESS-SPOC > QLP >
+ *  TGLC > eleanor-lite > CDIPS), latest sector within a pipeline. SPOC targets first (they were picked for TESS's planet search), then nearest
  *  the cone centre. At most `cap` stars. */
 export function pickLightCurves(c: Cone, stars: FieldStar[], products: LcProduct[], cap: number): { star: FieldStar; product: LcProduct }[] {
   const best = new Map<string, LcProduct>();
@@ -198,7 +220,8 @@ export function ticProductsRequest(tic: string): RequestInit {
   return ticListRequest([tic]);
 }
 
-/** TESS + HLSP light curves for a list of TIC ids (one target_name filter: fast even when the box search hangs). */
+/** TESS + HLSP light curves for a list of TIC ids (one target_name filter: fast even when the box
+ *  search hangs). SPOC, TESS-SPOC and QLP; the faint pipelines are faintRequest's. */
 export function ticListRequest(tics: string[]): RequestInit {
   return mastForm({
     service: "Mast.Caom.Filtered", format: "json", pagesize: 5000, page: 1,
@@ -208,11 +231,21 @@ export function ticListRequest(tics: string[]): RequestInit {
         { paramName: "obs_collection", values: ["TESS", "HLSP"] },
         { paramName: "dataproduct_type", values: ["timeseries"] },
         // Only the pipelines read here: bright stars carry dozens of other HLSPs, which slow MAST down a lot.
-        { paramName: "provenance_name", values: [...PIPELINES] },
+        { paramName: "provenance_name", values: BRIGHT },
         { paramName: "target_name", values: tics },
       ],
     },
   });
+}
+
+/** Every pipeline's light curves for a list of TIC ids: the SPOC / TESS-SPOC / QLP request and the
+ *  faint-pipeline one side by side. Only the first is required; the faint one failing costs fainter
+ *  stars their light curves, nothing else. */
+async function productsForTics(tics: string[], signal: AbortSignal, timeoutMs: number, bright: (t: string[]) => RequestInit = ticListRequest): Promise<LcProduct[]> {
+  const faint = getJson(MAST_API, { init: faintRequest(tics), timeoutMs, signal, retries: 1 }).then(parseLcProducts)
+    .catch((e: Error) => { if (!signal.aborted) console.warn(`[sky] faint-star FFI lookup failed: ${e.message.slice(0, 80)}`); return [] as LcProduct[]; });
+  const main = parseLcProducts(await getJson(MAST_API, { init: bright(tics), timeoutMs, signal, retries: 1 }));
+  return [...main, ...(await faint)];
 }
 
 /** MAST's box search on the TESS tables hangs in dense fields now and then; its TIC-id filter doesn't.
@@ -227,7 +260,7 @@ export async function productsByTic(c: Cone, signal: AbortSignal, cap = 200, chu
   await Promise.all(Array.from({ length: Math.min(4, chunks.length) }, async () => {
     while (next < chunks.length) {
       const ids = chunks[next++];
-      try { out.push(...parseLcProducts(await getJson(MAST_API, { init: ticListRequest(ids), timeoutMs: 15_000, signal, retries: 1 }))); }
+      try { out.push(...(await productsForTics(ids, signal, 15_000))); }
       catch { failed++; }
     }
   }));
@@ -236,14 +269,65 @@ export async function productsByTic(c: Cone, signal: AbortSignal, cap = 200, chu
 }
 
 export async function ticProducts(tic: string, signal: AbortSignal): Promise<LcProduct[]> {
-  return parseLcProducts(await getJson(MAST_API, { init: ticProductsRequest(tic), timeoutMs: 20_000, signal, retries: 1 })).filter((p) => p.tic === tic);
+  return (await productsForTics([tic], signal, 20_000)).filter((p) => p.tic === tic);
 }
 
-/** Light-curve columns from a SPOC / TESS-SPOC (PDCSAP_FLUX) or QLP (KSPSAP_FLUX) FITS file. */
+/** Time (BTJD), detrended flux and a 0-is-good quality per cadence from the fainter-star FFI HLSPs
+ *  (columns and flags read off real files, 2026-10-29). None has a measured centroid or a
+ *  small/large aperture pair, so the vetter's centroid and aperture tests skip them. */
+function faintColumns(buf: ArrayBuffer, lc: FitsHdu, pipeline: Pipeline): Pick<LightCurve, "time" | "flux" | "quality"> {
+  if (pipeline === "TGLC") {
+    // cal_psf_flux / cal_aper_flux: TGLC's PSF-fit and 3x3-aperture fluxes, both decontaminated (fitted
+    // neighbours removed), normalised and detrended (1-day biweight). The quieter one by TGLC's own
+    // per-file scatter (CPSF_ERR / CAPE_ERR). Bad: SPOC's FFI flags (TESS_flags) or TGLC's (1 = bad).
+    const t = readTable(buf, lc, ["time", "cal_psf_flux", "cal_aper_flux", "TESS_flags", "TGLC_flags"]), c = t.columns;
+    const flux = !c.cal_psf_flux || Number(lc.header.CAPE_ERR) < Number(lc.header.CPSF_ERR) ? c.cal_aper_flux : c.cal_psf_flux;
+    if (!c.time || !flux) throw new Error("TGLC light curve lacks time/cal_psf_flux");
+    return { time: c.time, flux, quality: Float64Array.from(c.time, (_, i) => (c.TESS_flags?.[i] ?? 0) + (c.TGLC_flags?.[i] ? 1 << 20 : 0)) };
+  }
+  if (pipeline === "GSFC-ELEANOR-LITE") {
+    // CORR_FLUX: eleanor's systematics-corrected flux (a third of RAW/PCA_FLUX's scatter on a Tmag 14.5
+    // star). QUALITY is SPOC's bits plus eleanor's own (2^17, 2^18), 0 = good; flagged cadences hold
+    // garbage (1e14) in CORR_FLUX, so the mask matters.
+    const t = readTable(buf, lc, ["TIME", "CORR_FLUX", "QUALITY"]), c = t.columns;
+    if (!c.TIME || !c.CORR_FLUX) throw new Error("eleanor light curve lacks TIME/CORR_FLUX");
+    return { time: c.TIME, flux: c.CORR_FLUX, quality: c.QUALITY ?? new Float64Array(t.rows) };
+  }
+  // CDIPS: TMID_BJD is full BJD (BJDREFI 0); PCA1-3 are PCA-detrended magnitudes in three apertures,
+  // IRQ1-3 a quality letter each ("G" good). The aperture with the least point-to-point scatter, as flux.
+  const names = [1, 2, 3].flatMap((k) => [`PCA${k}`, `IRQ${k}`]);
+  const t = readTable(buf, lc, ["TMID_BJD", ...names]), c = t.columns;
+  if (!c.TMID_BJD) throw new Error("CDIPS light curve lacks TMID_BJD");
+  const G = 71;
+  const scatter = (k: number) => {
+    const m = c[`PCA${k}`], q = c[`IRQ${k}`], d: number[] = [];
+    let prev = NaN;
+    if (m) for (let i = 0; i < t.rows; i++) if (Number.isFinite(m[i]) && (!q || q[i] === G)) { if (Number.isFinite(prev)) d.push(Math.abs(m[i] - prev)); prev = m[i]; }
+    return d.length > 10 ? median(d) : Infinity;
+  };
+  const k = [1, 2, 3].sort((a, b) => scatter(a) - scatter(b))[0], m = c[`PCA${k}`], q = c[`IRQ${k}`];
+  if (!m) throw new Error("CDIPS light curve lacks PCA1-3");
+  const ref = Number(lc.header.BJDREFI ?? 0) + Number(lc.header.BJDREFF ?? 0) || 0;
+  return {
+    time: Float64Array.from(c.TMID_BJD, (x) => x + ref - 2457000),
+    flux: Float64Array.from(m, (x) => 10 ** (-0.4 * (x - 10))),
+    quality: Float64Array.from(m, (_, i) => (!q || q[i] === G ? 0 : 1)),
+  };
+}
+
+/** Light-curve columns from a SPOC / TESS-SPOC (PDCSAP_FLUX) or QLP (KSPSAP_FLUX) FITS file, or
+ *  a TGLC / eleanor-lite / CDIPS one (faintColumns). */
 export function parseLightCurve(buf: ArrayBuffer, product: Pick<LcProduct, "tic" | "pipeline" | "sector">): LightCurve {
   const hdus = readHdus(buf);
   const lc = hdus.find((h) => h.header.EXTNAME === "LIGHTCURVE") ?? hdus[1];
   if (!lc) throw new Error("no LIGHTCURVE extension");
+  if (FAINT.includes(product.pipeline)) {
+    const h0 = hdus[0].header, pos = (v: unknown) => (typeof v === "number" && v > 0 ? v : undefined);
+    // CDIPS carries the TIC's stellar parameters as TIC*; eleanor-lite's TMAG is 999 when unknown, so it isn't read.
+    return { tic: product.tic, pipeline: product.pipeline, sector: product.sector, ...faintColumns(buf, lc, product.pipeline),
+      tessmag: pos(h0.TESSMAG), teff: pos(h0.TEFF ?? h0.TICTEFF), radius: pos(h0.RADIUS ?? h0.TICRAD), logg: pos(h0.LOGG ?? h0.TICLOGG),
+      camera: pos(h0.CAMERA ?? lc.header.CAMERA), ccd: pos(h0.CCD ?? lc.header.CCD) };
+  }
   // QLP renamed its detrended flux KSPSAP_FLUX -> DET_FLUX in later sectors (DET_FLUX in sector 104, 2026).
   const cols = product.pipeline === "QLP" ? ["KSPSAP_FLUX", "DET_FLUX"] : ["PDCSAP_FLUX"];
   const cent = product.pipeline === "QLP" ? ["SAP_X", "SAP_Y"] : ["MOM_CENTR1", "MOM_CENTR2"];
@@ -273,7 +357,7 @@ export type FieldInventory = { stars: FieldStar[]; products: LcProduct[]; simbad
 async function enrich(c: Cone, signal: AbortSignal): Promise<{ stars: FieldStar[]; hlsp: LcProduct[] }> {
   const stars = parseFieldStars(await simbadTap(fieldStarsQuery(c), { timeoutMs: ENRICH_TIMEOUT_MS, signal }));
   if (!stars.length) return { stars, hlsp: [] };
-  const hlsp = parseLcProducts(await getJson(MAST_API, { init: hlspRequest(stars.map((s) => s.tic)), timeoutMs: 8_000, signal, retries: 1 }));
+  const hlsp = await productsForTics(stars.map((s) => s.tic), signal, 8_000, (t) => hlspRequest(t));
   return { stars, hlsp };
 }
 
@@ -306,7 +390,10 @@ export function fieldInventory(c: Cone, signal: AbortSignal): Promise<FieldInven
       .catch((e: Error) => { console.warn(`[sky] SIMBAD star enrichment failed: ${e.message}`); return null; })
       .finally(() => clearTimeout(timer));
     if (!spoc && !extra) throw new Error("MAST light-curve inventory and SIMBAD star list both failed");
-    const products = [...(spoc ?? []).filter((p) => p.ra === undefined || p.dec === undefined || separation(c.ra, c.dec, p.ra, p.dec) <= c.radius), ...(extra?.hlsp ?? [])];
+    // The TIC-id lookup and the SIMBAD enrichment can both return a star's FFI files.
+    const seen = new Set<string>();
+    const products = [...(spoc ?? []).filter((p) => p.ra === undefined || p.dec === undefined || separation(c.ra, c.dec, p.ra, p.dec) <= c.radius), ...(extra?.hlsp ?? [])]
+      .filter((p) => !seen.has(p.uri) && !!seen.add(p.uri));
     return { stars: mergeStars(c, extra?.stars ?? [], products), products, simbad: !!extra };
   })();
   for (const [k, v] of inflight) if (Date.now() - v.at > 60_000) inflight.delete(k);
@@ -315,7 +402,7 @@ export function fieldInventory(c: Cone, signal: AbortSignal): Promise<FieldInven
   return p;
 }
 
-const PIPELINE_LABEL: Record<LcProduct["pipeline"], string> = { SPOC: "SPOC 2-min", "TESS-SPOC": "TESS-SPOC FFI", QLP: "QLP FFI" };
+const PIPELINE_LABEL: Record<Pipeline, string> = { SPOC: "SPOC 2-min", "TESS-SPOC": "TESS-SPOC FFI", QLP: "QLP FFI", TGLC: "TGLC FFI", "GSFC-ELEANOR-LITE": "eleanor-lite FFI", CDIPS: "CDIPS FFI" };
 
 /** The Telescope Archive agent's fast answer: which TESS light curves exist for the cone's stars. */
 export function inventoryObject(c: Cone, inv: FieldInventory): SkyObject | null {
@@ -361,9 +448,10 @@ export async function surveyInventory(c: Cone, signal: AbortSignal): Promise<Fie
     }
   } catch (e) {
     if (signal.aborted) throw e;
-    // MAST's box search timed out: the cone's TIC stars by id instead (every pipeline, brightest 2000).
+    // MAST's box search timed out: the cone's TIC stars by id instead (brightest 2000). SPOC rows, and the
+    // faint pipelines' (TIC stars SIMBAD's V-limited list below never has); TESS-SPOC/QLP come from that list.
     spoc.length = 0;
-    spoc.push(...(await productsByTic(c, signal, SURVEY_STAR_CAP)).filter((p) => p.pipeline === "SPOC"));
+    spoc.push(...(await productsByTic(c, signal, SURVEY_STAR_CAP)).filter((p) => p.pipeline === "SPOC" || FAINT.includes(p.pipeline)));
     notes.push(`MAST's position search timed out: light curves looked up by TIC id for the ${SURVEY_STAR_CAP} brightest TIC stars instead`);
   }
   let stars: FieldStar[] = [];
@@ -377,7 +465,7 @@ export async function surveyInventory(c: Cone, signal: AbortSignal): Promise<Fie
     await Promise.all(Array.from({ length: Math.min(3, chunks.length) }, async () => {
       while (next < chunks.length) {
         const chunk = chunks[next++];
-        try { hlsp.push(...parseLcProducts(await getJson(MAST_API, { init: hlspRequest(chunk), timeoutMs: 20_000, signal, retries: 1 }))); }
+        try { hlsp.push(...(await productsForTics(chunk, signal, 20_000, (t) => hlspRequest(t)))); }
         catch { failed++; }
       }
     }));
@@ -385,11 +473,14 @@ export async function surveyInventory(c: Cone, signal: AbortSignal): Promise<Fie
   } catch (e) {
     notes.push(`SIMBAD star list failed (${(e as Error).message.slice(0, 80)}): SPOC 2-min targets only`);
   }
-  const products = [...spoc.filter((p) => p.ra === undefined || p.dec === undefined || separation(c.ra, c.dec, p.ra, p.dec) <= c.radius), ...hlsp];
+  // The same faint-pipeline file can come from both lookups.
+  const seen = new Set<string>();
+  const products = [...spoc.filter((p) => p.ra === undefined || p.dec === undefined || separation(c.ra, c.dec, p.ra, p.dec) <= c.radius), ...hlsp]
+    .filter((p) => !seen.has(p.uri) && !!seen.add(p.uri));
   return { stars: mergeStars(c, stars, products), products, simbad: stars.length > 0, notes };
 }
 
-/** Every sector of a star, best pipeline per sector (SPOC > TESS-SPOC > QLP), grouped into seasons of
+/** Every sector of a star, best pipeline per sector (PIPELINES order), grouped into seasons of
  *  up to `per` sectors spanning fewer than SECTOR_SPAN sector numbers, latest season first. Each season
  *  is searched on its own; a signal seen in several seasons is independently confirmed. */
 export function seasonsFor(products: LcProduct[], tic: string, per = 4): LcProduct[][] {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { analyseLightCurve } from "./analysis";
 import { bls, blsDetected, measureSignal } from "./bls";
-import { coneBox, mastDownloadUrl, mergeStars, parseLcProducts, parseLightCurve, pickLightCurves, ticListRequest } from "./lightcurves";
+import { coneBox, faintRequest, mastDownloadUrl, mergeStars, parseLcProducts, parseLightCurve, pickLightCurves, seasonsFor, ticListRequest, type LcProduct } from "./lightcurves";
 import { periodsMatch, toiQuery, vetSignal } from "./vetting";
 import { readHdus, readTable } from "./fits";
 import { isVariable, lombScargle } from "./lombscargle";
@@ -116,7 +116,109 @@ function fitsFile(rows: [number, number, number][], fluxName = "PDCSAP_FLUX") {
   return out.buffer;
 }
 
+/** A FITS file with any columns: D/E/J/I numbers, or "A" for 1-char strings. `lc` = LIGHTCURVE header
+ *  cards (EXTNAME is left out when `extname` is false, as eleanor-lite's files do). */
+function fitsTable(cols: { name: string; form: "D" | "E" | "J" | "I" | "A"; values: (number | string)[] }[], opts: { primary?: (string | number)[][]; lc?: (string | number)[][]; extname?: boolean } = {}) {
+  const card = (s: string) => s.padEnd(80, " ");
+  const header = (cards: string[]) => {
+    const all = [...cards, "END"].map(card).join("");
+    return all.padEnd(Math.ceil(all.length / 2880) * 2880, " ");
+  };
+  const kv = (k: string, v: string | number) => `${k.padEnd(8)}= ${typeof v === "string" ? `'${v}'`.padEnd(20) : String(v).padStart(20)}`;
+  const size = { D: 8, E: 4, J: 4, I: 2, A: 1 };
+  const rowBytes = cols.reduce((n, c) => n + size[c.form], 0), rows = cols[0].values.length;
+  const primary = header(["SIMPLE  =                    T", kv("BITPIX", 8), kv("NAXIS", 0), ...(opts.primary ?? []).map(([k, v]) => kv(String(k), v))]);
+  const table = header([kv("XTENSION", "BINTABLE"), kv("BITPIX", 8), kv("NAXIS", 2), kv("NAXIS1", rowBytes), kv("NAXIS2", rows), kv("PCOUNT", 0), kv("GCOUNT", 1), kv("TFIELDS", cols.length),
+    ...cols.flatMap((c, i) => [kv(`TTYPE${i + 1}`, c.name), kv(`TFORM${i + 1}`, c.form === "A" ? "1A" : c.form)]),
+    ...(opts.extname === false ? [] : [kv("EXTNAME", "LIGHTCURVE")]), ...(opts.lc ?? []).map(([k, v]) => kv(String(k), v))]);
+  const data = new ArrayBuffer(Math.ceil((rowBytes * rows) / 2880) * 2880);
+  const v = new DataView(data);
+  for (let r = 0; r < rows; r++) {
+    let off = r * rowBytes;
+    for (const c of cols) {
+      const x = c.values[r];
+      if (c.form === "D") v.setFloat64(off, Number(x));
+      else if (c.form === "E") v.setFloat32(off, Number(x));
+      else if (c.form === "J") v.setInt32(off, Number(x));
+      else if (c.form === "I") v.setInt16(off, Number(x));
+      else v.setUint8(off, String(x).charCodeAt(0));
+      off += size[c.form];
+    }
+  }
+  const enc = new TextEncoder();
+  const out = new Uint8Array(primary.length + table.length + data.byteLength);
+  out.set(enc.encode(primary), 0);
+  out.set(enc.encode(table), primary.length);
+  out.set(new Uint8Array(data), primary.length + table.length);
+  return out.buffer;
+}
+
+describe("faint-star FFI light curves (column maps read off real TGLC, eleanor-lite and CDIPS files)", () => {
+  const t = [1491.64, 1491.66, 1491.68, 1491.70];
+  it("TGLC: lower-case time, the quieter calibrated flux by TGLC's own error, either flag column masks", () => {
+    const cols = [
+      { name: "time", form: "D" as const, values: t },
+      { name: "cal_psf_flux", form: "E" as const, values: [1, 0.99, 1.01, 1] },
+      { name: "cal_aper_flux", form: "E" as const, values: [1.002, 0.98, 1.02, 1.001] },
+      { name: "TESS_flags", form: "I" as const, values: [32, 0, 0, 0] },
+      { name: "TGLC_flags", form: "I" as const, values: [0, 0, 1, 0] },
+    ];
+    const prim: (string | number)[][] = [["TESSMAG", 14.54], ["CAMERA", 2], ["CCD", 3]];
+    const lc = parseLightCurve(fitsTable(cols, { primary: prim, lc: [["CPSF_ERR", 0.008], ["CAPE_ERR", 0.007]] }), { tic: "218795833", pipeline: "TGLC", sector: 7 });
+    expect([...lc.time]).toEqual(t);
+    expect(lc.flux[0]).toBeCloseTo(1.002, 5); // aperture: CAPE_ERR < CPSF_ERR
+    expect([...lc.quality].map((q) => q !== 0)).toEqual([true, false, true, false]);
+    expect(lc).toMatchObject({ tessmag: 14.54, camera: 2, ccd: 3 });
+    expect(lc.cx).toBeUndefined();
+    const psf = parseLightCurve(fitsTable(cols, { lc: [["CPSF_ERR", 0.006], ["CAPE_ERR", 0.007]] }), { tic: "1", pipeline: "TGLC", sector: 7 });
+    expect(psf.flux[0]).toBeCloseTo(1, 5);
+    // Cleaning keeps the two unflagged cadences only.
+    expect(cleanSeries(lc.time, lc.flux, lc.quality).t.length).toBe(2);
+  });
+  it("eleanor-lite: CORR_FLUX and its QUALITY (eleanor's own bits too), no EXTNAME, TMAG 999 not taken", () => {
+    const buf = fitsTable([
+      { name: "TIME", form: "D", values: t },
+      { name: "RAW_FLUX", form: "E", values: [135, 138, 136, 135] },
+      { name: "CORR_FLUX", form: "E", values: [4.8e14, 134.4, 134.5, 134.6] },
+      { name: "QUALITY", form: "J", values: [262144, 0, 131072, 0] },
+    ], { extname: false, primary: [["TMAG", 999], ["CAMERA", 2], ["CCD", 3]] });
+    const lc = parseLightCurve(buf, { tic: "218795833", pipeline: "GSFC-ELEANOR-LITE", sector: 7 });
+    expect(lc.flux[1]).toBeCloseTo(134.4, 3);
+    expect([...lc.quality]).toEqual([262144, 0, 131072, 0]);
+    expect(lc.tessmag).toBeUndefined();
+    const s = cleanSeries(lc.time, lc.flux, lc.quality);
+    expect([...s.t]).toEqual([1491.66, 1491.70]); // the 1e14 garbage sits on a flagged cadence
+  });
+  it("CDIPS: full-BJD TMID_BJD to BTJD, PCA magnitudes to flux in the quietest aperture, IRQ letters", () => {
+    const n = 40, g = rng(4);
+    const tt = Array.from({ length: n }, (_, i) => 2459228.25 + i / 144);
+    // Aperture 2 is the quietest; a 0.1 mag dip at cadence 20 (≈ 9% in flux); cadence 5 flagged "X".
+    const mags = (k: number) => tt.map((_, i) => 15 + (k === 2 ? 0.001 : 0.01) * g() + (i === 20 ? 0.1 : 0));
+    const buf = fitsTable([
+      { name: "TMID_BJD", form: "D", values: tt },
+      ...[1, 2, 3].flatMap((k) => [
+        { name: `PCA${k}`, form: "D" as const, values: mags(k) },
+        { name: `IRQ${k}`, form: "A" as const, values: tt.map((_, i) => (i === 5 ? "X" : "G")) },
+      ]),
+    ], { primary: [["TESSMAG", 14.43], ["TICTEFF", 3324], ["TICRAD", 0.355], ["TICLOGG", 4.87], ["BJDREFI", 0]] });
+    const lc = parseLightCurve(buf, { tic: "218795833", pipeline: "CDIPS", sector: 34 });
+    expect(lc.time[0]).toBeCloseTo(2228.25, 6);
+    expect(lc.quality[5]).toBe(1);
+    expect(lc.quality.filter((q) => q !== 0)).toHaveLength(1);
+    const s = cleanSeries(lc.time, lc.flux, lc.quality);
+    expect(robustStd(s.f)).toBeLessThan(2e-3); // aperture 2 picked
+    expect(1 - s.f[19]).toBeCloseTo(1 - 10 ** -0.04, 2); // cadence 20 is index 19 once 5 is dropped
+    expect(lc).toMatchObject({ tessmag: 14.43, teff: 3324, radius: 0.355, logg: 4.87 });
+  });
+});
+
 describe("FITS reader", () => {
+  it("reads 1-char string columns as their character code", () => {
+    const buf = fitsTable([{ name: "IRQ1", form: "A", values: ["G", "X"] }, { name: "F", form: "E", values: [1, 2] }]);
+    const tab = readTable(buf, readHdus(buf)[1], ["IRQ1", "F"]);
+    expect([...tab.columns.IRQ1]).toEqual([71, 88]);
+    expect([...tab.columns.F]).toEqual([1, 2]);
+  });
   it("reads headers and big-endian binary-table columns", () => {
     const buf = fitsFile([[1500.5, 1234.5, 0], [1500.6, NaN, 0], [1500.7, 1200, 128]]);
     const hdus = readHdus(buf);
@@ -210,6 +312,39 @@ describe("TESS light-curve inventory", () => {
       row("123", "SPOC", 6, "mast:TESS/product/tess-dvt.fits"),
     ],
   };
+  // Real MAST rows (TOI-519, TIC 218795833, 2026-10-29): target_name is the bare TIC id for every pipeline.
+  const faint = {
+    status: "COMPLETE",
+    data: [
+      row("218795833", "TGLC", 7, "mast:HLSP/tglc/s0007/cam2-ccd3/0057/0748/5527/4506/hlsp_tglc_tess_ffi_gaiaid-5707485527450614656-s0007-cam2-ccd3_tess_v1_llc.fits"),
+      row("218795833", "GSFC-ELEANOR-LITE", 8, "mast:HLSP/gsfc-eleanor-lite/s0008/0000/0002/1879/5833/hlsp_gsfc-eleanor-lite_tess_ffi_s0008-0000000218795833_tess_v1.0_lc.fits"),
+      row("218795833", "CDIPS", 34, "mast:HLSP/cdips/s0034/cam2_ccd3/hlsp_cdips_tess_ffi_gaiatwo0005707485527450614656-s0034-cam2-ccd3_tess_v01_llc.fits"),
+      row("218795833", "T16", 7, "mast:HLSP/t16/s0007/cam2-ccd3/0057/0748/5527/4506/hlsp_t16_tess_ffi_s0007-cam2-ccd3-05707485527450614656_tess_v01_llc.fits"),
+      row("218795833", "TARS", 7, "mast:HLSP/tars/sec_7_cam_2_ccd_3/hlsp_tars_tess_ffi_s0007-0000000218795833_tess_v01_lc.fits"),
+    ],
+  };
+  it("reads TGLC, eleanor-lite and CDIPS products, and no other HLSPs", () => {
+    expect(parseLcProducts(faint).map((x) => `${x.tic}:${x.pipeline}:${x.sector}`)).toEqual(["218795833:TGLC:7", "218795833:GSFC-ELEANOR-LITE:8", "218795833:CDIPS:34"]);
+  });
+  it("ranks SPOC > TESS-SPOC > QLP > TGLC > eleanor-lite > CDIPS, and faint stars still get one", () => {
+    const p = (tic: string, pipeline: LcProduct["pipeline"], sector: number): LcProduct => ({ tic, pipeline, sector, cadence: 1800, uri: `${tic}-${pipeline}-${sector}`, ra: 87, dec: 0.3 });
+    const star = (tic: string) => ({ tic, name: `TIC ${tic}`, otype: "", ra: 87, dec: 0.3 });
+    const products = [p("1", "CDIPS", 34), p("1", "GSFC-ELEANOR-LITE", 9), p("1", "TGLC", 7), p("1", "QLP", 61),
+      p("2", "CDIPS", 34), p("2", "GSFC-ELEANOR-LITE", 8), p("2", "TGLC", 8),
+      p("3", "CDIPS", 40), p("3", "GSFC-ELEANOR-LITE", 8),
+      p("4", "CDIPS", 40)];
+    const picks = pickLightCurves(cone, ["1", "2", "3", "4"].map(star), products, 10);
+    expect(picks.map((x) => `${x.star.tic}:${x.product.pipeline}`)).toEqual(["1:QLP", "2:TGLC", "3:GSFC-ELEANOR-LITE", "4:CDIPS"]);
+    // Per sector, the better pipeline: TGLC over eleanor-lite in sector 8.
+    expect(seasonsFor(products, "2").flat().map((x) => `${x.pipeline}${x.sector}`)).toEqual(["CDIPS34", "TGLC8"]);
+  });
+  it("asks for the faint pipelines in their own HLSP-only request", () => {
+    const req = JSON.parse(new URLSearchParams(String(faintRequest(["218795833"]).body)).get("request")!);
+    const f = Object.fromEntries(req.params.filters.map((x: { paramName: string; values: unknown }) => [x.paramName, x.values]));
+    expect(f).toMatchObject({ obs_collection: ["HLSP"], provenance_name: ["TGLC", "GSFC-ELEANOR-LITE", "CDIPS"], target_name: ["218795833"] });
+    const bright = JSON.parse(new URLSearchParams(String(ticListRequest(["1"]).body)).get("request")!);
+    expect(bright.params.filters[2].values).toEqual(["SPOC", "TESS-SPOC", "QLP"]);
+  });
   it("keeps light-curve files, skips 20 s fast cadence and other products", () => {
     const p = parseLcProducts(json);
     expect(p.map((x) => `${x.tic}:${x.pipeline}:${x.sector}`)).toEqual(["282199717:SPOC:33", "282199717:SPOC:87", "158734620:QLP:6", "999:SPOC:6"]);

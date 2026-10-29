@@ -276,7 +276,7 @@ export async function runAnalysis(c: Cone, signal: AbortSignal, emit: (e: SkyEve
   const pool0 = prospects(c, inv.stars, inv.products, knownAll, vsx ?? []);
   if (!pool0.length) {
     const msg = inv.stars.length
-      ? `None of the ${inv.stars.length} stars found here has a TESS SPOC, TESS-SPOC or QLP light curve at MAST.`
+      ? `None of the ${inv.stars.length} stars found here has a TESS light curve at MAST (SPOC, TESS-SPOC, QLP, TGLC, eleanor-lite or CDIPS).`
       : "MAST has no TESS SPOC light curves in this cone and SIMBAD lists no bright stars with TIC ids, so there are no light curves to analyse.";
     report("lightcurves", "empty", msg, Date.now() - start);
     return done({ note: msg });

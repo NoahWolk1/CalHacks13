@@ -1,4 +1,5 @@
 // Shared types for the /sky page: a cone on the celestial sphere and what sky agents found in it.
+import type { Pipeline } from "./lightcurves";
 
 export type Cone = { ra: number; dec: number; radius: number }; // degrees, ICRS
 
@@ -169,7 +170,7 @@ export type SurveySeason = {
   sectors: number[];
   pipeline: string;
   /** The light-curve files (MAST URIs), one per sector. */
-  files: { sector: number; pipeline: "SPOC" | "TESS-SPOC" | "QLP"; uri: string }[];
+  files: { sector: number; pipeline: Pipeline; uri: string }[];
   status: "pending" | "ok" | "error";
   error?: string;
   /** Failed downloads so far (MAST times out now and then; a season gets one more try). */

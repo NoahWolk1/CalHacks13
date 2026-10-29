@@ -39,7 +39,7 @@ export const VET_MAX_SECTORS = 16;
 const EXTRA_PIPELINE_SECTORS = 2;
 /** 2-min light curves are binned to 5 min: ingress stays resolved for most transits, the arithmetic stays fast. */
 const BIN_DAYS = 5 / 1440;
-const RANK: Record<LcProduct["pipeline"], number> = { SPOC: 0, "TESS-SPOC": 1, QLP: 2 };
+const RANK: Record<LcProduct["pipeline"], number> = { SPOC: 0, "TESS-SPOC": 1, QLP: 2, TGLC: 3, "GSFC-ELEANOR-LITE": 4, CDIPS: 5 };
 const R_EARTH_PER_RSUN = 109.1;
 const ARCSEC_PER_PIXEL = 21;
 const R_JUP_LIMIT = 2;

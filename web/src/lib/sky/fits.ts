@@ -1,6 +1,7 @@
 // Minimal FITS reader for light-curve files (TESS SPOC, TESS-SPOC and QLP HLSPs): header cards and
 // binary-table columns, big-endian, no dependency. Only what light curves use: scalar numeric
-// columns (L/B/I/J/K/E/D, with TSCAL/TZERO) plus the first element of vector columns; readVector
+// columns (L/B/I/J/K/E/D, with TSCAL/TZERO) plus the first element of vector columns, and 1-char
+// "A" columns as their character code (CDIPS's per-cadence quality letters); readVector
 // reads a whole vector column (the pixel images of a TESScut cutout).
 
 const BLOCK = 2880;
@@ -71,7 +72,7 @@ export function readTable(buf: ArrayBuffer, hdu: FitsHdu, names: string[]): Fits
     const rep = m[1] ? Number(m[1]) : 1, type = m[2];
     const width = type === "X" ? Math.ceil(rep / 8) : type === "C" ? 8 * rep : type === "M" ? 16 * rep : type === "P" ? 8 * rep : type === "Q" ? 16 * rep : SIZE[type] * rep;
     const name = String(h[`TTYPE${i}`] ?? "").trim();
-    if (names.includes(name) && rep > 0 && type in SIZE && type !== "A") cols.push({ name, type, offset, scale: Number(h[`TSCAL${i}`] ?? 1), zero: Number(h[`TZERO${i}`] ?? 0) });
+    if (names.includes(name) && rep > 0 && type in SIZE && (type !== "A" || rep === 1)) cols.push({ name, type, offset, scale: Number(h[`TSCAL${i}`] ?? 1), zero: Number(h[`TZERO${i}`] ?? 0) });
     offset += width;
   }
   const view = new DataView(buf, hdu.dataStart, rowBytes * rows);
@@ -87,7 +88,7 @@ export function readTable(buf: ArrayBuffer, hdu: FitsHdu, names: string[]): Fits
         case "J": v = view.getInt32(p); break;
         case "I": v = view.getInt16(p); break;
         case "K": v = Number(view.getBigInt64(p)); break;
-        case "B": v = view.getUint8(p); break;
+        case "B": case "A": v = view.getUint8(p); break;
         default: v = view.getUint8(p) === 84 ? 1 : 0; // L: 'T'
       }
       a[r] = c.scale === 1 && c.zero === 0 ? v : v * c.scale + c.zero;
