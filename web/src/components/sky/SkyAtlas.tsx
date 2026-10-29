@@ -10,10 +10,29 @@ import type { Cone, SkyCategory, SkyObject } from "@/lib/sky/types";
 
 export const ALADIN_URL = "https://cdn.jsdelivr.net/npm/aladin-lite@3.8.2/dist/aladin.js";
 
+// Each survey by URL, with mirrors: by ID, Aladin resolves it through CDS's MocServer, so when CDS is
+// down (it is now and then) the background stays black. ESA's ESASky serves the same DSS images.
 export const SURVEYS = [
-  { id: "P/DSS2/color", label: "DSS color" },
-  { id: "P/PanSTARRS/DR1/color-z-zg-g", label: "PanSTARRS" },
+  { id: "P/DSS2/color", label: "DSS color", urls: ["https://alasky.cds.unistra.fr/DSS/DSSColor", "https://skies.esac.esa.int/DSSColor"] },
+  { id: "P/PanSTARRS/DR1/color-z-zg-g", label: "PanSTARRS", urls: ["https://alasky.cds.unistra.fr/Pan-STARRS/DR1/color-z-zg-g", "https://alaskybis.cds.unistra.fr/Pan-STARRS/DR1/color-z-zg-g"] },
 ] as const;
+
+const hipsUp = new Map<string, Promise<string>>();
+/** The first of a survey's mirrors whose HiPS properties answer (cached per page load once one does). */
+function hipsUrl(id: string): Promise<string> {
+  const sv = SURVEYS.find((x) => x.id === id) ?? SURVEYS[0];
+  let p = hipsUp.get(sv.id);
+  if (!p) {
+    p = Promise.any(sv.urls.map(async (u) => {
+      const r = await fetch(`${u}/properties`, { signal: AbortSignal.timeout(8_000) });
+      if (!r.ok) throw new Error(`${r.status}`);
+      return u;
+    }));
+    p.catch(() => hipsUp.delete(sv.id));
+    hipsUp.set(sv.id, p);
+  }
+  return p;
+}
 
 export const CATEGORY_STYLE: Record<SkyCategory, { color: string; label: string; shape: string }> = {
   galaxy: { color: "#8fb3ff", label: "Galaxies", shape: "circle" },
@@ -56,35 +75,90 @@ export type AtlasApi = {
   setSurvey: (id: string) => void;
 };
 
+// Aladin Lite has no destroy(): every instance keeps its WebGL context and redraws every frame for
+// the life of the page, so one per visit to /space piled up (three visits: three render loops running
+// behind the Earth map and ~20 WebGL contexts, past the ~16 browsers keep before dropping some, which
+// can leave the sky black). One instance per page load instead: moved into the atlas on mount, parked
+// off-screen with its render loop paused on unmount.
+type Shared = { A: AladinLib; aladin: Aladin; host: HTMLDivElement; cone: any; results: any[]; sel: any; onClick: (id: string) => void; pause: (on: boolean) => void };
+let shared: Shared | null = null;
+
+/** Wraps the view's self-rescheduling redraw so it can stop (a no-op if this Aladin version differs). */
+function pausable(aladin: Aladin): (on: boolean) => void {
+  const view = aladin.view, run = view?.redrawClbk;
+  if (typeof run !== "function") return () => {};
+  let paused = false, idle = false;
+  view.redrawClbk = (t: number) => { if (paused) { idle = true; return; } run(t); };
+  return (on) => {
+    paused = on;
+    if (!on && idle) { idle = false; requestAnimationFrame(view.redrawClbk); }
+  };
+}
+
+/** Off-screen and the same size as the atlas was, so Aladin's resize observer never sees a 0×0 box. */
+function park(host: HTMLDivElement) {
+  let lot = document.getElementById("aladin-parking");
+  if (!lot) {
+    lot = document.createElement("div");
+    lot.id = "aladin-parking";
+    lot.setAttribute("aria-hidden", "true");
+    lot.style.cssText = "position:fixed;left:-10000px;top:0;visibility:hidden;pointer-events:none";
+    document.body.appendChild(lot);
+  }
+  lot.style.width = `${host.clientWidth || 800}px`;
+  lot.style.height = `${host.clientHeight || 600}px`;
+  lot.appendChild(host);
+}
+
 export default function SkyAtlas({ cone, objects, selectedId, onSelect, apiRef, onError, activity }: {
   cone: Cone; objects: SkyObject[]; selectedId: string | null; onSelect: (id: string) => void;
   apiRef: React.MutableRefObject<AtlasApi | null>; onError: (msg: string) => void; activity: SkyActivity;
 }) {
   const div = useRef<HTMLDivElement>(null);
-  const al = useRef<{ A: AladinLib; aladin: Aladin; cone: any; results: any[]; sel: any } | null>(null);
+  const al = useRef<Shared | null>(null);
   const [ready, setReady] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const onSelectRef = useRef(onSelect);
   onSelectRef.current = onSelect;
   const initial = useRef(cone);
 
   useEffect(() => {
     let dead = false;
-    loadAladin().then((A) => {
+    // A dead image server shouldn't block the atlas: without a mirror the markers still draw on black.
+    const base = hipsUrl(SURVEYS[0].id).catch(() => { if (!dead) setNotice("Sky images unavailable: the CDS and ESA image servers didn't answer"); return SURVEYS[0].urls[0]; });
+    Promise.all([loadAladin(), base]).then(([A, survey]) => {
       if (dead || !div.current) return;
       const c0 = initial.current;
-      const aladin = A.aladin(div.current, {
-        survey: SURVEYS[0].id, fov: Math.max(0.2, c0.radius * 3), target: `${c0.ra} ${c0.dec}`, cooFrame: "ICRS",
-        showReticle: true, showZoomControl: true, showFullscreenControl: false, showLayersControl: false, showGotoControl: false,
-        showFrame: false, showCooGrid: false, showProjectionControl: false, showSettingsControl: false, showShareControl: false,
-        showContextMenu: false, showSimbadPointerControl: false, showCooGridControl: false, showStatusBar: false,
-        reticleColor: "#9a968d", reticleSize: 18, backgroundColor: "rgb(8,8,8)",
-      });
-      const coneLayer = A.graphicOverlay({ color: "#e8853d", lineWidth: 2 });
-      aladin.addOverlay(coneLayer);
-      const sel = A.graphicOverlay({ color: "#ffffff", lineWidth: 2 });
-      aladin.addOverlay(sel);
-      aladin.on("objectClicked", (o: any) => { const id = o?.data?.id; if (typeof id === "string") onSelectRef.current(id); });
-      al.current = { A, aladin, cone: coneLayer, results: [], sel };
+      let s = shared;
+      if (s) {
+        div.current.appendChild(s.host);
+        s.pause(false);
+        s.aladin.gotoRaDec(c0.ra, c0.dec);
+        s.aladin.setFoV(Math.max(0.2, c0.radius * 3));
+        (s.aladin.setImageSurvey ?? s.aladin.setBaseImageLayer).call(s.aladin, survey);
+      } else {
+        const host = document.createElement("div");
+        host.style.cssText = "position:relative;width:100%;height:100%";
+        div.current.appendChild(host);
+        const aladin = A.aladin(host, {
+          survey, fov: Math.max(0.2, c0.radius * 3), target: `${c0.ra} ${c0.dec}`, cooFrame: "ICRS",
+          showReticle: true, showZoomControl: true, showFullscreenControl: false, showLayersControl: false, showGotoControl: false,
+          showFrame: false, showCooGrid: false, showProjectionControl: false, showSettingsControl: false, showShareControl: false,
+          showContextMenu: false, showSimbadPointerControl: false, showCooGridControl: false, showStatusBar: false,
+          reticleColor: "#9a968d", reticleSize: 18, backgroundColor: "rgb(8,8,8)",
+          // No startup ping to CDS's usage logger (it sends the page URL, mission ids included).
+          log: false,
+        });
+        const coneLayer = A.graphicOverlay({ color: "#e8853d", lineWidth: 2 });
+        aladin.addOverlay(coneLayer);
+        const sel = A.graphicOverlay({ color: "#ffffff", lineWidth: 2 });
+        aladin.addOverlay(sel);
+        s = shared = { A, aladin, host, cone: coneLayer, results: [], sel, onClick: () => {}, pause: pausable(aladin) };
+        aladin.on("objectClicked", (o: any) => { const id = o?.data?.id; if (typeof id === "string") shared?.onClick(id); });
+      }
+      s.onClick = (id) => onSelectRef.current(id);
+      al.current = s;
+      const aladin = s.aladin;
       apiRef.current = {
         view: () => {
           const [ra, dec] = aladin.getRaDec();
@@ -98,11 +172,20 @@ export default function SkyAtlas({ cone, objects, selectedId, onSelect, apiRef, 
           if (!center || !edge || shape.r < 3) return;
           cb({ ra: center[0], dec: center[1], radius: Math.max(0.01, separation(center[0], center[1], edge[0], edge[1])) });
         }),
-        setSurvey: (id) => (aladin.setImageSurvey ?? aladin.setBaseImageLayer).call(aladin, id),
+        setSurvey: (id) => {
+          hipsUrl(id).then((u) => { if (!dead) { setNotice(null); (aladin.setImageSurvey ?? aladin.setBaseImageLayer).call(aladin, u); } })
+            .catch(() => !dead && setNotice(`${SURVEYS.find((x) => x.id === id)?.label ?? "That survey"}'s image server isn't answering right now`));
+        },
       };
       setReady(true);
     }).catch((e: Error) => !dead && onError(e.message));
-    return () => { dead = true; apiRef.current = null; };
+    return () => {
+      dead = true;
+      apiRef.current = null;
+      const s = al.current;
+      if (s) { s.onClick = () => {}; s.pause(true); park(s.host); }
+      al.current = null;
+    };
   }, [apiRef, onError]);
 
   // Selected cone outline.
@@ -168,6 +251,7 @@ export default function SkyAtlas({ cone, objects, selectedId, onSelect, apiRef, 
       <div ref={div} className="relative h-full w-full" />
       <canvas ref={canvas} aria-hidden className="pointer-events-none absolute inset-0 h-full w-full" />
       {!ready && <div className="absolute inset-0 grid place-items-center text-[12.5px] text-fg3">Loading sky atlas…</div>}
+      {notice && <div className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded-md border border-line bg-[#080808]/85 px-2.5 py-1 text-[12px] text-fg3">{notice}</div>}
     </div>
   );
 }
