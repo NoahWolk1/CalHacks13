@@ -26,7 +26,8 @@ import {
 } from "./strategy";
 import { redNoise } from "./transitFit";
 import { binSeries, cleanSeries, clipUpper, flatten, maskTransits, refineOnData, stitch, trimGaps, type Ephemeris, type Series } from "./timeseries";
-import { CONTAM_ARCMIN, ebNeighbours, impliedRadiusEarth, knownPlanetsNear, MAX_PLANET_REARTH, periodsMatch, toisNear, vetSignal, type KnownSignal, type Verdict } from "./vetting";
+import { CONTAM_ARCMIN, ebNeighbours, impliedRadiusEarth, knownPlanetsNear, knownTransitAt, knownTransitLabel, MAX_PLANET_REARTH, periodsMatch, toisNear, transitVariability, unreliableHost, vetSignal, type KnownSignal, type Verdict } from "./vetting";
+import { ctoiSignals } from "./hostStar";
 import { VARIABLE_OTYPES, variablesNear, vsxEntry, type VsxStar } from "./vsx";
 import { separation } from "./geom";
 import { isNewFind as isNew, type AnalysisStar, type Cone, type SkyAgentReport, type SkyAnalysis, type SkyEvent, type SkyNote, type SkyObject, type SkyPlan, type ForcedCheck, type StarResult, type TransitSignal } from "./types";
@@ -82,10 +83,12 @@ export function analyseStar(parts: Pick<LightCurve, "time" | "flux" | "quality">
   const s = stitch(series);
   if (s.t.length < 200) throw new Error(errors[0] ?? `only ${s.t.length} good cadences`);
   const days = s.t[s.t.length - 1] - s.t[0];
-  const { ls, flat, removed } = searchable(s);
+  // Known transits re-centred on this data (catalog ephemerides drift: timeseries.ts refineOnData) and
+  // cut out before Lomb-Scargle too, so a planet's dips don't pass for stellar variability.
+  const rough = flatten(s, FLATTEN_DAYS);
+  mask = mask.flatMap((e) => refineOnData(rough, e));
+  const { ls, flat, removed } = searchable(mask.length ? maskTransits(s, mask) : s);
   if (flat.t.length < 50) throw new Error("light curve too short for a transit search");
-  // Known transits re-centred on this data first: catalog ephemerides drift (timeseries.ts refineOnData).
-  mask = mask.flatMap((e) => refineOnData(flat, e));
   // Empty when every peak was the residue of a masked known planet.
   const signals = searchSignals(flat, { mask, maxSignals: 3 });
   const passed = signals.filter(blsDetected);
@@ -158,7 +161,7 @@ export function singleObject(id: string, star: AnalysisStar, e: NonNullable<Star
   const rp = impliedRadiusEarth(e.depth, starRadius);
   const props: Record<string, string | number> = {
     verdict: label,
-    status: label.startsWith("Single-transit") ? "one dip only: a possible long-period planet or eclipsing binary, needs more data" : "rejected as a new candidate",
+    status: label.startsWith("Single-transit") ? "one dip only: a possible long-period planet or eclipsing binary, needs more data" : /^(Known|Light from)/.test(label) ? "already catalogued: not new" : "rejected as a new candidate",
     vetting: reason, TIC: star.tic, "time (BTJD)": +e.t.toFixed(3), "depth (ppt)": r3(e.depth * 1000), "duration (hours)": +(e.duration * 24).toFixed(1),
     SNR: +e.snr.toFixed(1), "light curve": lcLabel(star), playbook: PLAYBOOK_LABEL[star.playbook],
   };
@@ -264,8 +267,11 @@ export async function runAnalysis(c: Cone, signal: AbortSignal, emit: (e: SkyEve
   [known, tois, neighbours, vsxP].forEach((p) => p.catch(() => {}));
 
   const inv = await fieldInventory(c, signal);
-  const [kp0, ti0, vx0] = await Promise.all([within(known, 8_000), within(tois, 8_000), within(vsxP, 8_000)]);
-  const knownAll: KnownSignal[] = [...(kp0.v ?? []), ...(ti0.v ?? [])];
+  // Community TOIs on the field's stars too (one cached ExoFOP download): masked and matched like TOIs.
+  const ctois = ctoiSignals(inv.stars, signal);
+  ctois.catch(() => {});
+  const [kp0, ti0, vx0, ct0] = await Promise.all([within(known, 8_000), within(tois, 8_000), within(vsxP, 8_000), within(ctois, 8_000)]);
+  const knownAll: KnownSignal[] = [...(kp0.v ?? []), ...(ti0.v ?? []), ...(ct0.v ?? [])];
   const vsx: VsxStar[] | undefined = vx0.v ?? undefined;
   const pool0 = prospects(c, inv.stars, inv.products, knownAll, vsx ?? []);
   if (!pool0.length) {
@@ -369,7 +375,7 @@ export async function runAnalysis(c: Cone, signal: AbortSignal, emit: (e: SkyEve
   const others = ok.flatMap((r) => [...(r.signals?.length ? r.signals : r.transit ? [r.transit] : [])]
     .filter((t) => t.snr >= BLS_MIN_SNR && t.depth > 0)
     .map((t) => ({ tic: r.tic, period: t.period, depth: t.depth, ra: byTic.get(r.tic)!.ra, dec: byTic.get(r.tic)!.dec })));
-  const knownSignals = [...(kp.v ?? []), ...(ti.v ?? [])];
+  const knownSignals = [...(kp.v ?? []), ...(ti.v ?? []), ...(ct0.v ?? [])];
   const signalObjs: { o: SkyObject; tic: string; t?: TransitSignal; single?: NonNullable<StarResult["singles"]>[number] }[] = [];
   const vet = (tic: string, t: TransitSignal) => {
     const star = byTic.get(tic)!, h = header.get(tic) ?? {};
@@ -393,7 +399,11 @@ export async function runAnalysis(c: Cone, signal: AbortSignal, emit: (e: SkyEve
     const sameTime = allSingles.filter((x) => x.tic !== tic && Math.abs(x.e.t - e.t) < 0.5).length;
     const rp = impliedRadiusEarth(e.depth, h.radius);
     let label = "Single-transit event", reason = "one transit-shaped dip, no repeat in the sectors searched";
+    // A known planet's or TOI's transit (its ephemeris drifted past the mask), or a host where lone dips can't be trusted: not new.
+    const kn = knownTransitAt(star, e.t, e.duration, knownSignals), bad = unreliableHost({ vmag: star.vmag, radius: h.radius, logg: h.logg });
     if (sameTime) { label = "Likely systematic (simultaneous dips)"; reason = `${sameTime} other star${sameTime === 1 ? "" : "s"} dip at the same time: spacecraft or scattered light, not the star`; }
+    else if (kn) ({ label, reason } = knownTransitLabel(kn));
+    else if (bad) ({ label, reason } = bad);
     else if (e.depth > 0.03 || (rp && rp > MAX_PLANET_REARTH)) {
       // Star-sized: an eclipsing binary. New if no catalog lists the star (or a neighbour at the same time) as variable.
       const own = vsx ? vsxEntry(star, vsx) : undefined;
@@ -430,7 +440,9 @@ export async function runAnalysis(c: Cone, signal: AbortSignal, emit: (e: SkyEve
     const shared = lsPeriods.filter((x) => x.tic !== r.tic && Math.abs(x.p / v.period - 1) < 0.02).length;
     const near = (vsx ?? []).find((x) => x !== own && x.period && periodsMatch(v.period, x.period, 0.02) && separation(x.ra, x.dec, star.ra, star.dec) * 60 <= CONTAM_ARCMIN);
     let census: { label: string; reason: string };
+    const fromTransits = transitVariability(star, v.period, r.days ?? 27, knownSignals, r.signals ?? []);
     if (own) census = { label: `Catalogued variable: ${own.name} (${own.type})`, reason: `AAVSO VSX lists it${own.period ? ` with P ${own.period} d${periodsMatch(v.period, own.period, 0.03) ? ", which this period matches" : ", unlike this period"}` : ""}` };
+    else if (fromTransits) census = { label: "Variability at a transit period", reason: fromTransits };
     else if (VARIABLE_OTYPES.has(star.otype)) census = { label: `Catalogued variable (SIMBAD: ${OTYPE_LABEL[star.otype] ?? star.otype})`, reason: "SIMBAD already types the star as variable" };
     else if (near) census = { label: `Light from ${near.name}`, reason: `VSX variable ${near.name} (${near.type}, P ${near.period} d) is ${(separation(near.ra, near.dec, star.ra, star.dec) * 60).toFixed(1)}′ away at this period` };
     else if (shared >= 2) census = { label: "Likely systematic variability", reason: `${shared} other stars vary at the same period: instrumental` };

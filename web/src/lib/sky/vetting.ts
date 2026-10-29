@@ -13,6 +13,7 @@ import { simbadTap } from "./simbad";
 import type { BlsResult } from "./bls";
 import type { LsResult } from "./lombscargle";
 import type { FieldStar } from "./lightcurves";
+import { ephemerisSigma } from "./timeseries";
 import type { Cone } from "./types";
 import { isEclipsingType, VARIABLE_OTYPES, vsxEntry, type VsxStar } from "./vsx";
 
@@ -207,4 +208,61 @@ export async function ebNeighbours(c: Cone, signal: AbortSignal): Promise<EbNeig
   const col = Object.fromEntries(t.metadata!.map((m, i) => [m.name, i]));
   return t.data!.flatMap((r) => (typeof r[col.ra] === "number" && typeof r[col.dec] === "number"
     ? [{ name: String(r[col.main_id]).trim(), otype: String(r[col.otype]).trim(), ra: r[col.ra] as number, dec: r[col.dec] as number }] : []));
+}
+
+// ── lone dips (singles and duotransits) ─────────────────────────────────────────
+
+/** A known planet or TOI transit that explains a lone dip: one whose ephemeris puts a transit at that
+ *  time, within the dip's duration plus 3σ of the prediction's drift (the period error times the orbits
+ *  since t0: hours, for a TOI hundreds of orbits on). On the star itself, or on a neighbour within the
+ *  contamination radius (its light leaking in). */
+export function knownTransitAt(star: { tic: string; ra: number; dec: number }, t: number, duration: number, known: KnownSignal[]):
+  { k: KnownSignal; self: boolean; sep: number; offsetH: number } | undefined {
+  return known.flatMap((k) => {
+    if (k.t0 === undefined || !(k.period > 0)) return [];
+    const sep = arcmin(k, star);
+    const self = k.tic === star.tic || sep <= SELF_ARCMIN;
+    if (!self && sep > CONTAM_ARCMIN) return [];
+    const dt = t - k.t0 - Math.round((t - k.t0) / k.period) * k.period;
+    const tol = Math.max(duration, k.duration ?? duration) + 3 * ephemerisSigma({ ...k, t0: k.t0 }, t);
+    return Math.abs(dt) < tol ? [{ k, self, sep, offsetH: dt * 24 }] : [];
+  }).sort((a, b) => Number(b.self) - Number(a.self) || Math.abs(a.offsetH) - Math.abs(b.offsetH))[0];
+}
+
+/** The label and reason for a lone dip that a known transit explains. */
+export function knownTransitLabel(m: NonNullable<ReturnType<typeof knownTransitAt>>): { label: string; reason: string } {
+  const what = m.k.kind === "planet" ? "known planet" : "TOI";
+  const off = Math.abs(m.offsetH) >= 0.5 ? ` (${Math.abs(m.offsetH).toFixed(1)} h ${m.offsetH > 0 ? "after" : "before"} its catalog prediction, within its ephemeris drift)` : "";
+  if (!m.self) return { label: `Light from ${m.k.name}'s host, ${m.sep.toFixed(1)}′ away`, reason: `a transit of ${what} ${m.k.name} on TIC ${m.k.tic} falls at this time${off}: its light leaking into this aperture` };
+  const disp = m.k.kind === "toi" ? ` (${DISPOSITION[m.k.disposition ?? ""] ?? (m.k.disposition || "no disposition")})` : "";
+  return {
+    label: m.k.kind === "planet" ? `Known planet transit: ${m.k.name}` : `Known TOI transit: ${m.k.name}${disp}`,
+    reason: `a transit of ${what} ${m.k.name} (P ${m.k.period.toFixed(4)} d) falls at this time${off}: already catalogued, not new`,
+  };
+}
+
+/** Lone dips on these hosts aren't planet candidates: saturated stars (Tmag ≲ 4, or V ≲ 4.5 when
+ *  that's all there is) make dips of this size in their systematics, and on a giant (R > 10 R☉ or
+ *  logg < 3) even a Jupiter makes a dip of well under a part per thousand. */
+export const SATURATED_TMAG = 4;
+export const GIANT_RADIUS = 10;
+export function unreliableHost(h: { tmag?: number; vmag?: number; radius?: number; logg?: number }): { label: string; reason: string } | undefined {
+  const mag = h.tmag ?? (h.vmag !== undefined ? h.vmag - 0.5 : undefined);
+  if (mag !== undefined && mag < SATURATED_TMAG) return { label: "Unreliable dip (saturated star)", reason: `the star is ${h.tmag !== undefined ? `Tmag ${h.tmag.toFixed(1)}` : `V ${h.vmag!.toFixed(1)}`}: saturated in TESS, where bleed columns and scattered light make lone dips like this` };
+  if ((h.radius && h.radius > GIANT_RADIUS) || (h.logg !== undefined && h.logg < 3)) return { label: "Single dip on a giant star", reason: `the host is a giant (${h.radius ? `R ${h.radius.toFixed(0)} R☉` : `logg ${h.logg!.toFixed(2)}`}): a planet makes a far shallower dip, and giants vary on these time scales` };
+  return undefined;
+}
+
+/** A variability period at a transit period: a known planet's or TOI's on the star (or one this search
+ *  found), at ×1, ×½ or ×2 within the frequency resolution of the baseline. Either the transits put the
+ *  power there, or the star varies with that orbit (rotation synchronised to it, or ellipsoidal light
+ *  from a stellar companion): a note for the known object, not a new variable star. */
+export function transitVariability(star: { tic: string; ra: number; dec: number }, period: number, baselineDays: number, known: KnownSignal[], found: { period: number }[] = []): string | undefined {
+  const res = 1 / Math.max(baselineDays, 1);
+  const hit = (P: number) => [1, 0.5, 2].some((m) => Math.abs(1 / period - 1 / (P * m)) < res);
+  const k = known.find((x) => (x.tic === star.tic || arcmin(x, star) <= SELF_ARCMIN) && hit(x.period));
+  const why = "its transits, or the star varying with that orbit (synchronised rotation, or ellipsoidal light from a stellar companion, which would make it a binary)";
+  if (k) return `the period matches ${k.name}'s (P ${k.period.toFixed(4)} d) within the frequency resolution: ${why}. Worth a note on ${k.name}'s ExoFOP page; not a new variable star`;
+  const f = found.find((x) => hit(x.period));
+  return f ? `the period matches this search's transit signal (P ${f.period.toFixed(4)} d) within the frequency resolution: ${why}; not a separate variable star` : undefined;
 }

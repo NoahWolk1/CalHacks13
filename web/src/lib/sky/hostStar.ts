@@ -13,7 +13,7 @@ import { getJson, getText } from "@/lib/http";
 import { EXO_TAP } from "./exoplanets";
 import { adqlNum } from "./geom";
 import { MAST_API } from "./telescopes";
-import { BTJD } from "./vetting";
+import { BTJD, type KnownSignal } from "./vetting";
 import { VIZIER_TAP } from "./vsx";
 
 export type HostStar = {
@@ -61,6 +61,28 @@ export async function ticStar(tic: string, signal: AbortSignal): Promise<HostSta
     tic, ra: r.ra, dec: r.dec, teff: pos(r.Teff), radius: pos(r.rad), mass: pos(r.mass), logg: pos(r.logg), rho: pos(r.rho), tmag: num(r.Tmag),
     distance: pos(r.d), lumclass: typeof r.lumclass === "string" ? r.lumclass : undefined, gaia: r.GAIA ? String(r.GAIA) : undefined, eRadius: pos(r.e_rad),
   };
+}
+
+/** A star's radius (R☉) from its TESS magnitude, distance and Teff, when the TIC has none (it lists no
+ *  radius for many very bright and evolved stars): luminosity from the absolute T magnitude, with a
+ *  blackbody correction for the share of the light in the TESS band (600-1000 nm) relative to the Sun,
+ *  then R = √L (5772/Teff)². No extinction correction, so it's a lower limit: fine for telling a giant
+ *  (tens of R☉) from a dwarf, not a precise radius. */
+export function radiusFromLuminosity(tmag: number, distancePc: number, teff: number): number | undefined {
+  if (!(distancePc > 0) || !(teff > 2000 && teff < 50_000) || !Number.isFinite(tmag)) return undefined;
+  const M_T_SUN = 4.3;
+  const absT = tmag - 5 * Math.log10(distancePc / 10);
+  const bandShare = (T: number) => {
+    // Fraction of σT⁴ emitted between 600 and 1000 nm (Planck, midpoint sum over 40 steps).
+    let s = 0;
+    for (let i = 0; i < 40; i++) {
+      const lam = (600 + (i + 0.5) * 10) * 1e-9;
+      s += (1 / lam ** 5 / (Math.exp(1.4388e-2 / (lam * T)) - 1)) * 10e-9;
+    }
+    return (s * 2 * Math.PI * 6.626e-34 * 2.998e8 ** 2) / (5.670e-8 * T ** 4);
+  };
+  const L = 10 ** (-0.4 * (absT - M_T_SUN)) * (bandShare(5772) / bandShare(teff));
+  return Math.sqrt(L) * (5772 / teff) ** 2;
 }
 
 /** TIC stars within `arcmin` of a position (the target included), brightest first. */
@@ -148,6 +170,20 @@ export async function ctoisFor(tic: string, signal: AbortSignal): Promise<Ctoi[]
     p.catch(() => { if (g.__ctois?.p === p) g.__ctois = undefined; });
   }
   return (await g.__ctois.p).get(tic) ?? [];
+}
+
+/** Community TOIs on these stars, as known signals (masked before searching, matched to the finds).
+ *  One cached download of ExoFOP's CTOI table covers every star. */
+export async function ctoiSignals(stars: { tic: string; ra: number; dec: number }[], signal: AbortSignal): Promise<KnownSignal[]> {
+  const out: KnownSignal[] = [];
+  for (const s of stars) {
+    for (const c of await ctoisFor(s.tic, signal)) {
+      if (!c.period || !(c.period > 0)) continue;
+      out.push({ tic: s.tic, name: c.name, period: c.period, ra: s.ra, dec: s.dec, kind: "toi", disposition: c.disposition || "community TOI",
+        ...(c.epoch !== undefined && c.epoch > 0 && c.durationH ? { t0: c.epoch, duration: c.durationH / 24 } : {}) });
+    }
+  }
+  return out;
 }
 
 // ── binaries and KOIs ───────────────────────────────────────────────────────

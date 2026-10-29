@@ -13,7 +13,7 @@ import { falsePositiveProbability, starFromGaia, type FppData } from "./fpp";
 import { combineSectors, differenceImage, fetchCutout, testSector, type PixStar, type SectorPixels } from "./pixels";
 import { eventStats, eventUniqueness, harmonicOf, modelShift, removePulsations, type EventUniqueness, type ModelShift } from "./robust";
 import { bls } from "./bls";
-import { ctoisFor, exofopTarget, inKeplerField, koisNear, tessEb, ticNeighbours, ticStar, type Koi } from "./hostStar";
+import { ctoisFor, exofopTarget, inKeplerField, koisNear, radiusFromLuminosity, tessEb, ticNeighbours, ticStar, type Koi } from "./hostStar";
 import { ticProducts, type LcProduct, type LightCurve } from "./lightcurves";
 import { isVariable, lombScargle } from "./lombscargle";
 import { duotransitAliases } from "./survey";
@@ -24,7 +24,7 @@ import {
   massFromRadius, measureEvent, minPeriodFromCoverage, minPeriodFromDuration, redNoise, rhoOf, rvSemiAmplitude, R_JUP_EARTH, segments, timeEvent,
   type DetrendMethod, type EventMeasure, type ShapeFit, type Window,
 } from "./transitFit";
-import { BTJD, knownPlanetsNear, periodsMatch, toisNear, type KnownSignal } from "./vetting";
+import { BTJD, GIANT_RADIUS, knownPlanetsNear, periodsMatch, SATURATED_TMAG, toisNear, type KnownSignal } from "./vetting";
 import { isEclipsingType, variablesNear, vsxEntry } from "./vsx";
 import { separation } from "./geom";
 import { tierOf, type VetCheck, type VetPixels, type VetEventRow, type VetInput, type VetReport, type VetStage, type VetStatus, type VetStreamEvent } from "./vetShared";
@@ -97,21 +97,23 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     inKeplerField(pos.ra, pos.dec) ? settle(koisNear(pos.ra, pos.dec, signal)) : Promise.resolve({ v: [] as Koi[], err: undefined }),
   ]);
   const star = tic.v;
-  const R = star?.radius, M = star?.mass ?? (star?.logg && R ? (10 ** star.logg * (R * 6.957e10) ** 2) / 6.674e-8 / 1.989e33 : undefined);
+  // No TIC radius (common for very bright and evolved stars): estimated from Tmag, distance and Teff.
+  const Rest = !star?.radius && star?.tmag !== undefined && star.distance && star.teff ? radiusFromLuminosity(star.tmag, star.distance, star.teff) : undefined;
+  const R = star?.radius ?? Rest, M = star?.mass ?? (star?.logg && R ? (10 ** star.logg * (R * 6.957e10) ** 2) / 6.674e-8 / 1.989e33 : undefined);
   const rho = star?.rho ?? (M && R ? rhoOf(M, R) : undefined);
   const k0 = Math.sqrt(depth0);
   /** Gaia's orbit is at this signal's period and its minimum mass is below the hydrogen-burning limit. */
   const orbitIsCompanion = (o: NonNullable<GaiaStar["orbit"]>) => !!(o.period && o.k1 && M && (periodic ? periodsMatch(input.period!, o.period, 0.01) : false) && minMassFromK(o.k1, o.period, M) < 0.075);
 
   if (star) add(0, "star", "Host star parameters", "info", `TESS Input Catalog v8.2${star.lumclass ? `; luminosity class ${star.lumclass.toLowerCase()}` : ""}`,
-    [star.teff && `Teff ${Math.round(star.teff)} K`, R && `R ${r3(R)} R☉`, M && `M ${r3(M)} M☉`, star.logg && `logg ${star.logg.toFixed(2)}`, rho && `ρ ${r3(rho)} ρ☉`, star.tmag !== undefined && `Tmag ${star.tmag.toFixed(2)}`, star.distance && `${Math.round(star.distance)} pc`].filter(Boolean).join(" · "));
+    [star.teff && `Teff ${Math.round(star.teff)} K`, R && `R ${r3(R)} R☉${Rest ? " (estimated from Tmag, distance and Teff)" : ""}`, M && `M ${r3(M)} M☉`, star.logg && `logg ${star.logg.toFixed(2)}`, rho && `ρ ${r3(rho)} ρ☉`, star.tmag !== undefined && `Tmag ${star.tmag.toFixed(2)}`, star.distance && `${Math.round(star.distance)} pc`].filter(Boolean).join(" · "));
   else add(0, "star", "Host star parameters", "not-run", `TIC lookup failed (${tic.err})`);
 
   // Companion radius: a lower limit (grazing transits and diluted light both hide depth).
   const rp = R ? k0 * R * R_EARTH_PER_RSUN : undefined;
-  if (rp === undefined) add(0, "radius", "Companion radius", "not-run", "no stellar radius in the TIC");
+  if (rp === undefined) add(0, "radius", "Companion radius", "not-run", "no stellar radius in the TIC, and no distance and Teff to estimate one");
   else {
-    const rj = rp / R_JUP_EARTH, v = `${r3(rp)} R⊕ (${r3(rj)} R_J)`;
+    const rj = rp / R_JUP_EARTH, v = `${r3(rp)} R⊕ (${r3(rj)} R_J)${Rest ? `, on an estimated R ${r3(Rest)} R☉` : ""}`;
     if (rj > R_JUP_LIMIT) add(0, "radius", "Companion radius", "fail", `larger than ${R_JUP_LIMIT} Jupiter radii: a star or brown dwarf, not a planet (and a lower limit, if the transit is grazing or diluted)`, v);
     else if (rj > 1) add(0, "radius", "Companion radius", "pass", "Jupiter-sized: brown dwarfs and low-mass stars have this radius too, so only a mass (RVs) can tell", v);
     else add(0, "radius", "Companion radius", "pass", "planet-sized", v);
@@ -121,10 +123,18 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
   else {
     const why: string[] = [];
     if (star.teff && star.teff > 7500) why.push(`hot (Teff ${Math.round(star.teff)} K): pulsation and fast rotation are likely, and RVs will be hard`);
-    if (star.lumclass === "GIANT" || (star.logg !== undefined && star.logg < 3.5)) why.push(`a giant (logg ${star.logg?.toFixed(2) ?? "?"}): a large star makes any companion big, and a blended eclipse easy`);
-    else if (star.logg !== undefined && star.logg < 3.9) why.push(`a subgiant (logg ${star.logg.toFixed(2)}): an evolved, larger star`);
-    if (why.length) add(0, "host", "Host type", "flag", why.join("; "));
+    // The TIC's luminosity class can call a star with no radius a dwarf from its Teff alone: the radius (or its estimate) decides.
+    const giant = star.lumclass === "GIANT" || (star.logg !== undefined && star.logg < 3.5) || (R !== undefined && R > GIANT_RADIUS);
+    const sizeTxt = R !== undefined ? `R ${r3(R)} R☉${Rest ? ", estimated" : ""}` : `logg ${star.logg?.toFixed(2) ?? "?"}`;
+    if (giant) why.push(`${R !== undefined && R > 30 ? "a supergiant or bright giant" : "a giant"} (${sizeTxt}${star.lumclass === "DWARF" ? `; the TIC's "dwarf" class is wrong for a star this size` : ""}): a large star makes any companion big, and a blended eclipse easy`);
+    else if ((star.logg !== undefined && star.logg < 3.9) || (R !== undefined && R > 2.5)) why.push(`a subgiant (${sizeTxt}): an evolved, larger star`);
+    // A lone dip on a big giant (planets do transit smaller ones): no planet makes it, and giants vary on these time scales.
+    const big = (R !== undefined && R > GIANT_RADIUS) || (star.logg !== undefined && star.logg < 3);
+    if (big && !periodic) add(0, "host", "Host type", "fail", `${why.join("; ")}; a lone dip on a star this large isn't a planet candidate`);
+    else if (why.length) add(0, "host", "Host type", "flag", why.join("; "));
     else add(0, "host", "Host type", "pass", `a main-sequence dwarf${star.teff ? ` (Teff ${Math.round(star.teff)} K)` : ""}`);
+    // Saturated stars make lone dips of this size in their systematics (bleed columns, scattered light).
+    if (!periodic && star.tmag !== undefined && star.tmag < SATURATED_TMAG) add(0, "bright", "Saturated host", "fail", `Tmag ${star.tmag.toFixed(2)} is far into saturation: bleed columns and scattered light make lone dips like this, so a single or duo here can't be trusted`, `Tmag ${star.tmag.toFixed(2)}`);
   }
 
   {
@@ -528,7 +538,8 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     else add(1, "events", "Individual transits", "pass", `the period is supported by ${N} independent transits`, v);
   } else {
     const lost = rows.filter((r) => r.m && r.coverage >= 0.5 && (r.snr ?? 0) < 3);
-    const v = rows.map((r) => `BTJD ${r.t.toFixed(2)}: ${r.snr !== undefined ? `SNR ${r.snr.toFixed(1)}, ${ppt(r.depth!)}` : "no data"}`).join("; ");
+    // This SNR is the vetting's own re-measurement on a fresh reduction, not the search's number.
+    const v = rows.map((r) => `BTJD ${r.t.toFixed(2)}: ${r.snr !== undefined ? `vetting SNR ${r.snr.toFixed(1)}, ${ppt(r.depth!)}` : "no data"}`).join("; ") + (input.snr ? ` (the search's SNR was ${r3(input.snr)}: a different detrending, binning and noise estimate)` : "");
     if (lost.length) add(1, "events", "Individual transits", "fail", `the dip at BTJD ${lost.map((r) => r.t.toFixed(2)).join(", ")} isn't there in a fresh reduction (SNR < 3): a systematic of the first search`, v);
     else if (N < rows.length) add(1, "events", "Individual transits", "not-run", `${rows.length - N} of the listed dips fall outside the light curves that downloaded`, v);
     else add(1, "events", "Individual transits", "flag", input.kind === "single" ? (ztfPeriod ? `one TESS transit: the period (${r3(ztfPeriod.period)} d) comes from ZTF alone` : "one transit: the period is unknown") : "two transits: the period rests on one spacing (and its aliases)", v);
