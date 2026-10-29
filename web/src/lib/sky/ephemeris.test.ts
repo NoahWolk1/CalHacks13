@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ephemerisSigma, maskTransits, refineOnData } from "./timeseries";
+import { ephemeris, knownTransitAt, type KnownSignal } from "./vetting";
 
 /** Deterministic noise, a sector of 10-min flux from `from`, box transits every P from tc. */
 function sector(from: number, P: number, tc: number, depth: number, dur: number, seed = 1) {
@@ -33,5 +34,22 @@ describe("known transits on a drifted ephemeris", () => {
     const left = (e: typeof eph) => { const m = maskTransits(s, e); let n = 0; for (let i = 0; i < m.t.length; i++) if (m.f[i] < 0.993) n++; return n; };
     expect(left([cat])).toBeGreaterThan(50);
     expect(left(eph)).toBeLessThan(5);
+  });
+});
+
+describe("pre-TESS catalog epochs", () => {
+  // K2-289 b (NASA Exoplanet Archive, Livingston et al. 2019): its K2 epoch is before BTJD 0. Dropping it
+  // left the planet without a transit time, and a TESS single on it was vetted as new (tier B).
+  const eph = ephemeris(2456897.14325, 4.032, 0.000047, 0.00097);
+  it("keeps an epoch before BTJD 0 as a negative t0", () => {
+    expect(eph.t0).toBeCloseTo(-102.85675, 5);
+    expect(eph.sigmaP).toBe(0.000047);
+    expect(ephemeris(0, 3)).toEqual({});
+  });
+  it("matches the TESS sector 91 transit 295 orbits later", () => {
+    const k2: KnownSignal = { tic: "413753029", name: "K2-289 b", period: 13.156969, ra: 246.643, dec: -15.7925, kind: "planet", ...eph };
+    const m = knownTransitAt({ tic: "413753029", ra: 246.643, dec: -15.7925 }, 3778.472, 0.125, [k2]);
+    expect(m?.k.name).toBe("K2-289 b");
+    expect(m?.self).toBe(true);
   });
 });

@@ -82,7 +82,8 @@ export type VetPixels = {
 
 export type VetStreamEvent =
   | { type: "progress"; text: string; ms: number }
-  | { type: "check"; check: VetCheck; ms: number }
+  /** `replaces`: an update to the earlier check with this id (not a new row). */
+  | { type: "check"; check: VetCheck; ms: number; replaces?: true }
   | { type: "events"; events: VetEventRow[]; ms: number }
   | { type: "report"; report: VetReport; ms: number }
   | { type: "saved"; saved: SavedVet }

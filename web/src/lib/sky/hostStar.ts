@@ -13,7 +13,7 @@ import { getJson, getText } from "@/lib/http";
 import { EXO_TAP } from "./exoplanets";
 import { adqlNum } from "./geom";
 import { MAST_API } from "./telescopes";
-import { BTJD, type KnownSignal } from "./vetting";
+import { BTJD, JD_MIN, type KnownSignal } from "./vetting";
 import { VIZIER_TAP } from "./vsx";
 
 export type HostStar = {
@@ -154,7 +154,7 @@ export function parseCtois(csv: string): Map<string, Ctoi[]> {
     const tic = f[iTic]?.trim();
     if (!tic) continue;
     const epoch = num(f[iE]);
-    const c: Ctoi = { name: `CTOI ${f[iCtoi]}`, period: num(f[iP]), epoch: epoch && epoch > BTJD ? epoch - BTJD : epoch, depthPpm: num(f[iDepth]), durationH: num(f[iDur]), disposition: (f[iTfop] || f[iUser] || "").trim() };
+    const c: Ctoi = { name: `CTOI ${f[iCtoi]}`, period: num(f[iP]), epoch: epoch && epoch > JD_MIN ? epoch - BTJD : epoch, depthPpm: num(f[iDepth]), durationH: num(f[iDur]), disposition: (f[iTfop] || f[iUser] || "").trim() };
     out.set(tic, [...(out.get(tic) ?? []), c]);
   }
   return out;
