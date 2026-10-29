@@ -7,14 +7,16 @@
 // curves: TESScut pixels (difference images, pixels.ts), Gaia DR3 / APOGEE / ZTF archives
 // (archives.ts), Robovetter-style robustness tests (robust.ts) and a false-positive probability
 // (fpp.ts): what can be done without a telescope.
-import { download } from "./analysis";
-import { apogeeNear, fitK, minMassFromK, gaiaCone, gaiaRvLimit, gaiaStar, gaiaStarVizier, ztfDepths, ztfLightCurve, type GaiaNeighbour, type GaiaStar } from "./archives";
+import { download, forcedCheck } from "./analysis";
+import { apogeeNear, fitK, minMassFromK, gaiaCone, gaiaRvLimit, gaiaStar, gaiaStarVizier, ztfDepths, ztfLightCurve, type GaiaNeighbour, type GaiaStar, type ZtfPoint } from "./archives";
 import { falsePositiveProbability, starFromGaia, type FppData } from "./fpp";
 import { combineSectors, differenceImage, fetchCutout, testSector, type PixStar, type SectorPixels } from "./pixels";
 import { eventStats, eventUniqueness, harmonicOf, modelShift, removePulsations, type EventUniqueness, type ModelShift } from "./robust";
 import { bls } from "./bls";
 import { ctoisFor, exofopTarget, inKeplerField, koisNear, radiusFromLuminosity, tessEb, ticNeighbours, ticStar, type Koi } from "./hostStar";
 import { ticProducts, type LcProduct, type LightCurve } from "./lightcurves";
+import { keplerK2Curves, type MissionCurve } from "./keplerK2";
+import { asassnLightCurve, atlasConfigured, atlasLightCurve, toZtfPoints, type GroundPhot } from "./groundSurveys";
 import { isVariable, lombScargle } from "./lombscargle";
 import { duotransitAliases } from "./survey";
 import { bestPeriods, coverageAllows, findRepeats, mergeCoverage, periodGrid, periodPosterior, ztfDetects, ztfExcludes, ztfScore, ztfSearch, ztfSeries, type PeriodPosterior, type ZtfScore } from "./periodRecovery";
@@ -278,6 +280,17 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
   // ZTF, started now (it can take ~30 s): the period recovery and the Stage 3 check both use it.
   const gMag = gaia.v?.g ?? (star?.tmag !== undefined ? star.tmag + 0.4 : undefined);
   const ztfP = gMag !== undefined && gMag >= 12.5 && depth0 >= 3e-3 ? settle(ztfLightCurve(pos.ra, pos.dec, signal)) : undefined;
+  // ASAS-SN (and ATLAS with a token): all-sky, so they reach where ZTF doesn't (dec < −30°) and ASAS-SN
+  // the bright stars ZTF saturates on; ~1-2% points, so only for deep transits.
+  const groundP = gMag !== undefined && gMag >= 9 && gMag <= 17.5 && depth0 >= 3e-3 ? settle(groundPhot(pos.ra, pos.dec, signal)) : undefined;
+  // Kepler and K2 light curves of the star: years before TESS, so more transits and a long baseline.
+  const kkP = settle(keplerK2Curves({ tic: input.tic, ra: pos.ra, dec: pos.dec }, signal));
+  let missionMemo: Promise<MissionPart[]> | undefined;
+  const missionParts = () => (missionMemo ??= kkP.then((r) => (r.v?.curves ?? []).flatMap((c) => { const m = missionPart(c); return m ? [m] : []; }).map((m) => {
+    m.flat = detrendMasked(m.raw, [], { kind: "median", window: Math.max(1, 4 * dur) }, 2);
+    m.beta = redNoise(m.flat, dur, []);
+    return m;
+  })));
 
   // ── light curves ──
   progress("Downloading every TESS sector of the star (best pipeline per sector)");
@@ -381,11 +394,17 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     if (rep.events.length) why.push(`found the ${ppt(depth0)} transit ${rep.events.length} more time${rep.events.length === 1 ? "" : "s"} in TESS (BTJD ${rep.events.map((e) => e.t.toFixed(2)).join(", ")}; same depth and duration, above the ${rep.threshold.toFixed(1)}σ false-alarm threshold)`);
     else if (Number.isFinite(rep.threshold)) why.push(`no repeat of the transit in ${rep.days.toFixed(0)} days of TESS data (nothing of its depth above ${rep.threshold.toFixed(1)}σ)`);
     const z = ztfP ? await ztfP : undefined;
-    const zs = z?.v ? ztfSeries(z.v) : null;
+    const gr = groundP ? await groundP : undefined;
+    // ZTF and the all-sky surveys together: ztfSeries normalises each camera on its own.
+    const zl = [z?.v?.length ? "ZTF" : "", ...(gr?.v?.surveys ?? [])].filter(Boolean).join(" + ") || "ZTF";
+    const zpts = [...(z?.v ?? []), ...(gr?.v?.pts ?? [])];
+    const zs = zpts.length ? ztfSeries(zpts) : null;
     if (z?.err) vals.push(`ZTF unavailable (${z.err.slice(0, 60)})`);
     else if (!ztfP) vals.push(gMag !== undefined && gMag < 12.5 ? `ZTF not used: the star (G ${gMag.toFixed(1)}) saturates it` : `ZTF not used: ${ppt(depth0)} is too shallow for its ~1-2% points`);
-    else if (!zs) vals.push("ZTF has too few points on the star");
-    else vals.push(`${zs.t.length} ZTF points over ${((zs.t[zs.t.length - 1] - zs.t[0]) / 365.25).toFixed(1)} yr`);
+    if (gr?.v?.notes.length) vals.push(gr.v.notes.join("; "));
+    else if (gr?.err) vals.push(`ASAS-SN/ATLAS unavailable (${gr.err.slice(0, 60)})`);
+    if (zpts.length && !zs) vals.push(`${zl} has too few points on the star`);
+    else if (zs) vals.push(`${zs.t.length} ${zl} points over ${((zs.t[zs.t.length - 1] - zs.t[0]) / 365.25).toFixed(1)} yr`);
     const zTxt = (s: ZtfScore) => `${ppt(s.depth)} ± ${r3(s.err * 1000)} ppt in ${s.epochs} transit${s.epochs === 1 ? "" : "s"} (${s.points} points, Δχ² ${s.dchi2.toFixed(0)})`;
     // Through the known transit (the second of a duo counts as a repeat): the periods explaining the most dips.
     const repeats = [...known.slice(1), ...[...rep.events].sort((a, b) => b.snr - a.snr).slice(0, 8).map((e) => e.t)];
@@ -404,10 +423,10 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
         const det = sc.filter((s) => ztfDetects(s, depth0, aliases.length)).sort((a, b) => b.dchi2 - a.dchi2);
         const kept = sc.filter((s) => !ztfExcludes(s, depth0));
         if (det.length && det.every((s) => s === det[0] || s.dchi2 < det[0].dchi2 - 9)) {
-          why.push(`ZTF sees the transit at P ${r3(det[0].period)} d: ${zTxt(det[0])}`);
+          why.push(`${zl} sees the transit at P ${r3(det[0].period)} d: ${zTxt(det[0])}`);
           aliases = [det[0].period];
         } else if (kept.length && kept.length < sc.length) {
-          why.push(`ZTF rules out ${sc.length - kept.length} of the ${sc.length} periods the TESS dips allow (no dip where they predict one)`);
+          why.push(`${zl} rules out ${sc.length - kept.length} of the ${sc.length} periods the TESS dips allow (no dip where they predict one)`);
           aliases = kept.map((s) => s.period);
         }
       }
@@ -417,7 +436,7 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
         P = aliases[0]; T0 = t1;
         input = { ...input, kind: "periodic", period: P, t0: T0, transits: known.length };
         periodic = true;
-        ephSource = `recovered: ${events.length} TESS transits${why.some((w) => w.startsWith("ZTF sees")) ? " and ZTF" : ""}`;
+        ephSource = `recovered: ${events.length} TESS transits${why.some((w) => w.startsWith(`${zl} sees`)) ? ` and ${zl}` : ""}`;
         status = "pass";
         why.push(`the period is P = ${P.toFixed(4)} d: the find is vetted as a periodic signal from here on`);
         const cat = knownAtPeriod(P);
@@ -444,10 +463,10 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
         if (zr.best) {
           const best = zr.best, distinct = zr.rivals;
           if (!distinct.length) {
-            ztfPeriod = { period: best.period, t0: t1, source: `ZTF archive: ${best.epochs} ZTF transits through the TESS one` };
+            ztfPeriod = { period: best.period, t0: t1, source: `${zl} archive: ${best.epochs} ${zl} transits through the TESS one` };
             status = "pass";
-            why.push(`ZTF sees the transit at P ${best.period.toFixed(4)} d: ${zTxt(best)}; one TESS transit, so the period-based TESS checks still can't run, but it's predicted`);
-          } else why.push(`ZTF has dips at P ${r3(best.period)} d and ${distinct.slice(0, 3).map((s) => `${r3(s.period)} d`).join(", ")} about equally: not unique yet`);
+            why.push(`${zl} sees the transit at P ${best.period.toFixed(4)} d: ${zTxt(best)}; one TESS transit, so the period-based TESS checks still can't run, but it's predicted`);
+          } else why.push(`${zl} has dips at P ${r3(best.period)} d and ${distinct.slice(0, 3).map((s) => `${r3(s.period)} d`).join(", ")} about equally: not unique yet`);
         }
       }
       const pShape0 = (() => {
@@ -459,9 +478,54 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
       posterior = periodPosterior(grid, allowed, ztfOut, pShape0);
       if (posterior) {
         if (!ztfPeriod) why.push(`most probable P ≈ ${r3(posterior.median)} d (68%: ${r3(posterior.lo)}-${r3(posterior.hi)} d)${pShape0 ? `, from the periods the data allow, the transit probability and the shape's ${r3(pShape0)} d` : ", from the periods the data allow and the transit probability"}`);
-        vals.push(`${Math.round(posterior.allowedFrac * 100)}% of ${r3(pLo)}-2000 d allowed by the TESS coverage${zs ? `, ZTF rules out ${Math.round(posterior.ztfExcludedFrac * 100)}% of those` : ""}`);
+        vals.push(`${Math.round(posterior.allowedFrac * 100)}% of ${r3(pLo)}-2000 d allowed by the TESS coverage${zs ? `, ${zl} rules out ${Math.round(posterior.ztfExcludedFrac * 100)}% of those` : ""}`);
       }
       if (!ztfPeriod) why.push("a second transit fixes it: the next TESS sectors of the star, or ground photometry");
+    }
+    // Kepler/K2: the same dip years before TESS. Two or more there pin a period within the mission's
+    // run, which links to the TESS transit over the gap if only one whole number of orbits fits.
+    if (!periodic && !ztfPeriod) {
+      const mp = await missionParts();
+      if (mp.length) {
+        const mrep = findRepeats(mp, [], dur, depth0);
+        vals.push(`Kepler/K2 ${mp.map((m) => m.label).join(", ")}: ${mrep.events.length} dip${mrep.events.length === 1 ? "" : "s"} of this depth and duration${mrep.events.length ? ` (BTJD ${mrep.events.slice(0, 4).map((e) => e.t.toFixed(2)).join(", ")})` : ""}`);
+        if (mrep.events.length >= 2) {
+          const mAt = (t: number) => { const pt = partAt(mp, t, dur); return pt ? measureEvent(pt.flat, t, dur, pt.cadence, pt.beta) : null; };
+          const ts = mrep.events.map((e) => e.t);
+          const mSpan: [number, number] = [Math.min(...mp.map((m) => m.raw.t[0])), Math.max(...mp.map((m) => m.raw.t[m.raw.t.length - 1]))];
+          const mf = bestPeriods(ts[0], ts.slice(1), depth0, Math.max(0.5, pFloor), mSpan, mAt);
+          if (mf.length === 1) {
+            const hits = [...mf[0].hits].sort((a, b) => a - b), PK = mf[0].period;
+            // A timed dip is good to about a third of its duration: the period to that over the orbits it spans.
+            const sigK = dur / 3 / Math.max(1, Math.round((hits[hits.length - 1] - hits[0]) / PK));
+            const gap = t1 - hits[hits.length - 1];
+            const missesTess = (Pn: number) => epochs(Pn, t1, from, to).some(({ t }) => {
+              if (Math.abs(t - t1) < dur) return false;
+              const m = at(t);
+              return !!m && m.coverage >= 0.5 && depth0 - m.depth > 3 * m.err && m.depth < 0.3 * depth0;
+            });
+            const fit: number[] = [];
+            for (let n = Math.max(1, Math.floor(gap / (PK + 3 * sigK))); n <= Math.ceil(gap / Math.max(PK - 3 * sigK, 0.1)) && fit.length < 20; n++) {
+              const Pn = gap / n;
+              if (Math.abs(Pn - PK) <= 3 * sigK && !missesTess(Pn)) fit.push(Pn);
+            }
+            why.push(`Kepler/K2 shows the dip ${hits.length} times at P ${PK.toFixed(4)} ± ${sigK.toFixed(4)} d`);
+            if (fit.length === 1) {
+              const n = Math.round(gap / fit[0]);
+              P = fit[0]; T0 = t1;
+              input = { ...input, kind: "periodic", period: P, t0: T0, transits: known.length };
+              periodic = true;
+              ephSource = `recovered: TESS and Kepler/K2 (${n} orbits apart)`;
+              status = "pass";
+              why.push(`only one whole number of orbits (${n}) reaches the TESS transit: P = ${P.toFixed(5)} d, and the find is vetted as a periodic signal from here on`);
+              const cat = knownAtPeriod(P);
+              if (cat) { markKnown(cat); why.push(`and it's catalogued: ${cat}`); }
+              setFlat(windowsOf(P, T0, dur));
+            } else if (fit.length) why.push(`${fit.length} whole numbers of orbits reach the TESS transit (P ${fit.slice(0, 4).map((x) => x.toFixed(4)).join(", ")}${fit.length > 4 ? " …" : ""} d): not unique yet`);
+            else why.push("but no whole number of orbits at that period reaches the TESS transit without predicting a TESS transit that isn't there: another body, or another star");
+          }
+        }
+      }
     }
     add(1, "recovery", "Period recovery", status, why.join("; "), vals.join(" · "));
   }
@@ -1076,6 +1140,20 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     const g = gaia.v?.g ?? (star?.tmag !== undefined ? star.tmag + 0.4 : undefined);
     if (ztfPeriod || ephSource.includes("ZTF")) add(3, "ztf", "Ground photometry (ZTF archive)", "info", "ZTF picked the period (Period recovery, Stage 1), so it isn't an independent check here: its depth at that period is in that check");
     else if (!periodic || !ephem) add(3, "ztf", "Ground photometry (ZTF archive)", periodic ? "not-run" : "na", periodic ? "needs an ephemeris" : "folds ZTF on an ephemeris: none yet without a period");
+    else if ((g === undefined || g < 12.5 || pos.dec < -30) && D >= 3e-3 && groundP) {
+      // ZTF can't see the star (too bright, or too far south): ASAS-SN/ATLAS instead, one depth over all cameras.
+      const gr = await groundP;
+      const name = `Ground photometry (${gr.v?.surveys.join(" + ") || "ASAS-SN/ATLAS"})`;
+      const pts = (gr.v?.pts ?? []).map((x) => ({ ...x, band: "g" as const }));
+      const dz = pts.length ? ztfDepths(pts, ephem.period, ephem.t0, shape?.T14 ?? dur).g : null;
+      const why0 = g !== undefined && g < 12.5 ? `the star (G ${g.toFixed(1)}) saturates ZTF` : "ZTF doesn't reach dec < −30°";
+      const v = dz ? `${pts.length} points: ${ppt(dz.depth)} ± ${r3(dz.err * 1000)} ppt (${dz.inTransit} in transit)` : `${pts.length} points`;
+      if (gr.err || !gr.v?.pts.length) add(3, "ztf", name, "not-run", `${why0}, and ${gr.err ?? gr.v?.notes.join("; ") ?? "no ground photometry"}`, v);
+      else if (!dz) add(3, "ztf", name, "not-run", "too few ground points fall in transit", v);
+      else if (dz.depth / dz.err >= 3) add(3, "ztf", name, Math.abs(dz.depth - D) / dz.err < 3 ? "pass" : "flag", Math.abs(dz.depth - D) / dz.err < 3 ? "ground photometry sees the transit at the TESS depth: on the target, independently of TESS" : "ground photometry sees a dip at a different depth than TESS: dilution differs, so a neighbour may contribute", v);
+      else if ((D - dz.depth) / dz.err > 3) add(3, "ztf", name, "fail", "ground photometry of the target shows no dip where TESS predicts one: the eclipse is on another star blended in TESS's 21″ pixels", v);
+      else add(3, "ztf", name, "info", "ground photometry can't tell either way at this depth", v);
+    }
     else if (g === undefined || g < 12.5) add(3, "ztf", "Ground photometry (ZTF archive)", "not-run", `the star (G ${g?.toFixed(1) ?? "?"}) saturates ZTF (G < 12.5)`);
     else if (D < 3e-3) add(3, "ztf", "Ground photometry (ZTF archive)", "not-run", `${ppt(D)} is too shallow for ZTF's ~1-2% per-point precision`);
     else if (Date.now() > deadline - 25_000) add(3, "ztf", "Ground photometry (ZTF archive)", "not-run", "time budget used up");
@@ -1139,6 +1217,45 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     if (dataYears.size < 2) add(3, "independent", "Another season", "not-run", "only one year of TESS data", v);
     else if (years.size >= 2) add(3, "independent", "Another season", "pass", "seen in TESS data more than a year apart", v);
     else add(3, "independent", "Another season", input.kind === "single" ? "info" : "flag", input.kind === "single" ? "a single transit can only be in one season" : "transits only in one year, though other years have data", v);
+  }
+
+  // Kepler/K2: the star's light curves from years before TESS, searched at this period with free phase
+  // (the same test as "measured at its period in other seasons", noise floor from null searches).
+  // Seen there, the transit is confirmed by another telescope with 4″ pixels, and the two missions
+  // together pin the period over the whole gap.
+  {
+    const name = "Kepler/K2 archive";
+    const kk = await kkP;
+    const curves = kk.v?.curves ?? [];
+    const v = curves.length ? `${curves.length} light curve${curves.length === 1 ? "" : "s"}: ${[...new Set(curves.map((c) => `${c.mission} ${c.pipeline === c.mission ? "" : `${c.pipeline} `}${c.mission === "Kepler" ? "Q" : "C"}${c.segment}`))].join(", ")}` : (kk.v?.notes ?? []).join("; ").slice(0, 160);
+    if (kk.err) add(3, "missions", name, "not-run", `Kepler/K2 lookup failed (${kk.err})`);
+    else if (!curves.length) add(3, "missions", name, "na", "neither Kepler nor K2 observed the star", v);
+    else if (!periodic || !ephem) add(3, "missions", name, "not-run", "needs a period to fold the Kepler/K2 data on", v);
+    else if (Date.now() > deadline - 20_000) add(3, "missions", name, "not-run", "time budget used up", v);
+    else {
+      const T14 = shape?.T14 ?? dur;
+      const fc = forcedCheck(curves.map((c) => ({ time: c.t, flux: c.f, quality: new Float64Array(c.t.length) })), { period: ephem.period, duration: T14, depth: D });
+      const fv = `${v} · at P ${fc.period} d: ${ppt(fc.depth)} ± ${r3(fc.err * 1000)} ppt (SNR ${fc.snr.toFixed(1)}, ${fc.transits} transits)`;
+      if (fc.result === "recovered" || fc.result === "weak") {
+        const sameDepth = Math.abs(fc.depth - D) < 3 * Math.hypot(fc.err, 0.1 * D);
+        // One whole number of orbits between the missions: the period over the whole baseline.
+        let linked = "";
+        if (fc.t0 !== undefined && fc.result === "recovered") {
+          const gap = ephem.t0 - fc.t0, n = Math.round(gap / ephem.period);
+          const errP = ephem.errP ?? ephem.period * 1e-4;
+          if (n > 0 && Math.abs(gap) * errP / ephem.period ** 2 < 0.25) {
+            const Pl = gap / n, errPl = Math.hypot(ephem.errT0 ?? T14 / 10, T14 / 2 / Math.max(fc.snr, 1)) / n;
+            if (Math.abs(Pl - ephem.period) < 3 * Math.hypot(errP, errPl)) {
+              linked = `; ${n} orbits link it to TESS: P = ${Pl.toFixed(6)} ± ${r3(errPl)} d`;
+              ephem = { ...ephem, period: Pl, errP: errPl, source: `${ephem.source}, linked to Kepler/K2 over ${n} orbits` };
+            }
+          }
+        }
+        if (fc.result === "weak") add(3, "missions", name, "info", `a dip at this period in the Kepler/K2 data, but too weak to count${linked}`, fv);
+        else add(3, "missions", name, sameDepth ? "pass" : "flag", sameDepth ? `the transit is in the Kepler/K2 data years before TESS, at the same depth: a second telescope, with 4″ pixels to TESS's 21″${linked}` : `Kepler/K2 sees the transit, but at a different depth: dilution differs between the missions, so a neighbour may contribute${linked}`, fv);
+      } else if (fc.result === "absent") add(3, "missions", name, "flag", "Kepler/K2 watched the star at this period and saw no transit: the period is wrong, the signal is on a neighbour Kepler/K2's smaller pixels separate, or it started after", fv);
+      else add(3, "missions", name, "info", "Kepler/K2 can't tell either way at this depth", fv);
+    }
   }
 
   // Statistical validation: how likely each false-positive scenario is, given everything above.
@@ -1246,7 +1363,26 @@ function periodFromShape(shape: ShapeFit, rho: number) {
   return Math.sqrt(lo * hi);
 }
 
-function partAt(parts: Part[], t: number, duration: number) {
+/** ASAS-SN and (with a token) ATLAS points in ZTF's shape, which surveys gave any, and why the others didn't. */
+async function groundPhot(ra: number, dec: number, signal: AbortSignal): Promise<{ pts: ZtfPoint[]; surveys: string[]; notes: string[] }> {
+  const runs: [string, Promise<GroundPhot[]>][] = [["ASAS-SN", asassnLightCurve(ra, dec, signal)]];
+  if (atlasConfigured()) runs.push(["ATLAS", atlasLightCurve(ra, dec, signal, { budgetMs: 90_000 })]);
+  const got = await Promise.allSettled(runs.map(([, p]) => p));
+  const groups = got.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
+  const notes = got.flatMap((r, i) => (r.status === "rejected" ? [`${runs[i][0]} unavailable (${String((r.reason as Error)?.message ?? r.reason).slice(0, 60)})`] : r.value.length ? [] : [`${runs[i][0]} has no source at the star`]));
+  if (!atlasConfigured()) notes.push("ATLAS not used (needs an ATLAS_API_TOKEN)");
+  return { pts: toZtfPoints(groups), surveys: [...new Set(groups.map((g) => g.survey))], notes };
+}
+
+/** A Kepler or K2 light curve, prepared like a TESS one (cleaned, 30-min binned: Kepler's long cadence). */
+type MissionPart = { label: string; raw: Series; flat: Series; cadence: number; beta: number };
+function missionPart(c: MissionCurve): MissionPart | null {
+  const raw = trimGaps(binSeries(cleanSeries(c.t, c.f, new Float64Array(c.t.length)), 0.5 / 24));
+  if (raw.t.length < 50) return null;
+  return { label: `${c.mission === "Kepler" ? "Q" : "C"}${c.segment}`, raw, flat: raw, cadence: cadenceOf(raw.t), beta: 1 };
+}
+
+function partAt<T extends { flat: Series }>(parts: T[], t: number, duration: number) {
   return parts.find((p) => p.flat.t.length && t >= p.flat.t[0] - duration / 2 && t <= p.flat.t[p.flat.t.length - 1] + duration / 2);
 }
 

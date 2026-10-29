@@ -249,7 +249,7 @@ export function forcedCheck(parts: Pick<LightCurve, "time" | "flux" | "quality">
     : r.transits >= 2 && snr > floor && Math.abs(d - D) < 3 * err ? "weak"
     : "inconclusive";
   const p = (n: number) => +n.toPrecision(4);
-  return { period: p(r.period), depth: p(d), err: p(err), snr: p(snr), transits: r.transits, result };
+  return { period: p(r.period), depth: p(d), err: p(err), snr: p(snr), transits: r.transits, result, ...(Number.isFinite(r.t0) ? { t0: r.t0 } : {}) };
 }
 
 export async function runAnalysis(c: Cone, signal: AbortSignal, emit: (e: SkyEvent) => void, t0 = Date.now(), useClaude: Promise<boolean> = Promise.resolve(false)): Promise<SkyAnalysis> {

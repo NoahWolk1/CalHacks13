@@ -5,8 +5,8 @@
 // search and scoring (ztfSeries normalises each group to its own median, as it does ZTF fields).
 //  - ASAS-SN Sky Patrol v2 (Hart et al. 2023): the JSON API behind the official web app and the
 //    pyasassn client (asassn-lb01.ifa.hawaii.edu:9006, keyless). Cone search on the input catalog,
-//    then the light curve by asas_sn_id. Fallback (opt-in, see asassnLightCurve): the older ASAS-SN
-//    Photometry Database (Jayasinghe et al. 2019b, V only, to 2018) at asas-sn.osu.edu/photometry.
+//    then the light curve by asas_sn_id. Not used: the older Photometry Database at
+//    asas-sn.osu.edu/photometry, whose robots.txt disallows automated access.
 //  - ATLAS forced photometry (Shingles et al. 2021) needs a registered account's API token: read
 //    from ATLAS_API_TOKEN on the server, and the lookup throws (check "not run") without one.
 // Each lookup throws on failure, like the other archive lookups.
@@ -27,7 +27,6 @@ export type GroundPhot = {
 };
 
 const SKYPATROL = "http://asassn-lb01.ifa.hawaii.edu:9006";
-const PHOTDB = "https://asas-sn.osu.edu/photometry";
 const ATLAS_FP = "https://fallingstar-data.com/forcedphot";
 const UA = "Coordinate/0.1 (CalHacks 13 hackathon project)";
 
@@ -138,38 +137,10 @@ async function skyPatrol(ra: number, dec: number, signal: AbortSignal) {
 
 // ── ASAS-SN Photometry Database (v1) ────────────────────────────────────────
 
-/** Photometry Database CSV (hjd,camera,mag,mag_err,flux,flux_err; HJD UTC, V band). Upper limits
- *  come as ">17.1" magnitudes (or mag_err 99.99) and are dropped. */
-export function parsePhotDbCsv(csv: string) {
-  const lines = csv.trim().split(/\r?\n/);
-  const head = lines[0]?.split(",").map((s) => s.trim().toLowerCase()) ?? [];
-  const [it, ic, im, ie] = ["hjd", "camera", "mag", "mag_err"].map((k) => head.indexOf(k));
-  if (it < 0 || im < 0 || ie < 0) throw new Error("unexpected ASAS-SN photometry response");
-  return lines.slice(1).flatMap((l) => {
-    const c = l.split(","), t = Number(c[it]), mag = Number(c[im]), err = Number(c[ie]);
-    return Number.isFinite(t) && Number.isFinite(mag) && err > 0 && err < 99 ? [{ t: hjdToBtjd(t), mag, err, band: "V", camera: (c[ic] ?? "").trim() || "?" }] : [];
-  });
-}
-
-async function photDb(ra: number, dec: number, signal: AbortSignal) {
-  const q = JSON.parse(await getText(`${PHOTDB}.json?${new URLSearchParams({ ra: ra.toFixed(6), dec: dec.toFixed(6), radius: "0.1" })}`, { timeoutMs: 20_000, signal, retries: 1 })) as { results?: { link: string; raj2000: number; dej2000: number; blend?: boolean }[] };
-  if (!Array.isArray(q.results)) throw new Error("unexpected ASAS-SN photometry search response");
-  const hit = q.results.map((r) => ({ ...r, sep: sepArcsec(ra, dec, r.raj2000, r.dej2000) })).filter((r) => r.sep <= 3 && r.link.startsWith(`${PHOTDB}/`)).sort((a, b) => a.sep - b.sep)[0];
-  if (!hit) return [];
-  return parsePhotDbCsv(await getText(hit.link.replace(/\.json$/, ".csv"), { timeoutMs: 30_000, signal, retries: 1 }));
-}
-
-/** ASAS-SN light curve at a position (nearest source within 3″), per band and camera. Sky Patrol
- *  v2 first; `photometryDb: true` falls back to the v1 Photometry Database when v2 fails. That
- *  site's robots.txt disallows all automated agents, so the fallback stays off unless the caller
- *  decides a single user-requested lookup is acceptable. Empty when there's no source. */
-export async function asassnLightCurve(ra: number, dec: number, signal: AbortSignal, opts: { photometryDb?: boolean } = {}): Promise<GroundPhot[]> {
-  try {
-    return groupPhot("ASAS-SN", await skyPatrol(ra, dec, signal));
-  } catch (e) {
-    if (!opts.photometryDb || signal.aborted) throw e;
-    return groupPhot("ASAS-SN", await photDb(ra, dec, signal));
-  }
+/** ASAS-SN Sky Patrol v2 light curve at a position (nearest source within 3″), per band and camera.
+ *  Empty when there's no source. */
+export async function asassnLightCurve(ra: number, dec: number, signal: AbortSignal): Promise<GroundPhot[]> {
+  return groupPhot("ASAS-SN", await skyPatrol(ra, dec, signal));
 }
 
 // ── ATLAS forced photometry ─────────────────────────────────────────────────

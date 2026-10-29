@@ -69,7 +69,7 @@ export type SingleDip = { t: number; duration: number; depth: number; snr: numbe
 /** A known signal measured at its period in independent data (survey.ts), instead of re-discovered blind:
  *  "recovered" clears the detection bar, "weak" has a consistent depth below it, "absent" should have
  *  shown and didn't, "inconclusive" is too noisy to say. */
-export type ForcedCheck = { period: number; depth: number; err: number; snr: number; transits: number; result: "recovered" | "weak" | "absent" | "inconclusive" };
+export type ForcedCheck = { period: number; depth: number; err: number; snr: number; transits: number; result: "recovered" | "weak" | "absent" | "inconclusive"; /** Best epoch (BTJD), for linking ephemerides across data sets. */ t0?: number };
 
 /** What the Transit Hunter and Variability agents found on one star (measured, before vetting). */
 export type StarResult = {

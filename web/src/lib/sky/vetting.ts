@@ -161,7 +161,7 @@ const tapPost = (query: string): RequestInit => ({
 });
 
 /** Archive transit midpoint (BJD) and duration (hours) as a BTJD ephemeris, when both are there. */
-export const ephemeris = (mid: unknown, hours: unknown, perr?: unknown, midErr?: unknown) => {
+export const ephemeris = (mid: unknown, hours: unknown, perr?: unknown, midErr?: unknown): { t0?: number; duration?: number; sigmaP?: number; sigmaT0?: number } => {
   // Any BJD: Kepler and K2 planets' epochs (2009-2018) come before BTJD 0 and give a negative t0.
   if (!(typeof mid === "number" && typeof hours === "number" && mid > JD_MIN && hours > 0)) return {};
   const err = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.abs(v) : undefined);

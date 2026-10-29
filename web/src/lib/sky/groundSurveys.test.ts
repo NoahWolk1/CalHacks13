@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { atlasLightCurve, groupPhot, hjdToBtjd, mjdToBtjd, parseAtlas, parsePhotDbCsv, parseSkyPatrol, pickSkyPatrolTarget, tdbMinusUtc, toZtfPoints } from "./groundSurveys";
+import { atlasLightCurve, groupPhot, hjdToBtjd, mjdToBtjd, parseAtlas, parseSkyPatrol, pickSkyPatrolTarget, tdbMinusUtc, toZtfPoints } from "./groundSurveys";
 import { ztfScore, ztfSeries } from "./periodRecovery";
 
 const S = 1 / 86400;
@@ -58,17 +58,6 @@ describe("ASAS-SN Sky Patrol v2", () => {
   });
 });
 
-describe("ASAS-SN Photometry Database", () => {
-  it("reads the CSV export and drops upper limits", () => {
-    // First rows of WASP-4's export, plus the two forms a non-detection takes.
-    const csv = "hjd,camera,mag,mag_err,flux,flux_err\n2458328.70264,bh,12.483,0.02,38.972,0.717\n2456814.84905,bf,12.506,0.02,38.031,0.7\n2457000.1,bf,>17.12,99.99,0.1,0.2\n2457001.1,bf,17.2,99.99,0.1,0.2\n";
-    const pts = parsePhotDbCsv(csv);
-    expect(pts).toHaveLength(2);
-    expect(pts[0]).toMatchObject({ band: "V", camera: "bh", mag: 12.483, err: 0.02 });
-    expect(pts[0].t).toBeCloseTo(1328.70264 + 69.184 * S, 9);
-    expect(() => parsePhotDbCsv("<html>")).toThrow();
-  });
-});
 
 describe("ATLAS forced photometry", () => {
   const head = "###MJD          m      dm   uJy   duJy F err chi/N     RA       Dec        x        y     maj    min    phi    apfit mag5sig PA_DEG Sky   Obs";
