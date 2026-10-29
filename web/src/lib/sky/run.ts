@@ -1,6 +1,7 @@
 // Runs the sky agents for one cone in parallel; each source times out and fails on its own.
 import { getJson } from "@/lib/http";
-import { EXO_TAP, exoRequest, parseExoplanets } from "./exoplanets";
+import { EXO_CAP, EXO_TAP, exoRequest, parseExoplanets } from "./exoplanets";
+import { exofopToisNear } from "./toiTable";
 import { BODIES, bodyObject, HORIZONS_API, horizonsUrl, parseHorizons } from "./horizons";
 import { gaiaBright } from "./archives";
 import { parseSimbad, SIMBAD_TAP, simbadQuery, simbadTap } from "./simbad";
@@ -57,9 +58,32 @@ export async function simbad(c: Cone, signal: AbortSignal): Promise<SkyObject[] 
   }
 }
 
+/** Confirmed planets from the NASA Exoplanet Archive. Its whole host goes down (502) now and then:
+ *  then the known planets that are also TESS TOIs, from ExoFOP's TOI table (planets TESS never
+ *  flagged, e.g. most Kepler and K2 ones, are missing from it, and the note says so). */
+export async function exoplanets(c: Cone, signal: AbortSignal): Promise<SkyObject[] | { objects: SkyObject[]; note: string }> {
+  try {
+    return parseExoplanets(await getJson(EXO_TAP, { init: exoRequest(c), timeoutMs: SOURCE_TIMEOUT_MS, signal, retries: 1 }));
+  } catch (e) {
+    if (signal.aborted) throw e;
+    const why = (e as Error).message.slice(0, 80);
+    const rows = await exofopToisNear(c, signal).catch((x: Error) => { throw new Error(`${why}; ExoFOP fallback failed: ${x.message.slice(0, 60)}`); });
+    const objects: SkyObject[] = rows.filter((r) => /^(KP|CP)$/.test(r.disposition)).slice(0, EXO_CAP).map((r) => ({
+      id: "", name: r.planet ?? `TOI-${r.toi} (known planet)`, type: "Exoplanet", category: "exoplanet", ra: r.ra, dec: r.dec, source: "exoplanets",
+      url: `https://exofop.ipac.caltech.edu/tess/target.php?id=${r.tic}`,
+      props: {
+        TOI: r.toi, "host star": `TIC ${r.tic}`,
+        ...(r.distance ? { "distance (pc)": +r.distance.toPrecision(3) } : {}), ...(r.radius ? { "radius (Earth = 1)": +r.radius.toPrecision(3) } : {}),
+        ...(r.period ? { "orbital period (days)": +r.period.toPrecision(4) } : {}),
+      },
+    }));
+    return { objects, note: `Exoplanet Archive unavailable (${why}): known planets that are also TESS TOIs, from ExoFOP; planets TESS never flagged (most Kepler/K2 ones) are missing` };
+  }
+}
+
 export const SOURCES: Source[] = [
   { id: "simbad", label: "SIMBAD (CDS)", endpoint: SIMBAD_TAP, run: simbad },
-  { id: "exoplanets", label: "NASA Exoplanet Archive", endpoint: EXO_TAP, run: async (c, signal) => parseExoplanets(await getJson(EXO_TAP, { init: exoRequest(c), timeoutMs: SOURCE_TIMEOUT_MS, signal, retries: 1 })) },
+  { id: "exoplanets", label: "NASA Exoplanet Archive", endpoint: EXO_TAP, run: exoplanets },
   {
     id: "horizons", label: "JPL Horizons", endpoint: HORIZONS_API,
     run: async (c, signal) => {

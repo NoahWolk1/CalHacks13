@@ -3,9 +3,12 @@
 // is slow or down (it hangs on its big tables now and then): the rows are reshaped into MAST's columns
 // and summarised per mission by the same parseMast, so the result looks the same either way.
 import { getText } from "@/lib/http";
+import { parseCsv } from "./csv";
 import { adqlNum } from "./geom";
 import { missionLabel, parseMast } from "./telescopes";
 import type { Cone, SkyObject } from "./types";
+
+export { parseCsv };
 
 export const ESASKY_TAP = "https://sky.esa.int/esasky-tap/tap/sync";
 const ROWS = 2000;
@@ -36,26 +39,6 @@ export function esaskyQuery(t: Table, c: Cone) {
   const cols = [t.ra, t.dec, ...Object.keys(t.cols), ...(t.time ? [t.time.col] : [])];
   return `SELECT TOP ${ROWS} ${[...new Set(cols)].join(", ")} FROM observations.${t.table} `
     + `WHERE 1 = CONTAINS(POINT('ICRS', ${t.ra}, ${t.dec}), CIRCLE('ICRS', ${adqlNum(c.ra)}, ${adqlNum(c.dec)}, ${adqlNum(c.radius)}))`;
-}
-
-/** Minimal CSV (quoted fields, doubled quotes) → rows keyed by header. */
-export function parseCsv(text: string): Record<string, string>[] {
-  const rows: string[][] = [];
-  let row: string[] = [], cell = "", q = false;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (q) {
-      if (ch === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; } else cell += ch;
-    } else if (ch === '"') q = true;
-    else if (ch === ",") { row.push(cell); cell = ""; }
-    else if (ch === "\n" || ch === "\r") { if (ch === "\r" && text[i + 1] === "\n") i++; row.push(cell); cell = ""; if (row.some((x) => x !== "")) rows.push(row); row = []; }
-    else cell += ch;
-  }
-  if (cell || row.length) { row.push(cell); if (row.some((x) => x !== "")) rows.push(row); }
-  const [head, ...body] = rows;
-  if (!head) return [];
-  if (/<VOTABLE|QUERY_STATUS/.test(head.join(","))) throw new Error("ESASky TAP error");
-  return body.map((r) => Object.fromEntries(head.map((h, i) => [h.trim(), r[i] ?? ""])));
 }
 
 const toMjd = (v: string, mjd?: boolean) => {
