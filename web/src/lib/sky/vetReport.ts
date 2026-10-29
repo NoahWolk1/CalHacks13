@@ -236,6 +236,22 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     else add(0, "known", "Already catalogued", lines.length ? "flag" : "pass", [...lines, other.length ? `the star has other signals on file: ${[...new Set(other)].join(", ")}` : "", lines.length ? "" : "not a TOI, CTOI, known planet or catalogued binary at this period"].filter(Boolean).join("; "), checked);
   }
 
+  // A single or duo with a recovered period gets a second look at the catalogs that list a period
+  // but no usable epoch (KOIs, VSX, a planet or TOI without a transit time): same star, same period.
+  const knownAtPeriod = (P: number): string | undefined => {
+    for (const k of [...(planets.v ?? []), ...(tois.v ?? [])]) if (self(k) && periodsMatch(P, k.period, 0.01)) return `${k.name} (P ${k.period.toFixed(4)} d) is this signal, already in the ${k.kind === "planet" ? "NASA Exoplanet Archive" : "TOI list"}`;
+    for (const c of ctois.v ?? []) if (c.period && periodsMatch(P, c.period, 0.01)) return `${c.name} (P ${c.period.toFixed(4)} d) is this signal, already submitted as a community TOI`;
+    for (const k of kois.v ?? []) if (k.period && periodsMatch(P, k.period, 0.01)) return `${k.name} (${k.disposition}) is this signal, a Kepler Object of Interest`;
+    const own = vsx.v ? vsxEntry(pos, vsx.v) : undefined;
+    if (own?.period && own.type === "EP" && periodsMatch(P, own.period, 0.01)) return `AAVSO VSX lists the star as ${own.name}, a planet host with P ${own.period} d: this is that planet`;
+  };
+  const markKnown = (why: string) => {
+    if (known) return;
+    known = why;
+    const c = checks.find((x) => x.id === "known");
+    if (c) { c.status = "info"; c.detail = `${why} (matched at the recovered period). Not new: add notes on ExoFOP instead of a new submission`; emit({ type: "check", check: c, ms: ms(), replaces: true }); }
+  };
+
   const gateFail = checks.find((c) => c.stage === 0 && c.status === "fail");
   const finish = (rest: Partial<VetReport> & { transits: number }): VetReport => {
     const { transits, ...r } = rest;
@@ -404,6 +420,8 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
         ephSource = `recovered: ${events.length} TESS transits${why.some((w) => w.startsWith("ZTF sees")) ? " and ZTF" : ""}`;
         status = "pass";
         why.push(`the period is P = ${P.toFixed(4)} d: the find is vetted as a periodic signal from here on`);
+        const cat = knownAtPeriod(P);
+        if (cat) { markKnown(cat); why.push(`and it's catalogued: ${cat}`); }
       } else if (!aliases.length) {
         status = "flag";
         why.push("the periods the dips allow are too short for a transit this long on this star");

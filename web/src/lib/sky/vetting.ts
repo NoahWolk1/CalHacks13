@@ -48,6 +48,8 @@ export const SECONDARY_MAX = 0.1;
 export const DURATION_MAX_RATIO = 2.5;
 /** BJD - 2457000: the TESS mission's time system (BTJD). */
 export const BTJD = 2457000;
+/** Below this an epoch isn't a full JD (catalogs leave 0 or a truncated value for unknown ones). */
+export const JD_MIN = 2_400_000;
 
 const DISPOSITION: Record<string, string> = { CP: "confirmed planet", KP: "known planet", PC: "planet candidate", APC: "ambiguous planet candidate", FP: "false positive", FA: "false alarm" };
 
@@ -159,8 +161,9 @@ const tapPost = (query: string): RequestInit => ({
 });
 
 /** Archive transit midpoint (BJD) and duration (hours) as a BTJD ephemeris, when both are there. */
-const ephemeris = (mid: unknown, hours: unknown, perr?: unknown, midErr?: unknown) => {
-  if (!(typeof mid === "number" && typeof hours === "number" && mid > BTJD && hours > 0)) return {};
+export const ephemeris = (mid: unknown, hours: unknown, perr?: unknown, midErr?: unknown) => {
+  // Any BJD: Kepler and K2 planets' epochs (2009-2018) come before BTJD 0 and give a negative t0.
+  if (!(typeof mid === "number" && typeof hours === "number" && mid > JD_MIN && hours > 0)) return {};
   const err = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.abs(v) : undefined);
   return { t0: mid - BTJD, duration: hours / 24, ...(err(perr) ? { sigmaP: err(perr) } : {}), ...(err(midErr) ? { sigmaT0: err(midErr) } : {}) };
 };

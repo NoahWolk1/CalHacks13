@@ -56,7 +56,7 @@ export default function VetPanel({ input }: { input: VetInput }) {
           if (!line.trim()) continue;
           const e = JSON.parse(line) as VetStreamEvent;
           if (e.type === "progress") update({ progress: e.text });
-          else if (e.type === "check") update({ checks: [...s.checks, e.check] });
+          else if (e.type === "check") update({ checks: e.replaces ? s.checks.map((c) => (c.id === e.check.id && c.stage === e.check.stage ? e.check : c)) : [...s.checks, e.check] });
           else if (e.type === "events") update({ events: e.events });
           else if (e.type === "report") update({ report: e.report, checks: e.report.checks, events: e.report.events });
           else if (e.type === "saved") { update({ savedAt: e.saved.savedAt }); rememberVet(e.saved); }
