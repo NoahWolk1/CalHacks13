@@ -1,12 +1,15 @@
-// Variable Census agent's catalog: the AAVSO International Variable Star Index (VSX, via VizieR TAP),
+// Variable Census agent's catalog: the AAVSO International Variable Star Index (VSX: HEASARC's copy,
+// refreshed from AAVSO, with VizieR's at CDS as the fallback; AAVSO's own API sits behind a bot wall),
 // which folds in GCVS, ASAS-SN, ZTF, Gaia DR3, ATLAS, TESS and Kepler variable-star surveys. A
 // periodic variable or eclipsing binary found in a light curve and missing from VSX and SIMBAD's
 // variable types is uncatalogued: a new variable-star find that can be submitted to VSX.
-import { getJson } from "@/lib/http";
+import { getJson, getText } from "@/lib/http";
+import { parseVotable } from "./votable";
 import { adqlNum, separation } from "./geom";
 import type { Cone } from "./types";
 
 export const VIZIER_TAP = "https://tapvizier.cds.unistra.fr/TAPVizieR/tap/sync";
+export const HEASARC_TAP = "https://heasarc.gsfc.nasa.gov/xamin/vo/tap/sync";
 export type VsxStar = { name: string; type: string; period?: number; ra: number; dec: number };
 
 /** SIMBAD object types that already mark a star as variable (any kind). */
@@ -31,10 +34,32 @@ export function parseVsx(json: unknown): VsxStar[] {
   });
 }
 
-/** Catalogued variables in (and just around) the cone. */
+/** HEASARC's VSX table (aavsovsx): same stars, its own column names. */
+export function vsxHeasarcQuery(c: Cone, padArcmin = 2.5) {
+  return `SELECT TOP 3000 name, variability_type, period, ra, dec FROM aavsovsx `
+    + `WHERE CONTAINS(POINT('ICRS', ra, dec), CIRCLE('ICRS', ${adqlNum(c.ra)}, ${adqlNum(c.dec)}, ${adqlNum(c.radius + padArcmin / 60)})) = 1`;
+}
+
+export function parseVsxRows(rows: Record<string, unknown>[]): VsxStar[] {
+  return rows.flatMap((r) => {
+    const ra = r.ra, dec = r.dec, p = r.period;
+    if (typeof ra !== "number" || typeof dec !== "number") return [];
+    return [{ name: String(r.name ?? "").trim(), type: String(r.variability_type ?? "").trim(), ra, dec, ...(typeof p === "number" && p > 0 ? { period: p } : {}) }];
+  });
+}
+
+/** Catalogued variables in (and just around) the cone: HEASARC first, VizieR (CDS) if that fails. */
 export async function variablesNear(c: Cone, signal: AbortSignal): Promise<VsxStar[]> {
-  const url = `${VIZIER_TAP}?${new URLSearchParams({ REQUEST: "doQuery", LANG: "ADQL", FORMAT: "json", QUERY: vsxQuery(c) })}`;
-  return parseVsx(await getJson(url, { timeoutMs: 12_000, signal, retries: 1 }));
+  try {
+    const xml = await getText(`${HEASARC_TAP}?${new URLSearchParams({ REQUEST: "doQuery", LANG: "ADQL", QUERY: vsxHeasarcQuery(c) })}`, { timeoutMs: 15_000, signal, retries: 1 });
+    return parseVsxRows(parseVotable(xml));
+  } catch (heasarc) {
+    if (signal.aborted) throw heasarc;
+    const url = `${VIZIER_TAP}?${new URLSearchParams({ REQUEST: "doQuery", LANG: "ADQL", FORMAT: "json", QUERY: vsxQuery(c) })}`;
+    try { return parseVsx(await getJson(url, { timeoutMs: 12_000, signal, retries: 0 })); } catch (viz) {
+      throw new Error(`HEASARC: ${(heasarc as Error).message.slice(0, 60)}; VizieR: ${(viz as Error).message.slice(0, 60)}`);
+    }
+  }
 }
 
 /** The VSX entry for this star, if any. */

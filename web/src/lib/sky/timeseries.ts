@@ -97,8 +97,52 @@ export function stitch(parts: Series[]): Series {
   return { t, f };
 }
 
-/** A periodic transit window to cut out: centre t0 (days), period and duration (days). */
-export type Ephemeris = { period: number; t0: number; duration: number };
+/** A periodic transit window to cut out: centre t0 (days), period and duration (days). Catalog
+ *  ephemerides carry their 1σ errors (a period error grows by one per orbit); a re-centred one only
+ *  applies between `from` and `to`. */
+export type Ephemeris = { period: number; t0: number; duration: number; sigmaP?: number; sigmaT0?: number; from?: number; to?: number };
+
+/** 1σ uncertainty (days) of an ephemeris' predicted transit time nearest `t`. */
+export function ephemerisSigma(e: Pick<Ephemeris, "period" | "t0" | "sigmaP" | "sigmaT0">, t: number): number {
+  const n = Math.round((t - e.t0) / e.period);
+  return Math.hypot(e.sigmaT0 ?? 0, n * (e.sigmaP ?? 0));
+}
+
+/** Catalog ephemerides drift: after a few hundred orbits a TOI's predicted transits can be hours off,
+ *  and a mask at the catalog times misses the real transits (which then look like new signals). For
+ *  each stretch of data (split at gaps > 30 d) where the prediction is uncertain by more than a quarter
+ *  duration, the transit times are re-centred on the data: the shift within ±3σ that puts the deepest
+ *  box on the predicted transits (SNR ≥ 7). Not found there: the mask is widened by the uncertainty instead. */
+export function refineOnData(s: Series, e: Ephemeris): Ephemeris[] {
+  if (s.t.length < 50 || !(e.period > 0)) return [e];
+  const out: Ephemeris[] = [];
+  let i0 = 0;
+  for (let i = 1; i <= s.t.length; i++) {
+    if (i < s.t.length && s.t[i] - s.t[i - 1] <= 30) continue;
+    const from = s.t[i0], to = s.t[i - 1];
+    const sig = ephemerisSigma(e, (from + to) / 2);
+    if (3 * sig < e.duration / 4) { out.push({ ...e, from, to }); i0 = i; continue; }
+    const t = s.t.subarray(i0, i), f = s.f.subarray(i0, i);
+    const reach = Math.min(3 * sig, e.period / 2), step = e.duration / 8;
+    const noise = robustStd(f), base = median(f);
+    let best = { snr: 0, shift: 0 };
+    for (let d = -reach; d <= reach; d += step) {
+      let sum = 0, n = 0;
+      for (let k = 0; k < t.length; k++) {
+        const dt = t[k] - e.t0 - d - Math.round((t[k] - e.t0 - d) / e.period) * e.period;
+        if (Math.abs(dt) < e.duration / 2) { sum += f[k]; n++; }
+      }
+      if (n < 5) continue;
+      const snr = ((base - sum / n) / noise) * Math.sqrt(n);
+      if (snr > best.snr) best = { snr, shift: d };
+    }
+    out.push(best.snr >= 7
+      ? { ...e, t0: e.t0 + best.shift, from, to, sigmaT0: step, sigmaP: 0 }
+      : { ...e, duration: e.duration + 2 * Math.min(3 * sig, e.period / 8), from, to });
+    i0 = i;
+  }
+  return out;
+}
 
 /** Drops points within `factor` x half a duration of any listed transit (known planets, or signals
  *  already found), so the next search sees what's left. */
@@ -107,6 +151,7 @@ export function maskTransits(s: Series, eph: Ephemeris[], factor = 1.5): Series 
   const keep: number[] = [];
   for (let i = 0; i < s.t.length; i++) {
     const hit = eph.some((e) => {
+      if ((e.from !== undefined && s.t[i] < e.from - e.duration) || (e.to !== undefined && s.t[i] > e.to + e.duration)) return false;
       const dt = s.t[i] - e.t0 - Math.round((s.t[i] - e.t0) / e.period) * e.period;
       return Math.abs(dt) < (factor * e.duration) / 2;
     });

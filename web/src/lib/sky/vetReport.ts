@@ -17,7 +17,8 @@ import { ctoisFor, exofopTarget, inKeplerField, koisNear, tessEb, ticNeighbours,
 import { ticProducts, type LcProduct, type LightCurve } from "./lightcurves";
 import { isVariable, lombScargle } from "./lombscargle";
 import { duotransitAliases } from "./survey";
-import { binSeries, cleanSeries, median, stitch, trimGaps, type Series } from "./timeseries";
+import { bestPeriods, coverageAllows, findRepeats, mergeCoverage, periodGrid, periodPosterior, ztfDetects, ztfExcludes, ztfScore, ztfSearch, ztfSeries, type PeriodPosterior, type ZtfScore } from "./periodRecovery";
+import { binSeries, cleanSeries, ephemerisSigma, median, stitch, trimGaps, type Series } from "./timeseries";
 import {
   cadenceOf, centralDuration, combine, densityFromTransit, detrendLabel, detrendMasked, fitEphemeris, fitTrapezoid, inOutShift, lowerBound,
   massFromRadius, measureEvent, minPeriodFromCoverage, minPeriodFromDuration, redNoise, rhoOf, rvSemiAmplitude, R_JUP_EARTH, segments, timeEvent,
@@ -71,7 +72,10 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
   };
   const progress = (text: string) => emit({ type: "progress", text, ms: ms() });
   const d0 = input.duration, depth0 = input.depth;
-  const periodic = input.kind === "periodic" && !!input.period && input.t0 !== undefined;
+  // A single or duo whose period is recovered below is vetted as periodic from then on; the report
+  // keeps the find as asked (saved reports are matched on it).
+  const asked = input;
+  let periodic = input.kind === "periodic" && !!input.period && input.t0 !== undefined;
 
   // ── Stage 0: host star sanity ──
   progress("Stage 0: TIC, Gaia DR3, ExoFOP, CTOIs, the TESS EB catalog, VSX, known planets and TOIs");
@@ -147,11 +151,16 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
   }
 
   // Already known: a TOI/CTOI/planet/KOI with this signal (on the star = catalogued; on a neighbour = its light).
-  const matchesEphem = (P?: number, t0?: number, dur?: number) => {
+  // A single or duo matches a known ephemeris within its duration plus 3σ of the predicted time's drift
+  // (a TOI's period error, times the orbits since its t0, can reach hours).
+  const matchesEphem = (P?: number, t0?: number, dur?: number, sigma?: { sigmaP?: number; sigmaT0?: number }) => {
     if (!P) return false;
     if (periodic) return periodsMatch(input.period!, P, 0.01);
     if (t0 === undefined) return false;
-    return (input.times ?? []).some((t) => { const ph = t - t0 - Math.round((t - t0) / P) * P; return Math.abs(ph) < Math.max(dur ?? d0, d0); });
+    return (input.times ?? []).some((t) => {
+      const ph = t - t0 - Math.round((t - t0) / P) * P;
+      return Math.abs(ph) < Math.max(dur ?? d0, d0) + 3 * ephemerisSigma({ period: P, t0, ...sigma }, t);
+    });
   };
   const self = (k: { tic: string; ra: number; dec: number }) => k.tic === input.tic || separation(k.ra, k.dec, pos.ra, pos.dec) * 3600 < 3;
   let known: string | undefined;
@@ -161,7 +170,7 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     const ks: KnownSignal[] = [...(planets.v ?? []), ...(tois.v ?? [])];
     for (const k of ks) {
       const sep = separation(k.ra, k.dec, pos.ra, pos.dec) * 60;
-      if (matchesEphem(k.period, k.t0, k.duration)) {
+      if (matchesEphem(k.period, k.t0, k.duration, k)) {
         if (self(k)) known ??= `${k.name} (P ${k.period.toFixed(4)} d) is this signal, already in the ${k.kind === "planet" ? "NASA Exoplanet Archive" : "TOI list"}`;
         else fail ??= `${k.name} on TIC ${k.tic}, ${sep.toFixed(1)}′ away, has this period: its light leaking in`;
       } else if (self(k)) other.push(`${k.name} (P ${k.period.toFixed(3)} d)`);
@@ -227,7 +236,7 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
         : t.tier === "K" ? "Already catalogued: add notes to the existing entry on ExoFOP instead of submitting it again."
           : `Do not submit: ${t.reason}.`;
     const report: VetReport = {
-      input, checks, events: [], tier: t.tier, tierReason: t.reason, open: t.open, submit, sectors: [], lightCurves: 0, gated: false, ms: ms(),
+      input: asked, checks, events: [], tier: t.tier, tierReason: t.reason, open: t.open, submit, sectors: [], lightCurves: 0, gated: false, ms: ms(),
       ...(star ? { star: { teff: star.teff, radius: R, mass: M, logg: star.logg, rho, tmag: star.tmag, distance: star.distance, lumclass: star.lumclass } } : {}),
       ...r,
     };
@@ -239,6 +248,10 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     for (const s of [1, 2, 3] as VetStage[]) add(s, `stage${s}`, `Stage ${s}`, "not-run", `Stage 0 gate: ${why}. Run again with "continue past the gate" to see the rest.`);
     return finish({ gated: true, transits: 0 });
   }
+
+  // ZTF, started now (it can take ~30 s): the period recovery and the Stage 3 check both use it.
+  const gMag = gaia.v?.g ?? (star?.tmag !== undefined ? star.tmag + 0.4 : undefined);
+  const ztfP = gMag !== undefined && gMag >= 12.5 && depth0 >= 3e-3 ? settle(ztfLightCurve(pos.ra, pos.dec, signal)) : undefined;
 
   // ── light curves ──
   progress("Downloading every TESS sector of the star (best pipeline per sector)");
@@ -314,7 +327,118 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
   };
   setFlat(windowsOf(P, T0, dur));
   let ephSource = "as found";
-  if (periodic) {
+  const stack = (times: { t: number; part: Part }[], reach: number) => {
+    const dt: number[] = [], f: number[] = [], sg: number[] = [];
+    for (const { t, part } of times) {
+      const s = part.flat;
+      for (let i = lowerBound(s.t, t - reach); i < s.t.length && s.t[i] <= t + reach; i++) { dt.push(s.t[i] - t); f.push(s.f[i]); sg.push(part.scatter || 1e-3); }
+    }
+    return { dt: Float64Array.from(dt), f: Float64Array.from(f), sg: Float64Array.from(sg) };
+  };
+
+  // ── period recovery (single and duo finds) ──
+  // The same transit again anywhere in TESS, then the ZTF archive at every period still allowed
+  // (periodRecovery.ts). A period that's pinned down turns the find periodic for everything below.
+  let recAliases: number[] | undefined;
+  let ztfPeriod: { period: number; t0: number; source: string } | undefined;
+  let posterior: PeriodPosterior | null = null;
+  if (!periodic && input.times?.length) {
+    progress("Period recovery: the transit searched for again in every sector, then in the ZTF archive");
+    const known = [...input.times].sort((a, b) => a - b), t1 = known[0];
+    const why: string[] = [], vals: string[] = [];
+    let status: VetStatus = "info";
+    const k = Math.sqrt(depth0);
+    // The transit can't be much longer than a central one at P: a floor on the period (eccentric orbits get 1.3x).
+    const pFloor = rho ? minPeriodFromDuration(dur / 1.3, rho, k) : 0;
+    const rep = findRepeats(primary, known, dur, depth0);
+    vals.push(`${primary.length} sector${primary.length === 1 ? "" : "s"} scanned (${rep.days.toFixed(0)} d)${rep.events.length ? `: ${rep.events.slice(0, 4).map((e) => `BTJD ${e.t.toFixed(2)}, ${ppt(e.depth)}, SNR ${e.snr.toFixed(1)}`).join("; ")}` : ""}`);
+    if (rep.events.length) why.push(`found the ${ppt(depth0)} transit ${rep.events.length} more time${rep.events.length === 1 ? "" : "s"} in TESS (BTJD ${rep.events.map((e) => e.t.toFixed(2)).join(", ")}; same depth and duration, above the ${rep.threshold.toFixed(1)}σ false-alarm threshold)`);
+    else if (Number.isFinite(rep.threshold)) why.push(`no repeat of the transit in ${rep.days.toFixed(0)} days of TESS data (nothing of its depth above ${rep.threshold.toFixed(1)}σ)`);
+    const z = ztfP ? await ztfP : undefined;
+    const zs = z?.v ? ztfSeries(z.v) : null;
+    if (z?.err) vals.push(`ZTF unavailable (${z.err.slice(0, 60)})`);
+    else if (!ztfP) vals.push(gMag !== undefined && gMag < 12.5 ? `ZTF not used: the star (G ${gMag.toFixed(1)}) saturates it` : `ZTF not used: ${ppt(depth0)} is too shallow for its ~1-2% points`);
+    else if (!zs) vals.push("ZTF has too few points on the star");
+    else vals.push(`${zs.t.length} ZTF points over ${((zs.t[zs.t.length - 1] - zs.t[0]) / 365.25).toFixed(1)} yr`);
+    const zTxt = (s: ZtfScore) => `${ppt(s.depth)} ± ${r3(s.err * 1000)} ppt in ${s.epochs} transit${s.epochs === 1 ? "" : "s"} (${s.points} points, Δχ² ${s.dchi2.toFixed(0)})`;
+    // Through the known transit (the second of a duo counts as a repeat): the periods explaining the most dips.
+    const repeats = [...known.slice(1), ...[...rep.events].sort((a, b) => b.snr - a.snr).slice(0, 8).map((e) => e.t)];
+    const at = (t: number) => { const p = partAt(primary, t, dur); return p ? measureEvent(p.flat, t, dur, p.cadence, p.beta) : null; };
+    const fits = repeats.length ? bestPeriods(t1, repeats, depth0, Math.max(0.5, pFloor), [from, to], at) : [];
+    const fitTimes = fits[0]?.hits ?? [];
+    const others = repeats.filter((t) => !fitTimes.some((h) => Math.abs(h - t) < dur));
+    const events = fits.length ? fitTimes : known;
+    if (fits.length && others.length) why.push(`${others.length} of the dips don't fit the period (BTJD ${others.slice(0, 4).map((t) => t.toFixed(2)).join(", ")}): other events, or systematics`);
+    if (repeats.length && !fits.length) { status = "flag"; why.push("the dips don't fit one period without predicting a transit where TESS saw none: not one transiting body, or the repeats are something else"); }
+    if (fits.length) {
+      let aliases = fits.map((f) => f.period);
+      if (M && R) aliases = aliases.filter((p) => centralDuration(p, M, R, k) * 1.3 >= dur);
+      if (zs && aliases.length > 1) {
+        const sc = aliases.map((p) => ztfScore(zs, p, events[0], dur));
+        const det = sc.filter((s) => ztfDetects(s, depth0, aliases.length)).sort((a, b) => b.dchi2 - a.dchi2);
+        const kept = sc.filter((s) => !ztfExcludes(s, depth0));
+        if (det.length && det.every((s) => s === det[0] || s.dchi2 < det[0].dchi2 - 9)) {
+          why.push(`ZTF sees the transit at P ${r3(det[0].period)} d: ${zTxt(det[0])}`);
+          aliases = [det[0].period];
+        } else if (kept.length && kept.length < sc.length) {
+          why.push(`ZTF rules out ${sc.length - kept.length} of the ${sc.length} periods the TESS dips allow (no dip where they predict one)`);
+          aliases = kept.map((s) => s.period);
+        }
+      }
+      recAliases = aliases;
+      if (aliases.length === 1) {
+        // Pinned down: vetted as a periodic signal from here on.
+        P = aliases[0]; T0 = t1;
+        input = { ...input, kind: "periodic", period: P, t0: T0, transits: known.length };
+        periodic = true;
+        ephSource = `recovered: ${events.length} TESS transits${why.some((w) => w.startsWith("ZTF sees")) ? " and ZTF" : ""}`;
+        status = "pass";
+        why.push(`the period is P = ${P.toFixed(4)} d: the find is vetted as a periodic signal from here on`);
+      } else if (!aliases.length) {
+        status = "flag";
+        why.push("the periods the dips allow are too short for a transit this long on this star");
+      } else {
+        if (input.kind === "single") input = { ...input, kind: "duo", times: events };
+        why.push(`${aliases.length} periods still fit (${aliases.slice(0, 5).map((p) => p.toFixed(2)).join(", ")}${aliases.length > 5 ? " …" : ""} d): the alias check below lists them`);
+      }
+      setFlat(windowsOf(P, T0, dur));
+    } else if (input.kind === "single") {
+      // One transit: every period the coverage allows, scored against ZTF.
+      const pLo = Math.max(minPeriodFromCoverage(t1, coverage, dur), pFloor, 0.5);
+      const reach = Math.max(to - t1, t1 - from, zs ? Math.max(zs.t[zs.t.length - 1] - t1, t1 - zs.t[0]) : 0);
+      const grid = periodGrid(pLo, 2000, dur, reach);
+      const cov = mergeCoverage(coverage);
+      const allowed = grid.map((p) => coverageAllows(p, t1, dur, cov, known));
+      let ztfOut = grid.map(() => false);
+      if (zs && grid.length) {
+        const zr = ztfSearch(zs, t1, dur, depth0, grid, allowed);
+        ztfOut = zr.excluded;
+        if (zr.best) {
+          const best = zr.best, distinct = zr.rivals;
+          if (!distinct.length) {
+            ztfPeriod = { period: best.period, t0: t1, source: `ZTF archive: ${best.epochs} ZTF transits through the TESS one` };
+            status = "pass";
+            why.push(`ZTF sees the transit at P ${best.period.toFixed(4)} d: ${zTxt(best)}; one TESS transit, so the period-based TESS checks still can't run, but it's predicted`);
+          } else why.push(`ZTF has dips at P ${r3(best.period)} d and ${distinct.slice(0, 3).map((s) => `${r3(s.period)} d`).join(", ")} about equally: not unique yet`);
+        }
+      }
+      const pShape0 = (() => {
+        const part = partAt(primary, t1, dur);
+        const st0 = part ? stack([{ t: t1, part }], dur * 2.5) : null;
+        const sh = st0 ? fitTrapezoid(st0.dt, st0.f, st0.sg, dur) : null;
+        return sh && rho ? periodFromShape(sh, rho) : undefined;
+      })();
+      posterior = periodPosterior(grid, allowed, ztfOut, pShape0);
+      if (posterior) {
+        if (!ztfPeriod) why.push(`most probable P ≈ ${r3(posterior.median)} d (68%: ${r3(posterior.lo)}-${r3(posterior.hi)} d)${pShape0 ? `, from the periods the data allow, the transit probability and the shape's ${r3(pShape0)} d` : ", from the periods the data allow and the transit probability"}`);
+        vals.push(`${Math.round(posterior.allowedFrac * 100)}% of ${r3(pLo)}-2000 d allowed by the TESS coverage${zs ? `, ZTF rules out ${Math.round(posterior.ztfExcludedFrac * 100)}% of those` : ""}`);
+      }
+      if (!ztfPeriod) why.push("a second transit fixes it: the next TESS sectors of the star, or ground photometry");
+    }
+    add(1, "recovery", "Period recovery", status, why.join("; "), vals.join(" · "));
+  }
+  // BLS is free in phase: on a recovered period it could slide onto a deeper eclipse (an EB's primary); the timing fit refines those instead.
+  if (periodic && asked.kind === "periodic") {
     const all = stitch(primary.map((p) => p.flat));
     const total = all.t.length ? all.t[all.t.length - 1] - all.t[0] : 0;
     if (P < total / 2 && Date.now() < deadline - 60_000) {
@@ -349,14 +473,6 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
   const D = comb.depth > 0 ? comb.depth : depth0;
 
   // ── shape (needed for timing): folded or stacked transit points ──
-  const stack = (times: { t: number; part: Part }[], reach: number) => {
-    const dt: number[] = [], f: number[] = [], sg: number[] = [];
-    for (const { t, part } of times) {
-      const s = part.flat;
-      for (let i = lowerBound(s.t, t - reach); i < s.t.length && s.t[i] <= t + reach; i++) { dt.push(s.t[i] - t); f.push(s.f[i]); sg.push(part.scatter || 1e-3); }
-    }
-    return { dt: Float64Array.from(dt), f: Float64Array.from(f), sg: Float64Array.from(sg) };
-  };
   const st = stack(measured.map((r) => ({ t: r.t, part: r.part! })), dur * 2.5);
   let shape: ShapeFit | null = null;
   if (Date.now() < deadline - 40_000) shape = fitTrapezoid(st.dt, st.f, st.sg, dur);
@@ -415,7 +531,7 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     const v = rows.map((r) => `BTJD ${r.t.toFixed(2)}: ${r.snr !== undefined ? `SNR ${r.snr.toFixed(1)}, ${ppt(r.depth!)}` : "no data"}`).join("; ");
     if (lost.length) add(1, "events", "Individual transits", "fail", `the dip at BTJD ${lost.map((r) => r.t.toFixed(2)).join(", ")} isn't there in a fresh reduction (SNR < 3): a systematic of the first search`, v);
     else if (N < rows.length) add(1, "events", "Individual transits", "not-run", `${rows.length - N} of the listed dips fall outside the light curves that downloaded`, v);
-    else add(1, "events", "Individual transits", "flag", input.kind === "single" ? "one transit: the period is unknown" : "two transits: the period rests on one spacing (and its aliases)", v);
+    else add(1, "events", "Individual transits", "flag", input.kind === "single" ? (ztfPeriod ? `one TESS transit: the period (${r3(ztfPeriod.period)} d) comes from ZTF alone` : "one transit: the period is unknown") : "two transits: the period rests on one spacing (and its aliases)", v);
   }
 
   // Event consistency: one depth for every transit, and the signal not resting on a few outliers.
@@ -519,9 +635,9 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     add(1, "aliases", "Alias periods", survive.length ? "flag" : "pass", survive.length ? `not ruled out: ${survive.join(", ")}` : "P/2 to P/5 each predict transits where the data show none", excluded.length ? `ruled out: ${excluded.join(", ")}` : undefined);
   } else if (input.kind === "duo" && input.times!.length >= 2) {
     const [t1, t2] = [...input.times!].sort((a, b) => a - b);
-    let aliases = duotransitAliases(t1, t2, dur, coverage, 1, 2000);
+    let aliases = recAliases ?? duotransitAliases(t1, t2, dur, coverage, 1, 2000);
     const T14 = shape?.T14 ?? dur;
-    const fitDur = M && R ? aliases.filter((p) => centralDuration(p, M, R, Math.sqrt(D)) * 1.3 >= T14) : aliases;
+    const fitDur = M && R && !recAliases ? aliases.filter((p) => centralDuration(p, M, R, Math.sqrt(D)) * 1.3 >= T14) : aliases;
     const tooLong = aliases.length - fitDur.length;
     aliases = fitDur;
     duoAliases = aliases;
@@ -533,6 +649,7 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     const minCov = minPeriodFromCoverage(input.times![0], coverage, dur);
     add(1, "aliases", "Alias periods", "info", `periods under ${minCov.toFixed(1)} d would have shown a second transit in the data around the dip${minPdur ? `; on this star a ${hours(shape?.T14 ?? dur)} transit needs P ≳ ${minPdur.toFixed(1)} d (central, circular orbit)` : ""}`, `P > ${Math.max(minCov, minPdur ?? 0).toFixed(1)} d`);
   } else add(1, "aliases", "Alias periods", "not-run", "fewer than 2 transits");
+  if (!ephem && ztfPeriod) ephem = ztfPeriod;
 
   // Detrending sensitivity.
   const eventTimes = measured.map((r) => r.t);
@@ -601,12 +718,19 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
         if (c.snr > worst.snr) worst = { ph, snr: c.snr, depth: c.depth };
       }
     }
+    // A deeper dip in most orbits (2+), not one deep transit of another body that lands at this phase.
+    const repeatsAt = (ph: number) => {
+      const ms_ = epochs(P, T0 + ph * P, from, to).flatMap(({ t }) => { const p = partAt(primary, t, dur); const m = p && measureEvent(p.flat, t, dur, p.cadence, p.beta); return m && m.coverage >= 0.5 ? [m] : []; });
+      const deep = ms_.filter((m) => m.depth > 1.5 * D && m.snr > 3).length;
+      return deep >= 2 && deep >= ms_.length / 2;
+    };
     // In units of the red noise the model-shift test measured (F_red), where it ran.
     const fred = shift?.fred ?? 1;
     sec.snr /= fred; worst.snr /= fred;
     const v = `phase 0.5: ${Number.isFinite(sec.depth) ? `${ppt(sec.depth)} (${sec.snr.toFixed(1)}σ)` : "no data"}${worst.snr ? `; deepest elsewhere: phase ${worst.ph.toFixed(2)}, ${ppt(worst.depth)} (${worst.snr.toFixed(1)}σ)` : ""}${fred > 1 ? `; σ include red noise (×${fred.toFixed(2)})` : ""}`;
     if (!Number.isFinite(sec.depth)) add(2, "secondary", "Secondary eclipse", "not-run", "no data at phase 0.5");
     else if (sec.snr > 3 && sec.depth > 0.1 * D) add(2, "secondary", "Secondary eclipse", "fail", `a ${sec.snr.toFixed(1)}σ eclipse at phase 0.5, ${Math.round((sec.depth / D) * 100)}% of the transit depth: too bright to be a planet's occultation`, v);
+    else if (worst.snr > 4 && worst.depth > 1.5 * D && repeatsAt(worst.ph)) add(2, "secondary", "Secondary eclipse", "fail", `a deeper eclipse at phase ${worst.ph.toFixed(2)} (${ppt(worst.depth)}, ${(worst.depth / D).toFixed(1)}× the transit): an eclipsing binary on an eccentric orbit, and this signal is its secondary eclipse`, v);
     else if (worst.snr > 4 && worst.depth > 0.1 * D) add(2, "secondary", "Secondary eclipse", "flag", `a ${worst.snr.toFixed(1)}σ dip at phase ${worst.ph.toFixed(2)}: a secondary eclipse on an eccentric orbit?`, v);
     else add(2, "secondary", "Secondary eclipse", "pass", sec.snr > 3 ? "a shallow occultation at phase 0.5 (under 10% of the depth): consistent with a hot planet's thermal emission" : "no secondary eclipse at phase 0.5 or elsewhere", v);
   } else {
@@ -652,12 +776,9 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     if (!shape || !rho) add(2, "density", "Period from the transit shape", "not-run", !shape ? "no shape fit" : "no catalog density");
     else if (!(totalSnr >= 15) || shape.T12 < 1.5 * Math.min(...measured.map((r) => r.part!.cadence))) add(2, "density", "Period from the transit shape", "not-run", `ingress not resolved (SNR ${totalSnr.toFixed(1)}, ingress ${hours(shape.T12)})`);
     else {
-      const at = (Pt: number) => densityFromTransit(Pt, shape.depth, shape.T14, shape.T12)?.rho;
-      let lo = Math.max(2.2 * shape.T14, 0.2), hi = 20_000;
-      if (at(lo) === undefined) add(2, "density", "Period from the transit shape", "not-run", "the fitted shape has no flat bottom, so the impact parameter is unconstrained");
+      pShape = periodFromShape(shape, rho);
+      if (pShape === undefined) add(2, "density", "Period from the transit shape", "not-run", "the fitted shape has no flat bottom, so the impact parameter is unconstrained");
       else {
-        for (let k = 0; k < 60; k++) { const mid = Math.sqrt(lo * hi), r = at(mid); if (r === undefined || r > rho) hi = mid; else lo = mid; }
-        pShape = Math.sqrt(lo * hi);
         const v = `P ≈ ${r3(pShape)} d (range ~${r3(pShape / 2)}-${r3(pShape * 2)} d for modest eccentricity) from T14 ${hours(shape.T14)}, ingress ${hours(shape.T12)} and ρ★ ${r3(rho)} ρ☉; the data allow P > ${r3(minP)} d`;
         if (pShape * 2 < minP) add(2, "density", "Period from the transit shape", "flag", `the shape wants P ≈ ${r3(pShape)} d, but a period that short would have shown another transit: an eccentric orbit seen near periastron, a larger (blended) host, or a wrong stellar density`, v);
         else add(2, "density", "Period from the transit shape", "pass", `the transit's shape on this star implies P ≈ ${r3(pShape)} d, consistent with the data showing no other transit`, v);
@@ -924,13 +1045,16 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
   // ZTF: a second photometric system in g and r, for transits deep enough on stars faint enough.
   {
     const g = gaia.v?.g ?? (star?.tmag !== undefined ? star.tmag + 0.4 : undefined);
-    if (!periodic || !ephem) add(3, "ztf", "Ground photometry (ZTF archive)", periodic ? "not-run" : "na", periodic ? "needs an ephemeris" : "folds ZTF on an ephemeris: none yet without a period");
+    if (ztfPeriod || ephSource.includes("ZTF")) add(3, "ztf", "Ground photometry (ZTF archive)", "info", "ZTF picked the period (Period recovery, Stage 1), so it isn't an independent check here: its depth at that period is in that check");
+    else if (!periodic || !ephem) add(3, "ztf", "Ground photometry (ZTF archive)", periodic ? "not-run" : "na", periodic ? "needs an ephemeris" : "folds ZTF on an ephemeris: none yet without a period");
     else if (g === undefined || g < 12.5) add(3, "ztf", "Ground photometry (ZTF archive)", "not-run", `the star (G ${g?.toFixed(1) ?? "?"}) saturates ZTF (G < 12.5)`);
     else if (D < 3e-3) add(3, "ztf", "Ground photometry (ZTF archive)", "not-run", `${ppt(D)} is too shallow for ZTF's ~1-2% per-point precision`);
     else if (Date.now() > deadline - 25_000) add(3, "ztf", "Ground photometry (ZTF archive)", "not-run", "time budget used up");
     else {
       try {
-        const pts = await ztfLightCurve(pos.ra, pos.dec, signal);
+        const early = ztfP ? await ztfP : undefined;
+        if (early?.err) throw new Error(early.err);
+        const pts = early?.v ?? await ztfLightCurve(pos.ra, pos.dec, signal);
         const dz = ztfDepths(pts, ephem.period, ephem.t0, shape?.T14 ?? dur);
         const bands = (["g", "r"] as const).flatMap((b) => (dz[b] ? [{ b, ...dz[b]! }] : []));
         const v = `${pts.length} ZTF points; ${bands.map((x) => `${x.b}: ${ppt(x.depth)} ± ${r3(x.err * 1000)} (${x.inTransit} in transit)`).join("; ") || "too few in transit"}`;
@@ -991,7 +1115,7 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
   // Statistical validation: how likely each false-positive scenario is, given everything above.
   let fppOut: VetReport["fpp"];
   // Without a period, the calculation assumes one: the shape's estimate, else the shortest allowed.
-  const pFpp = periodic ? P : ephem?.period ?? (duoAliases.length ? Math.min(...duoAliases) : Math.max(pShape ?? 0, minCovP, minPdur ?? 0) || undefined);
+  const pFpp = periodic ? P : ephem?.period ?? (duoAliases.length ? Math.min(...duoAliases) : Math.max(posterior?.median ?? pShape ?? 0, minCovP, minPdur ?? 0) || undefined);
   if ((periodic && N < 3) || !shape || !pFpp) add(3, "fpp", "False-positive probability", "not-run", !shape ? "no transit shape" : !pFpp ? "no period or period bound to assume" : "fewer than 3 transits");
   else if (!M || !R || !star?.teff || star.tmag === undefined) add(3, "fpp", "False-positive probability", "not-run", "needs the star's mass, radius, Teff and Tmag");
   else if (Date.now() > deadline - 15_000) add(3, "fpp", "False-positive probability", "not-run", "time budget used up");
@@ -1018,7 +1142,7 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
       fppOut = { fpp: res.fpp, nfpp: res.nfpp, scenarios: res.scenarios.slice(0, 8).map(({ id, label, prob }) => ({ id, label, prob })), notes: res.notes };
       const pc = (x: number) => (x < 0.001 ? "< 0.1%" : `${(x * 100).toPrecision(2)}%`);
       const v = `FPP ${pc(res.fpp)}, NFPP ${pc(res.nfpp)}; most likely: ${res.scenarios.slice(0, 3).map((x) => `${x.label} ${pc(x.prob)}`).join(", ")}`;
-      const tail = ` (an approximate TRICERATOPS-style calculation${periodic ? "" : `, assuming P ≈ ${r3(pFpp)} d as TRICERATOPS does for single transits`}: run TRICERATOPS with a contrast curve before claiming validation)`;
+      const tail = ` (an approximate TRICERATOPS-style calculation${periodic ? "" : `, assuming P ≈ ${r3(pFpp)} d${posterior ? " (the most probable period)" : ""} as TRICERATOPS does for single transits`}: run TRICERATOPS with a contrast curve before claiming validation)`;
       if (res.nfpp > 0.5 || (res.fpp > 0.95 && comb.snr >= 15)) add(3, "fpp", "False-positive probability", "fail", `${res.nfpp > 0.5 ? "a nearby star is the most likely source" : "a false positive is far more likely than a planet"}${tail}`, v);
       else if (res.fpp < 0.015 && res.nfpp < 0.001) add(3, "fpp", "False-positive probability", "pass", `low enough for statistical validation by TRICERATOPS's thresholds (FPP < 1.5%, NFPP < 0.1%)${tail}`, v);
       else add(3, "fpp", "False-positive probability", "flag", `${res.fpp < 0.5 && res.nfpp < 0.001 ? "a likely planet, but not validated" : res.nfpp > 0.1 ? "a nearby false positive is plausible" : "a false positive is about as likely as a planet"}${tail}`, v);
@@ -1032,7 +1156,7 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
   const minCovSingle = input.kind === "single" ? minPeriodFromCoverage(input.times![0], coverage, dur) : 0;
   const Pf = ephem?.period ?? (duoAliases.length ? Math.min(...duoAliases) : Math.max(minPdur ?? 0, minCovSingle) || undefined);
   let next: VetReport["next"];
-  if (ephem && (periodic || input.kind === "duo")) {
+  if (ephem && (periodic || input.kind === "duo" || ztfPeriod)) {
     const now = btjdNow();
     next = epochs(ephem.period, ephem.t0, now, now + Math.max(ephem.period * 3.5, 0)).slice(0, 3).map(({ n, t }) => {
       const err = ephem!.errT0 !== undefined && ephem!.errP !== undefined ? Math.hypot(ephem!.errT0, n * ephem!.errP) : undefined;
@@ -1083,6 +1207,16 @@ export function aliasWindows(periods: number[], tLast: number, now: number) {
 }
 
 /** The part whose data covers time t (within half a duration of its range). */
+/** Period at which the transit's shape (a/R★ per unit period) matches the catalog density: circular
+ *  orbit; the photo-eccentric effect makes it uncertain by ~2x either way. */
+function periodFromShape(shape: ShapeFit, rho: number) {
+  const at = (Pt: number) => densityFromTransit(Pt, shape.depth, shape.T14, shape.T12)?.rho;
+  let lo = Math.max(2.2 * shape.T14, 0.2), hi = 20_000;
+  if (at(lo) === undefined) return undefined;
+  for (let k = 0; k < 60; k++) { const mid = Math.sqrt(lo * hi), r = at(mid); if (r === undefined || r > rho) hi = mid; else lo = mid; }
+  return Math.sqrt(lo * hi);
+}
+
 function partAt(parts: Part[], t: number, duration: number) {
   return parts.find((p) => p.flat.t.length && t >= p.flat.t[0] - duration / 2 && t <= p.flat.t[p.flat.t.length - 1] + duration / 2);
 }

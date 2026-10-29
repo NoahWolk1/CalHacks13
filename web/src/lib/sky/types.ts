@@ -195,7 +195,7 @@ export type SurveyStar = {
   priority: number;
   playbook: Playbook; why: string;
   masked: string[]; // known planets / TOIs masked before searching
-  masks: { period: number; t0: number; duration: number }[];
+  masks: { period: number; t0: number; duration: number; sigmaP?: number; sigmaT0?: number }[];
   seasons: SurveySeason[];
 };
 

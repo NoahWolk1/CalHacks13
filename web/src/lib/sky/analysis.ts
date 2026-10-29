@@ -25,7 +25,7 @@ import {
   type FollowAction, type Followable, type PlanPick,
 } from "./strategy";
 import { redNoise } from "./transitFit";
-import { binSeries, cleanSeries, clipUpper, flatten, maskTransits, stitch, trimGaps, type Ephemeris, type Series } from "./timeseries";
+import { binSeries, cleanSeries, clipUpper, flatten, maskTransits, refineOnData, stitch, trimGaps, type Ephemeris, type Series } from "./timeseries";
 import { CONTAM_ARCMIN, ebNeighbours, impliedRadiusEarth, knownPlanetsNear, MAX_PLANET_REARTH, periodsMatch, toisNear, vetSignal, type KnownSignal, type Verdict } from "./vetting";
 import { VARIABLE_OTYPES, variablesNear, vsxEntry, type VsxStar } from "./vsx";
 import { separation } from "./geom";
@@ -84,6 +84,8 @@ export function analyseStar(parts: Pick<LightCurve, "time" | "flux" | "quality">
   const days = s.t[s.t.length - 1] - s.t[0];
   const { ls, flat, removed } = searchable(s);
   if (flat.t.length < 50) throw new Error("light curve too short for a transit search");
+  // Known transits re-centred on this data first: catalog ephemerides drift (timeseries.ts refineOnData).
+  mask = mask.flatMap((e) => refineOnData(flat, e));
   // Empty when every peak was the residue of a masked known planet.
   const signals = searchSignals(flat, { mask, maxSignals: 3 });
   const passed = signals.filter(blsDetected);
@@ -305,7 +307,7 @@ export async function runAnalysis(c: Cone, signal: AbortSignal, emit: (e: SkyEve
       ...p.prospect.star, pipeline: use[0]?.pipeline ?? "", sector: use[use.length - 1]?.sector ?? 0, sectors: use.map((u) => u.sector), heldOut: heldOut.length,
       playbook: p.playbook, why: p.why, masked: masks.map((k) => k.name),
     };
-    return { star, use, heldOut, mask: masks.map((k) => ({ period: k.period, t0: k.t0!, duration: k.duration! })), known: p.prospect.known };
+    return { star, use, heldOut, mask: masks.map((k) => ({ period: k.period, t0: k.t0!, duration: k.duration!, sigmaP: k.sigmaP, sigmaT0: k.sigmaT0 })), known: p.prospect.known };
   }).filter((p) => p.use.length);
   const stars = plans.map((p) => p.star);
   emit({ type: "analysis-start", stars, plan, ms: Date.now() - t0 });

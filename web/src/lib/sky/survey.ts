@@ -79,7 +79,7 @@ export async function planSurvey(c: Cone, signal: AbortSignal, useClaude: boolea
     const masks = p.known.filter((k) => k.t0 !== undefined && k.duration !== undefined);
     return {
       ...p.star, priority: f ? 1000 - f.rank : p.score, playbook: f?.playbook ?? p.playbook, why: f?.why ?? p.reason,
-      masked: masks.map((k) => k.name), masks: masks.map((k) => ({ period: k.period, t0: k.t0!, duration: k.duration! })),
+      masked: masks.map((k) => k.name), masks: masks.map((k) => ({ period: k.period, t0: k.t0!, duration: k.duration!, sigmaP: k.sigmaP, sigmaT0: k.sigmaT0 })),
       seasons: seasonsFor(inv.products, p.star.tic).map((g) => ({
         sectors: g.map((x) => x.sector), pipeline: [...new Set(g.map((x) => x.pipeline))].join("+"), status: "pending" as const,
         files: g.map((x) => ({ sector: x.sector, pipeline: x.pipeline, uri: x.uri })),
