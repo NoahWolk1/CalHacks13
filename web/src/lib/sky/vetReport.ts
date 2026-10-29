@@ -17,7 +17,7 @@ import { ctoisFor, exofopTarget, inKeplerField, koisNear, tessEb, ticNeighbours,
 import { ticProducts, type LcProduct, type LightCurve } from "./lightcurves";
 import { isVariable, lombScargle } from "./lombscargle";
 import { duotransitAliases } from "./survey";
-import { binSeries, cleanSeries, median, stitch, trimGaps, type Series } from "./timeseries";
+import { binSeries, cleanSeries, ephemerisSigma, median, stitch, trimGaps, type Series } from "./timeseries";
 import {
   cadenceOf, centralDuration, combine, densityFromTransit, detrendLabel, detrendMasked, fitEphemeris, fitTrapezoid, inOutShift, lowerBound,
   massFromRadius, measureEvent, minPeriodFromCoverage, minPeriodFromDuration, redNoise, rhoOf, rvSemiAmplitude, R_JUP_EARTH, segments, timeEvent,
@@ -147,11 +147,16 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
   }
 
   // Already known: a TOI/CTOI/planet/KOI with this signal (on the star = catalogued; on a neighbour = its light).
-  const matchesEphem = (P?: number, t0?: number, dur?: number) => {
+  // A single or duo matches a known ephemeris within its duration plus 3σ of the predicted time's drift
+  // (a TOI's period error, times the orbits since its t0, can reach hours).
+  const matchesEphem = (P?: number, t0?: number, dur?: number, sigma?: { sigmaP?: number; sigmaT0?: number }) => {
     if (!P) return false;
     if (periodic) return periodsMatch(input.period!, P, 0.01);
     if (t0 === undefined) return false;
-    return (input.times ?? []).some((t) => { const ph = t - t0 - Math.round((t - t0) / P) * P; return Math.abs(ph) < Math.max(dur ?? d0, d0); });
+    return (input.times ?? []).some((t) => {
+      const ph = t - t0 - Math.round((t - t0) / P) * P;
+      return Math.abs(ph) < Math.max(dur ?? d0, d0) + 3 * ephemerisSigma({ period: P, t0, ...sigma }, t);
+    });
   };
   const self = (k: { tic: string; ra: number; dec: number }) => k.tic === input.tic || separation(k.ra, k.dec, pos.ra, pos.dec) * 3600 < 3;
   let known: string | undefined;
@@ -161,7 +166,7 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     const ks: KnownSignal[] = [...(planets.v ?? []), ...(tois.v ?? [])];
     for (const k of ks) {
       const sep = separation(k.ra, k.dec, pos.ra, pos.dec) * 60;
-      if (matchesEphem(k.period, k.t0, k.duration)) {
+      if (matchesEphem(k.period, k.t0, k.duration, k)) {
         if (self(k)) known ??= `${k.name} (P ${k.period.toFixed(4)} d) is this signal, already in the ${k.kind === "planet" ? "NASA Exoplanet Archive" : "TOI list"}`;
         else fail ??= `${k.name} on TIC ${k.tic}, ${sep.toFixed(1)}′ away, has this period: its light leaking in`;
       } else if (self(k)) other.push(`${k.name} (P ${k.period.toFixed(3)} d)`);

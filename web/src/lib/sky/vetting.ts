@@ -19,7 +19,9 @@ import { isEclipsingType, VARIABLE_OTYPES, vsxEntry, type VsxStar } from "./vsx"
 /** A known periodic transit source: a confirmed planet or a TOI, with its host's position. */
 export type KnownSignal = { tic: string; name: string; period: number; ra: number; dec: number; kind: "planet" | "toi"; disposition?: string;
   /** Transit ephemeris (TESS BTJD days, duration in days) when the archive has one: used to mask known planets. */
-  t0?: number; duration?: number };
+  t0?: number; duration?: number;
+  /** 1σ errors of the period and t0 (days): the predicted transit times drift by sigmaP per orbit. */
+  sigmaP?: number; sigmaT0?: number };
 export type EbNeighbour = { name: string; otype: string; ra: number; dec: number };
 /** Another analysed star's strongest BLS signal (for shared-period and contamination checks). */
 export type FieldSignal = { tic: string; period: number; depth: number; ra: number; dec: number };
@@ -156,8 +158,11 @@ const tapPost = (query: string): RequestInit => ({
 });
 
 /** Archive transit midpoint (BJD) and duration (hours) as a BTJD ephemeris, when both are there. */
-const ephemeris = (mid: unknown, hours: unknown) =>
-  typeof mid === "number" && typeof hours === "number" && mid > BTJD && hours > 0 ? { t0: mid - BTJD, duration: hours / 24 } : {};
+const ephemeris = (mid: unknown, hours: unknown, perr?: unknown, midErr?: unknown) => {
+  if (!(typeof mid === "number" && typeof hours === "number" && mid > BTJD && hours > 0)) return {};
+  const err = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.abs(v) : undefined);
+  return { t0: mid - BTJD, duration: hours / 24, ...(err(perr) ? { sigmaP: err(perr) } : {}), ...(err(midErr) ? { sigmaT0: err(midErr) } : {}) };
+};
 
 /** The cone grown by the contamination radius: neighbours just outside can still leak in. */
 const grown = (c: Cone): Cone => ({ ...c, radius: c.radius + CONTAM_ARCMIN / 60 });
@@ -167,12 +172,12 @@ const grown = (c: Cone): Cone => ({ ...c, radius: c.radius + CONTAM_ARCMIN / 60 
 export async function knownPlanetsNear(c: Cone, signal: AbortSignal): Promise<KnownSignal[]> {
   const g = grown(c);
   const rows = await getJson<Record<string, unknown>[]>(EXO_TAP, {
-    init: tapPost(`select pl_name,tic_id,pl_orbper,pl_tranmid,pl_trandur,ra,dec from pscomppars where contains(point('icrs',ra,dec),circle('icrs',${adqlNum(g.ra)},${adqlNum(g.dec)},${adqlNum(g.radius)}))=1`),
+    init: tapPost(`select pl_name,tic_id,pl_orbper,pl_orbpererr1,pl_tranmid,pl_tranmiderr1,pl_trandur,ra,dec from pscomppars where contains(point('icrs',ra,dec),circle('icrs',${adqlNum(g.ra)},${adqlNum(g.dec)},${adqlNum(g.radius)}))=1`),
     timeoutMs: 12_000, signal, retries: 1,
   });
   if (!Array.isArray(rows)) throw new Error("unexpected Exoplanet Archive response");
   return rows.flatMap((r) => (typeof r.pl_orbper === "number" && typeof r.ra === "number" && typeof r.dec === "number"
-    ? [{ tic: String(r.tic_id ?? "").replace(/^TIC\s+/, ""), name: String(r.pl_name), period: r.pl_orbper, ra: r.ra, dec: r.dec, kind: "planet" as const, ...ephemeris(r.pl_tranmid, r.pl_trandur) }] : []));
+    ? [{ tic: String(r.tic_id ?? "").replace(/^TIC\s+/, ""), name: String(r.pl_name), period: r.pl_orbper, ra: r.ra, dec: r.dec, kind: "planet" as const, ...ephemeris(r.pl_tranmid, r.pl_trandur, r.pl_orbpererr1, r.pl_tranmiderr1) }] : []));
 }
 
 /** TOIs in (or just around) the cone. The TOI table has no spatial index (ADQL contains() fails
@@ -182,7 +187,7 @@ export function toiQuery(c: Cone) {
   const dra = Math.abs(g.dec) + g.radius >= 89 ? 180 : g.radius / Math.cos(((Math.abs(g.dec) + g.radius) * Math.PI) / 180);
   const lo = g.ra - dra, hi = g.ra + dra;
   const raCond = dra >= 180 ? "1=1" : lo < 0 ? `(ra >= ${adqlNum(lo + 360)} or ra <= ${adqlNum(hi)})` : hi > 360 ? `(ra >= ${adqlNum(lo)} or ra <= ${adqlNum(hi - 360)})` : `ra between ${adqlNum(lo)} and ${adqlNum(hi)}`;
-  return `select toi,tid,tfopwg_disp,pl_orbper,pl_tranmid,pl_trandurh,ra,dec from toi where ${raCond} and dec between ${adqlNum(g.dec - g.radius)} and ${adqlNum(g.dec + g.radius)}`;
+  return `select toi,tid,tfopwg_disp,pl_orbper,pl_orbpererr1,pl_tranmid,pl_tranmiderr1,pl_trandurh,ra,dec from toi where ${raCond} and dec between ${adqlNum(g.dec - g.radius)} and ${adqlNum(g.dec + g.radius)}`;
 }
 
 export async function toisNear(c: Cone, signal: AbortSignal): Promise<KnownSignal[]> {
@@ -190,7 +195,7 @@ export async function toisNear(c: Cone, signal: AbortSignal): Promise<KnownSigna
   const rows = await getJson<Record<string, unknown>[]>(EXO_TAP, { init: tapPost(toiQuery(c)), timeoutMs: 12_000, signal, retries: 1 });
   if (!Array.isArray(rows)) throw new Error("unexpected TOI table response");
   return rows.flatMap((r) => (typeof r.pl_orbper === "number" && typeof r.ra === "number" && typeof r.dec === "number" && separation(g.ra, g.dec, r.ra, r.dec) <= g.radius
-    ? [{ tic: String(r.tid), name: `TOI-${r.toi}`, period: r.pl_orbper, ra: r.ra, dec: r.dec, kind: "toi" as const, disposition: typeof r.tfopwg_disp === "string" ? r.tfopwg_disp : "", ...ephemeris(r.pl_tranmid, r.pl_trandurh) }] : []));
+    ? [{ tic: String(r.tid), name: `TOI-${r.toi}`, period: r.pl_orbper, ra: r.ra, dec: r.dec, kind: "toi" as const, disposition: typeof r.tfopwg_disp === "string" ? r.tfopwg_disp : "", ...ephemeris(r.pl_tranmid, r.pl_trandurh, r.pl_orbpererr1, r.pl_tranmiderr1) }] : []));
 }
 
 /** Known eclipsing/ellipsoidal binaries in (and just around) the cone, from SIMBAD. */
