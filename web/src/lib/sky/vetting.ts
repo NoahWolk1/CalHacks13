@@ -8,6 +8,7 @@
 // variable (SIMBAD types, AAVSO VSX), is reported as an uncatalogued eclipsing binary: a find too.
 import { getJson } from "@/lib/http";
 import { EXO_TAP } from "./exoplanets";
+import { exofopToisNear } from "./toiTable";
 import { adqlNum, separation } from "./geom";
 import { simbadTap } from "./simbad";
 import type { BlsResult } from "./bls";
@@ -161,7 +162,7 @@ const tapPost = (query: string): RequestInit => ({
 });
 
 /** Archive transit midpoint (BJD) and duration (hours) as a BTJD ephemeris, when both are there. */
-export const ephemeris = (mid: unknown, hours: unknown, perr?: unknown, midErr?: unknown) => {
+export const ephemeris = (mid: unknown, hours: unknown, perr?: unknown, midErr?: unknown): { t0?: number; duration?: number; sigmaP?: number; sigmaT0?: number } => {
   // Any BJD: Kepler and K2 planets' epochs (2009-2018) come before BTJD 0 and give a negative t0.
   if (!(typeof mid === "number" && typeof hours === "number" && mid > JD_MIN && hours > 0)) return {};
   const err = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.abs(v) : undefined);
@@ -196,8 +197,17 @@ export function toiQuery(c: Cone) {
 
 export async function toisNear(c: Cone, signal: AbortSignal): Promise<KnownSignal[]> {
   const g = grown(c);
-  const rows = await getJson<Record<string, unknown>[]>(EXO_TAP, { init: tapPost(toiQuery(c)), timeoutMs: 12_000, signal, retries: 1 });
-  if (!Array.isArray(rows)) throw new Error("unexpected TOI table response");
+  let rows: Record<string, unknown>[];
+  try {
+    rows = await getJson<Record<string, unknown>[]>(EXO_TAP, { init: tapPost(toiQuery(c)), timeoutMs: 12_000, signal, retries: 1 });
+    if (!Array.isArray(rows)) throw new Error("unexpected TOI table response");
+  } catch (e) {
+    if (signal.aborted) throw e;
+    // The archive's TOI table is a copy of ExoFOP's: the same TOIs from there when the archive is down.
+    console.warn(`[sky] Exoplanet Archive TOI table failed (${(e as Error).message.slice(0, 60)}): ExoFOP's TOI table instead`);
+    return (await exofopToisNear(g, signal)).flatMap((r) => (r.period
+      ? [{ tic: r.tic, name: `TOI-${r.toi}`, period: r.period, ra: r.ra, dec: r.dec, kind: "toi" as const, disposition: r.disposition, ...ephemeris(r.epoch, r.durationH, r.periodErr, r.epochErr) }] : []));
+  }
   return rows.flatMap((r) => (typeof r.pl_orbper === "number" && typeof r.ra === "number" && typeof r.dec === "number" && separation(g.ra, g.dec, r.ra, r.dec) <= g.radius
     ? [{ tic: String(r.tid), name: `TOI-${r.toi}`, period: r.pl_orbper, ra: r.ra, dec: r.dec, kind: "toi" as const, disposition: typeof r.tfopwg_disp === "string" ? r.tfopwg_disp : "", ...ephemeris(r.pl_tranmid, r.pl_trandurh, r.pl_orbpererr1, r.pl_tranmiderr1) }] : []));
 }
