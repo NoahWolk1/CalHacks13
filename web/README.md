@@ -15,7 +15,7 @@ npm run dev                  # http://localhost:3000 (or pass -p <port>)
 |---|---|
 | `ANTHROPIC_API_KEY` | Claude plans which agents to send, writes cross-reference insights and streams the answer. Without it the app runs end-to-end in **heuristic mode** (keyword planner, rule-based insights, templated answer). |
 | `CLAUDE_MODEL` | Optional override. Default `claude-opus-5-5` (`lib/llm.ts`). |
-| `CLAUDE_WORKER_MODEL` | Model for generated agents' tool loops. Default `claude-sonnet-5-5`. |
+| `CLAUDE_WORKER_MODEL` | Model that designs generated agents and runs their tool loops. Default `claude-sonnet-5-5`. |
 | `AGENT_LIBRARY_PATH` | Optional. Where saved agents are stored. Default `data/agents.json` (on Vercel, `/tmp/geoswarm/agents.json`: per instance and ephemeral). |
 | `CENSUS_API_KEY` | Free from [api.census.gov/data/key_signup.html](https://api.census.gov/data/key_signup.html). Enables Census Rover's income/rent stats. |
 | `BRIGHTDATA_API_TOKEN` / `BRIGHTDATA_UNLOCKER_ZONE` / `BRIGHTDATA_SERP_ZONE` | Bright Data. Turns on Rent Scout, Local Pulse, and the Web Unlocker fetch for generated agents. See [Sponsor data workers](#sponsor-data-workers-bright-data--apify). |

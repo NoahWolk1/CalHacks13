@@ -3,7 +3,7 @@
 // the orchestrator's insight-citation check).
 import { z } from "zod";
 import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
-import { FALLBACK, llm, MODEL } from "@/lib/llm";
+import { FALLBACK, llm, MODEL, logUsage } from "@/lib/llm";
 import { formatDec, formatRa } from "./geom";
 import type { Cone, SkyAnalysis, SkyObject, SkySourceReport, SkySummary } from "./types";
 
@@ -74,6 +74,7 @@ export async function skySummary(c: Cone, objects: SkyObject[], sources: SkySour
       content: `${question ? `QUESTION: ${question}\n\n` : ""}REGION: cone centered RA ${c.ra.toFixed(4)}° (${formatRa(c.ra)}), Dec ${c.dec.toFixed(4)}° (${formatDec(c.dec)}), radius ${c.radius.toFixed(3)}°\n\nCOVERAGE\n${coverage}\n\nRESULTS\n${compactObjects(listed)}`,
     }],
   }, { signal });
+  logUsage("sky:summary", MODEL, res.usage);
   const text = res.content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join("");
   const parsed = SummarySchema.safeParse(JSON.parse(text));
   if (!parsed.success) throw new Error("summary did not match schema");

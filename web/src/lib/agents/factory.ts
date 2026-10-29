@@ -11,7 +11,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
 import type { AgentConfig, ToolPrimitive, Worker } from "@/lib/types";
-import { llm, MODEL, FALLBACK } from "@/lib/llm";
+import { llm, WORKER_MODEL, FALLBACK, logUsage } from "@/lib/llm";
 import { registry as defaultRegistry, type Registry } from "./registry";
 import { HEX_COLOR, LIMITS, VEHICLES } from "./library";
 import { hasKeys } from "@/lib/sponsors/keys";
@@ -149,13 +149,14 @@ export const makeLlmGenerate = (getClient: () => Pick<Anthropic, "beta"> | null 
   for (const [attempt, system] of [GEN_SYSTEM, GEN_SYSTEM_SHORT].entries()) {
     try {
       const res = await client.beta.messages.parse({
-        model: MODEL,
+        model: WORKER_MODEL,
         max_tokens: 8000,
         output_config: { effort: "low", format: betaZodOutputFormat(WireSchema) },
         ...FALLBACK,
         system,
         messages: [{ role: "user", content: attempt ? user.slice(0, 6000) : user }],
       });
+      logUsage("agent:generate", WORKER_MODEL, res.usage);
       if (res.stop_reason !== "end_turn") throw new Error(`stop_reason ${res.stop_reason}`);
       if (!res.parsed_output) throw new Error("no parsed output");
       return normalizeGenerated(res.parsed_output);
