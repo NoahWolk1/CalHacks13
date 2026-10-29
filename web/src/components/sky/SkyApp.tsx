@@ -535,7 +535,7 @@ function AnalysisSection({ stars, results, plan, notes, analysis, running, byId,
                 <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${!r ? "animate-pulse bg-fg4" : r.status !== "ok" ? "bg-risk" : nSig || nSingle ? "bg-[#f2c35b]" : "bg-ok"}`} />
                 <a href={`https://exofop.ipac.caltech.edu/tess/target.php?id=${s.tic}`} target="_blank" rel="noreferrer" className="num shrink-0 text-fg2 hover:text-fg1">TIC {s.tic}</a>
                 <span className="shrink-0 rounded border border-line px-1 text-[10.5px] text-fg3">{PLAYBOOK[s.playbook]}</span>
-                <span className="truncate text-fg4">{s.name.startsWith("TIC ") ? `${s.pipeline} ${sectorList(s.sectors)}` : `${s.name} · ${s.pipeline} ${sectorList(s.sectors)}`}</span>
+                <span className="truncate text-fg4">{s.name.startsWith("TIC ") ? `${s.pipeline === "GSFC-ELEANOR-LITE" ? "eleanor" : s.pipeline} ${sectorList(s.sectors)}` : `${s.name} · ${s.pipeline === "GSFC-ELEANOR-LITE" ? "eleanor" : s.pipeline} ${sectorList(s.sectors)}`}</span>
                 <span className="num ml-auto shrink-0 text-[11.5px] text-fg3" title={r?.error}>
                   {!r ? "…" : r.status !== "ok" ? r.status === "skipped" ? "skipped" : "failed" : [nSig ? `${nSig} signal${nSig === 1 ? "" : "s"}${t?.detected ? ` P ${fmt(t.period, 4)} d` : ""}` : "no transit", nSingle ? `${nSingle} dip${nSingle === 1 ? "" : "s"}` : null, v?.variable ? `var ${fmt(v.period)} d` : null].filter(Boolean).join(" · ")}
                 </span>

@@ -204,7 +204,7 @@ function EventTable({ events }: { events: VetEventRow[] }) {
           {shown.map((e) => (
             <tr key={`${e.n}:${e.t}`} title={e.note} className={e.coverage < 0.5 ? "text-fg4" : ""}>
               <td>{e.t.toFixed(3)}</td>
-              <td>s{e.sector} {e.pipeline === "SPOC" ? "" : e.pipeline}</td>
+              <td>s{e.sector} {e.pipeline === "SPOC" ? "" : e.pipeline === "GSFC-ELEANOR-LITE" ? "eleanor" : e.pipeline}</td>
               <td className="text-right">{e.depth !== undefined ? `${(e.depth * 1000).toFixed(2)}±${((e.err ?? 0) * 1000).toFixed(2)}` : "–"}</td>
               <td className="text-right">{e.snr !== undefined ? e.snr.toFixed(1) : "–"}</td>
               <td className="text-right">{Math.round(e.coverage * 100)}%</td>

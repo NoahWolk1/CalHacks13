@@ -297,7 +297,7 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
   const products = await productsP;
   const prods = products.v ?? [];
   if (!prods.length) {
-    const why = products.err ? `MAST lookup failed (${products.err})` : "MAST has no SPOC, TESS-SPOC or QLP light curve for this TIC";
+    const why = products.err ? `MAST lookup failed (${products.err})` : "MAST has no TESS light curve for this TIC (SPOC, TESS-SPOC, QLP, TGLC, eleanor-lite or CDIPS)";
     for (const s of [1, 2, 3] as VetStage[]) add(s, `stage${s}`, `Stage ${s}`, "not-run", why);
     return finish({ transits: 0 });
   }
