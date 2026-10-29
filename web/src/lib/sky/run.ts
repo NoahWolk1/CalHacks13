@@ -5,6 +5,7 @@ import { BODIES, bodyObject, HORIZONS_API, horizonsUrl, parseHorizons } from "./
 import { gaiaBright } from "./archives";
 import { parseSimbad, SIMBAD_TAP, simbadQuery, simbadTap } from "./simbad";
 import { fieldInventory, inventoryObject } from "./lightcurves";
+import { esaskyObservations } from "./esasky";
 import { fetchMast, MAST_API, MAST_DEADLINE_MS } from "./telescopes";
 import type { Cone, SkyObject, SkySourceId, SkySourceReport } from "./types";
 
@@ -15,13 +16,22 @@ const PREFIX: Record<SkySourceId, string> = { simbad: "S", exoplanets: "X", hori
 type Source = { id: SkySourceId; label: string; endpoint: string; run: (c: Cone, signal: AbortSignal) => Promise<SkyObject[] | { objects: SkyObject[]; note: string }> };
 
 /** Telescope Archive: the TESS light-curve inventory (by TIC id, ~1-2 s) plus MAST's full
- *  per-mission summary when the CAOM search beats its deadline. When it doesn't (cold query), the
- *  inventory is reported on its own and the route streams the full summary later if it lands. */
+ *  per-mission summary when the CAOM search beats its deadline. When it doesn't (a cold query, or
+ *  MAST's search hanging), ESA's ESASky stands in for the space missions it also holds (HST, JWST,
+ *  Spitzer, IUE) and adds ones MAST doesn't (Chandra, XMM, Herschel, ALMA, CHEOPS); the route streams
+ *  MAST's own summary later if it lands, for the missions ESASky didn't cover. */
 export async function telescopes(c: Cone, signal: AbortSignal): Promise<SkyObject[] | { objects: SkyObject[]; note: string }> {
+  const esa = esaskyObservations(c, signal);
+  esa.catch(() => {});
   const [inv, full] = await Promise.allSettled([fieldInventory(c, signal).then((i) => inventoryObject(c, i)), fetchMast(c, signal, MAST_DEADLINE_MS)]);
   const lc = inv.status === "fulfilled" && inv.value ? [inv.value] : [];
   if (full.status === "fulfilled") return [...lc, ...full.value];
   const why = (full.reason as Error).message;
+  const alt = await esa.catch(() => null);
+  if (alt?.objects.length || (alt && lc.length)) {
+    const missed = alt.failed.length ? `; ESASky didn't answer for ${alt.failed.join(", ")}` : "";
+    return { objects: [...lc, ...alt.objects], note: `MAST's archive search is slow (${why.replace(/ \(cold query\).*$/, "")}): space-mission observations from ESA's ESASky instead${missed}; MAST's own summary follows if it lands` };
+  }
   if (!lc.length) {
     if (inv.status === "rejected") throw new Error(`${why}; TESS inventory failed: ${(inv.reason as Error).message}`);
     throw new Error(why);

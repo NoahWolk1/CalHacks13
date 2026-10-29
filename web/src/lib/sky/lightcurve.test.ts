@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { analyseLightCurve } from "./analysis";
 import { bls, blsDetected, measureSignal } from "./bls";
-import { coneBox, mastDownloadUrl, mergeStars, parseLcProducts, parseLightCurve, pickLightCurves } from "./lightcurves";
+import { coneBox, mastDownloadUrl, mergeStars, parseLcProducts, parseLightCurve, pickLightCurves, ticListRequest } from "./lightcurves";
 import { periodsMatch, toiQuery, vetSignal } from "./vetting";
 import { readHdus, readTable } from "./fits";
 import { isVariable, lombScargle } from "./lombscargle";
@@ -229,6 +229,13 @@ describe("TESS light-curve inventory", () => {
     expect(wrap).toHaveLength(2);
     expect(wrap[1].max).toBe(360);
     expect(coneBox({ ra: 10, dec: 88, radius: 2 }).ra).toEqual([{ min: 0, max: 360 }]);
+  });
+  it("asks MAST for a list of TIC ids' light curves without a position filter", () => {
+    const req = JSON.parse(new URLSearchParams(String(ticListRequest(["282199717", "158734620"]).body)).get("request")!);
+    expect(req.service).toBe("Mast.Caom.Filtered");
+    expect(req.params.filters.map((f: { paramName: string }) => f.paramName)).toEqual(["obs_collection", "dataproduct_type", "provenance_name", "target_name"]);
+    expect(req.params.filters[0].values).toEqual(["TESS", "HLSP"]);
+    expect(req.params.filters[3].values).toEqual(["282199717", "158734620"]);
   });
   it("builds a MAST download URL for a product", () => {
     expect(mastDownloadUrl("mast:TESS/product/a_lc.fits")).toBe("https://mast.stsci.edu/api/v0.1/Download/file?uri=mast%3ATESS%2Fproduct%2Fa_lc.fits");

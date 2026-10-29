@@ -75,7 +75,9 @@ export async function POST(req: Request) {
         // MAST's full archive summary missed the agent's deadline but may have landed since: stream it.
         let objects: SkyObject[] = found;
         const tele = sources.find((s) => s.source === "telescopes");
-        const late = tele?.status !== "ok" || tele.note ? settledMast(cone) : null;
+        // Missions ESASky already covered (the fallback when MAST is slow) aren't repeated.
+        const have = new Set(found.filter((o) => o.source === "telescopes").map((o) => o.name));
+        const late = tele?.status !== "ok" || tele.note ? settledMast(cone)?.filter((o) => !have.has(o.name)) ?? null : null;
         if (late?.length) {
           const n = found.filter((o) => o.source === "telescopes").length;
           const extra = late.map((o, i) => ({ ...o, id: `T${n + i + 1}` }));
