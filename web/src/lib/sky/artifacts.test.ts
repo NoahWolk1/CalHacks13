@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { confirmation, ENGINEERING_FLAG, localDepth, maskEngineering, pixelPhotometry } from "./artifacts";
+import { apertureGrowth, confirmation, ENGINEERING_FLAG, jitterAt, localDepth, maskEngineering, pixelPhotometry } from "./artifacts";
 import { psf } from "./pixels";
 
 /** Deterministic gaussian noise (mulberry32 + Box-Muller). */
@@ -52,16 +52,18 @@ describe("confirmation", () => {
 
 /** An 11x11 px cutout, 30-min frames over 4 days: a star at the centre, sky, noise, and optionally a
  *  real transit, an offset down the star's column, or dead (zero) columns. */
-function cutout(opts: { transit?: number; columnOffset?: number; deadFrom?: number }) {
+function cutout(opts: { transit?: number; columnOffset?: number; deadFrom?: number; blur?: number }) {
   const nx = 11, ny = 11, np = nx * ny, g = rng(7);
   const t: number[] = [];
   for (let x = TC - 2; x < TC + 2; x += 1 / 48) t.push(x);
   const flux = new Float32Array(t.length * np);
   const star = psf(nx, ny, 5, 5, 0.9).map((v) => v * 20_000);
+  // Pointing jitter in the box: the same light, spread over a wider PSF.
+  const blurred = psf(nx, ny, 5, 5, opts.blur ?? 0.9).map((v) => v * 20_000);
   t.forEach((x, i) => {
     for (let p = 0; p < np; p++) {
       const col = p % nx;
-      let v = 90 + star[p] * (1 - (inBox(x) ? (opts.transit ?? 0) : 0)) + 3 * g();
+      let v = 90 + (inBox(x) ? blurred : star)[p] * (1 - (inBox(x) ? (opts.transit ?? 0) : 0)) + 3 * g();
       if (inBox(x) && col === 5) v -= opts.columnOffset ?? 0;
       if (opts.deadFrom !== undefined && col >= opts.deadFrom) v = 0;
       flux[i * np + p] = v;
@@ -95,6 +97,30 @@ describe("own pixel photometry", () => {
   it("measures the distance to the CCD edge (dead columns)", () => {
     expect(pixelPhotometry(cutout({}), 100, -60)!.edge).toBe(Infinity);
     expect(pixelPhotometry(cutout({ deadFrom: 8 }), 100, -60)!.edge).toBeCloseTo(3, 1);
+  });
+});
+
+describe("aperture growth and pointing jitter", () => {
+  it("a real transit keeps its depth in a bigger aperture", () => {
+    const g = apertureGrowth(cutout({ transit: 0.01 }), 100, -60, [TC], DUR)!;
+    expect(confirmation(g.small, 0.01)).toBe("confirmed");
+    expect(confirmation(g.large, g.expectedLarge)).toBe("confirmed");
+  });
+  it("a blurred PSF makes a small aperture dip and a big one not", () => {
+    const g = apertureGrowth(cutout({ blur: 1.15 }), 100, -60, [TC], DUR)!;
+    expect(g.small.depth / g.small.err).toBeGreaterThan(3);
+    expect(confirmation(g.large, g.expectedLarge)).toBe("absent");
+  });
+  it("measures centroid jitter in the dip and finds a momentum dump just before it", () => {
+    const g = rng(3), time: number[] = [], q: number[] = [], cx: number[] = [], cy: number[] = [];
+    for (let x = TC - 5; x < TC + 5; x += 2 / 1440) {
+      const k = Math.abs(x - TC) < 0.3 ? 4 : 1;
+      time.push(x); q.push(Math.abs(x - (TC - 0.1)) < 1 / 1440 ? 32 : 0); cx.push(0.002 * k * g()); cy.push(0.002 * k * g());
+    }
+    const j = jitterAt({ time, quality: q, cx, cy }, TC, 0.25)!;
+    expect(j.ratio).toBeGreaterThan(3);
+    expect(j.dump).toBeCloseTo(TC - 0.1, 2);
+    expect(jitterAt({ time, quality: q, cx, cy }, TC + 2, 0.25)!.ratio).toBeLessThan(1.5);
   });
 });
 

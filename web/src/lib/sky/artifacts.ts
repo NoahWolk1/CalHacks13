@@ -7,7 +7,7 @@
 // down a CCD column beside a broken one, QLP background errors at a CCD edge, and Sector 3 attitude
 // tests (candidates-2026-11/*/REPORT.md).
 import { median } from "./timeseries";
-import { linearFit, skyToPix, type Cutout } from "./pixels";
+import { linearFit, psf, skyToPix, type Cutout } from "./pixels";
 import { engineeringAt } from "./engineering";
 export { ENGINEERING, ENGINEERING_FLAG, engineeringAt, maskEngineering } from "./engineering";
 
@@ -143,5 +143,54 @@ export function pixelPhotometry(c: Cutout, ra: number, dec: number, opts: { radi
     if (ok) { t.push(c.t[i]); f.push(sum / base); }
   }
   if (t.length < 50) return null;
-  return { t: Float64Array.from(t), f: Float64Array.from(f), edge, pixels: ap.length };
+  return { t: Float64Array.from(t), f: Float64Array.from(f), edge, pixels: ap.length, ap, base, x, y, ref: R, skyLevel: skyR };
+}
+
+/** Does the dip keep its depth as the aperture grows? A star that dims keeps its depth in any
+ *  aperture (less the extra light of neighbours a bigger one takes in); pointing jitter blurs the PSF,
+ *  moving light from the core pixels into the wings, so a small aperture "dips" and a big one doesn't
+ *  (TIC 150098860 in Sector 4: 1.08 ppt in 3x3 px, 0.16 ± 0.12 in 52 px). The large aperture's
+ *  expected depth is the small one's diluted by the neighbours' light, from a PSF fitted to the
+ *  reference image. */
+export function apertureGrowth(c: Cutout, ra: number, dec: number, times: number[], duration: number, radii: [number, number] = [1, 3]) {
+  const S = pixelPhotometry(c, ra, dec, { radius: radii[0] }), L = pixelPhotometry(c, ra, dec, { radius: radii[1] });
+  if (!S || !L) return null;
+  const dep = (ph: typeof S) => combineDepths(times.flatMap((t) => { const d = localDepth(ph, t, duration); return d ? [d.plain] : []; }));
+  const small = dep(S), large = dep(L);
+  if (!small || !large) return null;
+  // The target's PSF: width fitted to the pixels within 1.5 px (sky subtracted), amplitude from the small aperture.
+  const core = [...Array(c.nx * c.ny).keys()].filter((p) => Math.hypot((p % c.nx) - S.x, Math.floor(p / c.nx) - S.y) <= 1.5 && Number.isFinite(S.ref[p]));
+  let best = { s: 0.8, chi: Infinity, P: psf(c.nx, c.ny, S.x, S.y, 0.8) };
+  for (let sg = 0.5; sg <= 1.6; sg += 0.05) {
+    const P = psf(c.nx, c.ny, S.x, S.y, sg);
+    const a = core.reduce((k, p) => k + P[p] * (S.ref[p] - S.skyLevel), 0) / core.reduce((k, p) => k + P[p] ** 2, 0);
+    const chi = core.reduce((k, p) => k + (S.ref[p] - S.skyLevel - a * P[p]) ** 2, 0);
+    if (chi < best.chi) best = { s: sg, chi, P };
+  }
+  const frac = (ap: number[]) => ap.reduce((k, p) => k + best.P[p], 0);
+  const amp = S.base / frac(S.ap);
+  // The target's share of each aperture's light (the small one taken as all target: its own neighbours dilute both alike).
+  const dilution = Math.min(1, (amp * frac(L.ap)) / L.base);
+  return { small, large, expectedLarge: small.depth * dilution, dilution, pixels: [S.pixels, L.pixels] as [number, number] };
+}
+
+/** Pointing jitter around a dip: the cadence-to-cadence centroid motion inside the dip against the
+ *  sector's median, and whether a momentum dump (SPOC quality bit 32) falls within an hour before the
+ *  dip or inside it. Needs the light curve's centroid columns. */
+export function jitterAt(lc: { time: ArrayLike<number>; quality: ArrayLike<number>; cx?: ArrayLike<number>; cy?: ArrayLike<number> }, tc: number, duration: number) {
+  const { time: t, quality: q, cx, cy } = lc;
+  if (!cx || !cy) return null;
+  const all: number[] = [], inn: number[] = [];
+  let dump: number | undefined;
+  for (let i = 0; i < t.length; i++) {
+    if (((q[i] / 32) | 0) % 2 === 1 && t[i] > tc - duration / 2 - 1 / 24 && t[i] < tc + duration / 2) dump ??= t[i];
+    if (!i || q[i] !== 0 || q[i - 1] !== 0 || !(t[i] - t[i - 1] < 0.05)) continue;
+    const j = Math.hypot(cx[i] - cx[i - 1], cy[i] - cy[i - 1]);
+    if (!Number.isFinite(j)) continue;
+    all.push(j);
+    if (Math.abs(t[i] - tc) < duration / 2) inn.push(j);
+  }
+  if (all.length < 100 || inn.length < 5) return null;
+  const m = median(all);
+  return { ratio: m > 0 ? median(inn) / m : 1, dump, points: inn.length };
 }

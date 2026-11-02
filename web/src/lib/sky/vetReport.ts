@@ -26,9 +26,9 @@ import {
   massFromRadius, measureEvent, minPeriodFromCoverage, minPeriodFromDuration, redNoise, rhoOf, rvSemiAmplitude, R_JUP_EARTH, segments, timeEvent,
   type DetrendMethod, type EventMeasure, type ShapeFit, type Window,
 } from "./transitFit";
-import { BTJD, GIANT_RADIUS, knownPlanetsNear, periodsMatch, SATURATED_TMAG, toisNear, type KnownSignal } from "./vetting";
+import { BTJD, GIANT_RADIUS, knownPlanetsNear, knownTransitAt, periodsMatch, SATURATED_TMAG, toisNear, type KnownSignal } from "./vetting";
 import { isEclipsingType, variablesNear, vsxEntry } from "./vsx";
-import { combineDepths, confirmation, engineeringAt, localDepth, pixelPhotometry, rawPoints } from "./artifacts";
+import { apertureGrowth, combineDepths, confirmation, engineeringAt, jitterAt, localDepth, pixelPhotometry, rawPoints } from "./artifacts";
 import { separation } from "./geom";
 import { tierOf, type VetCheck, type VetPixels, type VetEventRow, type VetInput, type VetReport, type VetStage, type VetStatus, type VetStreamEvent } from "./vetShared";
 
@@ -390,7 +390,14 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     const k = Math.sqrt(depth0);
     // The transit can't be much longer than a central one at P: a floor on the period (eccentric orbits get 1.3x).
     const pFloor = rho ? minPeriodFromDuration(dur / 1.3, rho, k) : 0;
-    const rep = findRepeats(primary, known, dur, depth0);
+    const rep0 = findRepeats(primary, known, dur, depth0);
+    // A "repeat" that a known planet's or TOI's ephemeris puts a transit at is that object, not this
+    // one coming round again (TIC 150098860: TOI-220 b's transit was taken as the second dip of a
+    // 2,592 d "duo", with the first dip a pointing-jitter artifact).
+    const ksRep: KnownSignal[] = [...(planets.v ?? []), ...(tois.v ?? [])];
+    const theirs = rep0.events.flatMap((e) => { const m = knownTransitAt({ tic: input.tic, ra: pos.ra, dec: pos.dec }, e.t, dur, ksRep); return m ? [{ e, m }] : []; });
+    const rep = { ...rep0, events: rep0.events.filter((e) => !theirs.some((x) => x.e === e)) };
+    if (theirs.length) why.push(`left out ${theirs.length} dip${theirs.length === 1 ? "" : "s"} that ${theirs.length === 1 ? "is a transit" : "are transits"} of ${[...new Set(theirs.map((x) => x.m.k.name))].join(", ")} (BTJD ${theirs.map((x) => x.e.t.toFixed(2)).join(", ")}), already catalogued`);
     vals.push(`${primary.length} sector${primary.length === 1 ? "" : "s"} scanned (${rep.days.toFixed(0)} d)${rep.events.length ? `: ${rep.events.slice(0, 4).map((e) => `BTJD ${e.t.toFixed(2)}, ${ppt(e.depth)}, SNR ${e.snr.toFixed(1)}`).join("; ")}` : ""}`);
     if (rep.events.length) why.push(`found the ${ppt(depth0)} transit ${rep.events.length} more time${rep.events.length === 1 ? "" : "s"} in TESS (BTJD ${rep.events.map((e) => e.t.toFixed(2)).join(", ")}; same depth and duration, above the ${rep.threshold.toFixed(1)}σ false-alarm threshold)`);
     else if (Number.isFinite(rep.threshold)) why.push(`no repeat of the transit in ${rep.days.toFixed(0)} days of TESS data (nothing of its depth above ${rep.threshold.toFixed(1)}σ)`);
@@ -1181,6 +1188,26 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     }
     if (Number.isFinite(edge) && edge <= 3) add(3, "edge", "Detector position", "flag", `the star is ${edge.toFixed(1)} px from the edge of the CCD in a sector with a transit: pipeline backgrounds and photometry go wrong there`, `${edge.toFixed(1)} px from a dead row or column of the cutout`);
     else if (per.length) add(3, "edge", "Detector position", "pass", "well inside the CCD", Number.isFinite(edge) ? `${edge.toFixed(1)} px from the edge` : "no dead row or column in the cutout");
+
+    // Pointing jitter (artifacts.ts: jitterAt) and whether the dip keeps its depth in a bigger aperture
+    // (apertureGrowth): jitter blurs the PSF, so light leaves the core pixels for the wings and only a
+    // small aperture dips.
+    const jit = measured.flatMap((r) => { const j = r.part?.lc ? jitterAt(r.part.lc, r.t, dur) : null; return j ? [{ t: r.t, sector: r.sector, ...j }] : []; });
+    const jittery = jit.filter((j) => j.ratio >= 2);
+    const jitTxt = jittery.map((j) => `BTJD ${j.t.toFixed(2)} (s${j.sector}): centroid jitter ${j.ratio.toFixed(1)}× the sector's median${j.dump !== undefined ? `, momentum dump at ${j.dump.toFixed(3)}` : ""}`).join("; ");
+    const grow = cuts.flatMap((c) => { const ts = times(c.v!); const g = ts.length ? apertureGrowth(c.v!, pos.ra, pos.dec, ts, dur) : null; return g ? [{ sector: c.sector, ...g }] : []; });
+    let shrink = false;
+    if (grow.length) {
+      const small = combineDepths(grow.map((g) => g.small))!, large = combineDepths(grow.map((g) => g.large))!;
+      const expL = small.depth * median(grow.map((g) => g.dilution));
+      const v = `${grow.map((g) => `s${g.sector}`).join(", ")}: r 1 px (${grow[0].pixels[0]} px) ${ppt(small.depth)} ± ${r3(small.err * 1000)}, r 3 px (${grow[0].pixels[1]} px) ${ppt(large.depth)} ± ${r3(large.err * 1000)}; expected in the large one from the neighbours' dilution ${ppt(expL)}`;
+      shrink = small.depth / small.err >= 3 && confirmation(large, expL) === "absent";
+      if (shrink) add(3, "apgrowth", "Aperture growth", "fail", `the dip shrinks as the aperture grows: light moved from the star's core pixels into its wings rather than going missing, as when pointing jitter blurs the PSF${jittery.length ? ` (and the jitter rises in the dip: ${jitTxt})` : ""}`, v);
+      else if (small.depth / small.err >= 3 && confirmation(large, expL) === "confirmed") add(3, "apgrowth", "Aperture growth", "pass", "the dip keeps its depth in a bigger aperture: light lost, not moved by a blurred PSF", v);
+      else add(3, "apgrowth", "Aperture growth", "info", "too noisy in our own photometry to say whether the dip keeps its depth in a bigger aperture", v);
+    }
+    if (jittery.length && !shrink) add(1, "pointing", "Pointing jitter", "flag", `the spacecraft's pointing jitters more during the dip: ${jitTxt}. Jitter moves light between pixels; check the dip in a bigger aperture`, `${jit.length} transit${jit.length === 1 ? "" : "s"} with centroids`);
+    else if (jit.length && !jittery.length) add(1, "pointing", "Pointing jitter", "pass", "no extra pointing jitter during the dip", jit.map((j) => `BTJD ${j.t.toFixed(2)}: ${j.ratio.toFixed(1)}×`).slice(0, 6).join(", "));
   }
 
   {
