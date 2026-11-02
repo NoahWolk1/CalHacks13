@@ -7,6 +7,7 @@
 //     TESS-SPOC / QLP full-frame-image light curves, for stars that have no SPOC light curve, and
 //     the fainter-star FFI pipelines (TGLC, eleanor-lite, CDIPS) in a request of their own.
 //     (The same HLSPs by RA/Dec range take ~45 s: tens of thousands of rows.)
+import { maskEngineering } from "./engineering";
 import { getBuffer, getJson } from "@/lib/http";
 import { adqlNum, separation } from "./geom";
 import { readHdus, readTable, type FitsHdu } from "./fits";
@@ -30,7 +31,10 @@ export type LightCurve = { tic: string; pipeline: LcProduct["pipeline"]; sector:
    *  aperture's tracked or whole-cutout positions, not the target's measured centroid). */
   cx?: Float64Array; cy?: Float64Array;
   /** QLP's small- and large-aperture fluxes, for the aperture-dependence test. */
-  small?: Float64Array; large?: Float64Array };
+  small?: Float64Array; large?: Float64Array;
+  /** Raw aperture flux (SAP_FLUX, before PDC / KSP detrending) and the pipeline's background estimate
+   *  (SAP_BKG): the artifact tests ask whether a dip is in the raw flux and whether it follows the background. */
+  sap?: Float64Array; bkg?: Float64Array };
 
 /** Stars brighter than this have SIMBAD TIC cross-ids and FFI light curves often enough to be worth it. */
 export const FIELD_VMAX = 12.5;
@@ -332,7 +336,7 @@ export function parseLightCurve(buf: ArrayBuffer, product: Pick<LcProduct, "tic"
   const cols = product.pipeline === "QLP" ? ["KSPSAP_FLUX", "DET_FLUX"] : ["PDCSAP_FLUX"];
   const cent = product.pipeline === "QLP" ? ["SAP_X", "SAP_Y"] : ["MOM_CENTR1", "MOM_CENTR2"];
   const apert = ["KSPSAP_FLUX_SML", "KSPSAP_FLUX_LAG", "DET_FLUX_SML", "DET_FLUX_LAG"];
-  const tab = readTable(buf, lc, ["TIME", ...cols, "QUALITY", ...cent, ...(product.pipeline === "QLP" ? apert : [])]);
+  const tab = readTable(buf, lc, ["TIME", ...cols, "QUALITY", "SAP_FLUX", "SAP_BKG", ...cent, ...(product.pipeline === "QLP" ? apert : [])]);
   const fluxCol = cols.find((c) => tab.columns[c]);
   if (!tab.columns.TIME || !fluxCol) throw new Error(`light curve lacks TIME/${cols.join(" or ")}`);
   const h0 = hdus[0].header;
@@ -340,11 +344,13 @@ export function parseLightCurve(buf: ArrayBuffer, product: Pick<LcProduct, "tic"
   const c = tab.columns, fl = fluxCol === "DET_FLUX" ? "DET_FLUX" : "KSPSAP_FLUX";
   return {
     tic: product.tic, pipeline: product.pipeline, sector: product.sector,
-    time: c.TIME, flux: c[fluxCol], quality: c.QUALITY ?? new Float64Array(tab.rows),
+    // Engineering data (QLP leaves it unflagged) is flagged here, for the searches and the vetting alike.
+    time: c.TIME, flux: c[fluxCol], quality: maskEngineering(c.TIME, c.QUALITY ?? new Float64Array(tab.rows), product.sector),
     tessmag: pos(h0.TESSMAG), teff: pos(h0.TEFF), radius: pos(h0.RADIUS), logg: pos(h0.LOGG),
     camera: pos(h0.CAMERA ?? lc.header.CAMERA), ccd: pos(h0.CCD ?? lc.header.CCD), crowdsap: pos(lc.header.CROWDSAP),
     ...(c[cent[0]] && c[cent[1]] ? { cx: c[cent[0]], cy: c[cent[1]] } : {}),
     ...(c[`${fl}_SML`] && c[`${fl}_LAG`] ? { small: c[`${fl}_SML`], large: c[`${fl}_LAG`] } : {}),
+    ...(c.SAP_FLUX ? { sap: c.SAP_FLUX } : {}), ...(c.SAP_BKG ? { bkg: c.SAP_BKG } : {}),
   };
 }
 
@@ -352,7 +358,8 @@ export async function fetchLightCurve(product: LcProduct, signal: AbortSignal, t
   return parseLightCurve(await getBuffer(mastDownloadUrl(product.uri), { timeoutMs, signal }), product);
 }
 
-export type FieldInventory = { stars: FieldStar[]; products: LcProduct[]; simbad: boolean };
+/** simbad: SIMBAD's star list answered; tic: the TESS Input Catalog's did (deep surveys only). */
+export type FieldInventory = { stars: FieldStar[]; products: LcProduct[]; simbad: boolean; tic?: boolean; ffiFailed?: number };
 
 async function enrich(c: Cone, signal: AbortSignal): Promise<{ stars: FieldStar[]; hlsp: LcProduct[] }> {
   const stars = parseFieldStars(await simbadTap(fieldStarsQuery(c), { timeoutMs: ENRICH_TIMEOUT_MS, signal }));
@@ -430,12 +437,39 @@ export function inventoryObject(c: Cone, inv: FieldInventory): SkyObject | null 
 /** Deep surveys go fainter and take every SIMBAD star with a TIC id (and every SPOC target). */
 export const SURVEY_VMAX = 13.5;
 export const SURVEY_STAR_CAP = 2000;
+/** The TESS Input Catalog's list goes much further: a 3° tile holds ~8,000 stars to T 13.5. */
+export const SURVEY_TIC_CAP = 30_000;
+const TIC_PAGE = 5000;
 const SURVEY_PAGES = 6;
 const HLSP_CHUNK = 80;
 
-/** The full inventory for a deep survey: all SPOC pages, SIMBAD stars to V 13.5, and their FFI light
- *  curves (by TIC id in chunks, a few at a time). Slower than fieldInventory (tens of seconds for a
- *  large cone) but complete; failures of the enrichment leave the SPOC targets. */
+/** Every star in the cone to T `tmax` from the TESS Input Catalog (MAST): the stars TESS could have
+ *  light curves for. Complete where SIMBAD's list stops at its cap, and served by MAST, not CDS. */
+export async function ticFieldStars(c: Cone, signal: AbortSignal, tmax = SURVEY_VMAX, cap = SURVEY_TIC_CAP): Promise<FieldStar[]> {
+  const out: FieldStar[] = [];
+  for (let page = 1; out.length < cap; page++) {
+    const j = await getJson<{ data?: Record<string, unknown>[] }>(MAST_API, {
+      init: mastForm({
+        service: "Mast.Catalogs.Filtered.Tic.Position.Rows", format: "json", pagesize: TIC_PAGE, page,
+        params: { columns: "ID,ra,dec,Vmag,Tmag,objType", filters: [{ paramName: "Tmag", values: [{ min: -5, max: tmax }] }], ra: c.ra, dec: c.dec, radius: c.radius },
+      }),
+      timeoutMs: 90_000, signal, retries: 2,
+    });
+    if (!Array.isArray(j?.data)) throw new Error("unexpected TIC response");
+    for (const r of j.data) {
+      if (r.objType === "EXTENDED" || typeof r.ra !== "number" || typeof r.dec !== "number") continue;
+      const vmag = typeof r.Vmag === "number" ? r.Vmag : typeof r.Tmag === "number" ? r.Tmag : undefined;
+      out.push({ tic: String(r.ID), name: `TIC ${r.ID}`, otype: "", ra: r.ra, dec: r.dec, ...(vmag !== undefined ? { vmag } : {}) });
+    }
+    if (j.data.length < TIC_PAGE) break;
+  }
+  return out.slice(0, cap);
+}
+
+/** The full inventory for a deep survey: all SPOC pages, every TIC star to T 13.5 (named and typed from
+ *  SIMBAD where it knows them), and their FFI light curves (by TIC id in chunks, a few at a time).
+ *  Slower than fieldInventory (a minute or more for a large cone) but complete; failures of the
+ *  enrichment leave the SPOC targets. */
 export async function surveyInventory(c: Cone, signal: AbortSignal): Promise<FieldInventory & { notes: string[] }> {
   const notes: string[] = [];
   const spoc: LcProduct[] = [];
@@ -454,30 +488,50 @@ export async function surveyInventory(c: Cone, signal: AbortSignal): Promise<Fie
     spoc.push(...(await productsByTic(c, signal, SURVEY_STAR_CAP)).filter((p) => p.pipeline === "SPOC" || FAINT.includes(p.pipeline)));
     notes.push(`MAST's position search timed out: light curves looked up by TIC id for the ${SURVEY_STAR_CAP} brightest TIC stars instead`);
   }
-  let stars: FieldStar[] = [];
+  const [sim, tic] = await Promise.allSettled([
+    simbadTap(fieldStarsQuery(c, SURVEY_STAR_CAP, SURVEY_VMAX), { timeoutMs: 45_000, signal }).then(parseFieldStars),
+    ticFieldStars(c, signal),
+  ]);
+  if (signal.aborted) throw new Error("aborted");
+  const simbadStars = sim.status === "fulfilled" ? sim.value : [], ticStars = tic.status === "fulfilled" ? tic.value : [];
+  if (sim.status === "rejected") notes.push(`SIMBAD star list failed (${(sim.reason as Error).message.slice(0, 80)})${ticStars.length ? ": stars from the TESS Input Catalog, without SIMBAD's names and types" : ""}`);
+  if (tic.status === "rejected") notes.push(`TESS Input Catalog star list failed (${(tic.reason as Error).message.slice(0, 80)})${simbadStars.length ? `: SIMBAD's ${simbadStars.length} stars only` : ""}`);
+  if (!ticStars.length && simbadStars.length >= SURVEY_STAR_CAP) notes.push(`SIMBAD star list capped at ${SURVEY_STAR_CAP} stars`);
+  if (ticStars.length >= SURVEY_TIC_CAP) notes.push(`TESS Input Catalog star list capped at ${SURVEY_TIC_CAP} stars`);
+  // SIMBAD's entries carry names and object types: they win over the catalog's bare TIC rows.
+  const merged = new Map(ticStars.map((s) => [s.tic, s]));
+  for (const s of simbadStars) merged.set(s.tic, { ...merged.get(s.tic), ...s });
+  const stars = [...merged.values()];
   const hlsp: LcProduct[] = [];
+  let ffiFailed = 0;
   try {
-    stars = parseFieldStars(await simbadTap(fieldStarsQuery(c, SURVEY_STAR_CAP, SURVEY_VMAX), { timeoutMs: 45_000, signal }));
-    if (stars.length >= SURVEY_STAR_CAP) notes.push(`SIMBAD star list capped at ${SURVEY_STAR_CAP} stars`);
     const chunks: string[][] = [];
     for (let i = 0; i < stars.length; i += HLSP_CHUNK) chunks.push(stars.slice(i, i + HLSP_CHUNK).map((s) => s.tic));
-    let next = 0, failed = 0;
-    await Promise.all(Array.from({ length: Math.min(3, chunks.length) }, async () => {
-      while (next < chunks.length) {
-        const chunk = chunks[next++];
-        try { hlsp.push(...(await productsForTics(chunk, signal, 20_000, (t) => hlspRequest(t)))); }
-        catch { failed++; }
-      }
-    }));
-    if (failed) notes.push(`${failed} of ${chunks.length} full-frame-image lookups failed`);
+    // A few at a time, then the failed ones once more, one by one with a longer wait: a missed lookup
+    // is a batch of stars never searched.
+    const lookup = async (list: string[][], ways: number, timeoutMs: number) => {
+      const failed: string[][] = [];
+      let next = 0;
+      await Promise.all(Array.from({ length: Math.min(ways, list.length) }, async () => {
+        while (next < list.length) {
+          const chunk = list[next++];
+          try { hlsp.push(...(await productsForTics(chunk, signal, timeoutMs, (t) => hlspRequest(t)))); }
+          catch { failed.push(chunk); }
+        }
+      }));
+      return failed;
+    };
+    ffiFailed = (await lookup(await lookup(chunks, 3, 20_000), 1, 60_000)).length;
+    if (ffiFailed) notes.push(`${ffiFailed} of ${chunks.length} full-frame-image lookups failed`);
   } catch (e) {
-    notes.push(`SIMBAD star list failed (${(e as Error).message.slice(0, 80)}): SPOC 2-min targets only`);
+    notes.push(`Full-frame-image lookups failed (${(e as Error).message.slice(0, 80)}): SPOC 2-min targets only`);
   }
+  if (!stars.length) notes.push("No star list (SIMBAD and the TESS Input Catalog both failed): SPOC 2-min targets only");
   // The same faint-pipeline file can come from both lookups.
   const seen = new Set<string>();
   const products = [...spoc.filter((p) => p.ra === undefined || p.dec === undefined || separation(c.ra, c.dec, p.ra, p.dec) <= c.radius), ...hlsp]
     .filter((p) => !seen.has(p.uri) && !!seen.add(p.uri));
-  return { stars: mergeStars(c, stars, products), products, simbad: stars.length > 0, notes };
+  return { stars: mergeStars(c, stars, products), products, simbad: simbadStars.length > 0, tic: ticStars.length > 0, ffiFailed, notes };
 }
 
 /** Every sector of a star, best pipeline per sector (PIPELINES order), grouped into seasons of

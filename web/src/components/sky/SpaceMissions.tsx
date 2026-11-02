@@ -17,16 +17,17 @@ function ago(t: number) {
 
 const DOT: Record<MissionStatus, string> = { running: "animate-pulse bg-accent", done: "bg-ok", stopped: "bg-fg4", error: "bg-risk" };
 
-export default function SpaceMissions({ missionId, surveyId, watching, live, onMission, onSurvey }: {
+export default function SpaceMissions({ missionId, surveyId, watching, live, onMission, onSurvey, onSweep }: {
   missionId: string | null; surveyId: string | null;
   /** Opened from a link (not run in this tab), and whether that mission is still running. */
   watching: boolean; live: boolean;
-  onMission: (id: string) => void; onSurvey: (id: string) => void;
+  onMission: (id: string) => void; onSurvey: (id: string) => void; onSweep: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [missions, setMissions] = useState<MissionMeta[] | undefined>();
   const [surveys, setSurveys] = useState<SurveySummary[]>([]);
+  const [sweeps, setSweeps] = useState<SurveySummary[]>([]);
   /** null = all; "" = uncategorized. */
   const [filter, setFilter] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ id: string; name: string; category: string; saving?: boolean; error?: string } | null>(null);
@@ -52,7 +53,7 @@ export default function SpaceMissions({ missionId, surveyId, watching, live, onM
   useEffect(() => {
     if (!open) return;
     fetch("/api/sky/missions", { cache: "no-store" }).then((r) => r.json()).then((j: { missions?: MissionMeta[] }) => setMissions(j.missions ?? [])).catch(() => setMissions([]));
-    fetch("/api/sky/survey", { cache: "no-store" }).then((r) => r.json()).then((j: { surveys?: SurveySummary[] }) => setSurveys(j.surveys ?? [])).catch(() => {});
+    fetch("/api/sky/survey", { cache: "no-store" }).then((r) => r.json()).then((j: { surveys?: SurveySummary[]; sweeps?: SurveySummary[] }) => { setSurveys(j.surveys ?? []); setSweeps(j.sweeps ?? []); }).catch(() => {});
     const close = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) { setOpen(false); setEditing(null); } };
     window.addEventListener("mousedown", close);
     return () => window.removeEventListener("mousedown", close);
@@ -138,6 +139,19 @@ export default function SpaceMissions({ missionId, surveyId, watching, live, onM
                 </button>
               </div>
             ))}
+            {sweeps.length > 0 && <div className="px-2 pb-1 pt-2.5 text-[11.5px] uppercase tracking-[0.06em] text-fg3">Planet sweeps</div>}
+            {sweeps.slice(0, 6).map((r) => {
+              const w = r.sweep!;
+              const done = w.tiles.filter((t) => t.status === "done").length;
+              return (
+                <button key={r.id} onClick={() => { onSweep(r.id); setOpen(false); }}
+                  className="flex w-full items-center gap-2 rounded-[4px] px-2 py-1.5 text-left text-[12px] transition-colors hover:bg-raised">
+                  <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${DOT[r.status]}`} />
+                  <span className="num truncate text-fg2">{r.cone.radius >= 180 ? "Whole sky" : `${formatRa(r.cone.ra)} ${formatDec(r.cone.dec)} · r ${r.cone.radius}°`}</span>
+                  <span className="num ml-auto shrink-0 text-fg3">{done}/{w.tiles.length} tiles · ${(w.claudeUsd + w.reviewUsd + w.computeUsd).toFixed(2)}{r.finds ? ` · ${r.finds} find${r.finds === 1 ? "" : "s"}` : ""}</span>
+                </button>
+              );
+            })}
             {surveys.length > 0 && <div className="px-2 pb-1 pt-2.5 text-[11.5px] uppercase tracking-[0.06em] text-fg3">Deep surveys</div>}
             {surveys.slice(0, 8).map((r) => (
               <button key={r.id} onClick={() => { onSurvey(r.id); setOpen(false); }}

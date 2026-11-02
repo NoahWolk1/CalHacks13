@@ -24,7 +24,7 @@ export function findLine(o: SkyObject) {
 
 /** A new find: labelled as a candidate needing follow-up, never as a discovery. Transit finds can be
  *  vetted in depth (VetPanel). */
-export function FindCard({ o, onCite }: { o: SkyObject; onCite: (id: string) => void }) {
+export function FindCard({ o, onCite, detail }: { o: SkyObject; onCite: (id: string) => void; detail?: string }) {
   const [vet, setVet] = useState(false);
   const input = vetInputFrom(o);
   const saved = useSavedVet(input);
@@ -45,6 +45,7 @@ export function FindCard({ o, onCite }: { o: SkyObject; onCite: (id: string) => 
       <div className="num mt-0.5 text-[11.5px] text-fg3">{findLine(o)}</div>
       {o.props.seasons && <div className="mt-0.5 text-[11.5px] text-fg3">{String(o.props.seasons)}</div>}
       {o.props["follow-up"] && <div className="mt-0.5 text-[11.5px] text-fg2">Follow-up: {o.props["follow-up"]}</div>}
+      {detail && <div className="mt-0.5 text-[11.5px] text-fg2">Vetting: {detail}</div>}
       {vet && input && <VetPanel input={input} />}
     </li>
   );

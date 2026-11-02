@@ -14,6 +14,9 @@ import { getJson, getText } from "@/lib/http";
 import { VIZIER_TAP } from "./vsx";
 
 export const GAIA_TAP = "https://gea.esac.esa.int/tap-server/tap/sync";
+/** ARI Heidelberg's mirror of the same gaiadr3 tables: usually answers in about a second, while ESA's
+ *  archive can take a minute (on 2026-10-31 it timed out for most vets). Tried first, ESA after. */
+export const GAIA_TAP_ARI = "https://gaia.ari.uni-heidelberg.de/tap/sync";
 const SKYSERVER = "https://skyserver.sdss.org/dr17/SkyServerWS/SearchTools/SqlSearch";
 const ZTF_LC = "https://irsa.ipac.caltech.edu/cgi-bin/ZTF/nph_light_curves";
 
@@ -24,11 +27,16 @@ type Row = Record<string, unknown>;
 export const parseBigJson = (text: string): unknown => JSON.parse(text.replace(/([[,:]\s*)(-?\d{16,})(?=\s*[,\]}])/g, '$1"$2"'));
 
 async function tap(url: string, query: string, signal: AbortSignal, timeoutMs = 20_000): Promise<Row[]> {
-  const t = parseBigJson(await getText(`${url}?${new URLSearchParams({ REQUEST: "doQuery", LANG: "ADQL", FORMAT: "json", QUERY: query })}`, { timeoutMs, signal, retries: 1 })) as { metadata?: { name: string }[]; data?: unknown[][] };
+  const t = parseBigJson(await getText(`${url}?${new URLSearchParams({ REQUEST: "doQuery", LANG: "ADQL", FORMAT: "json", QUERY: query })}`, { timeoutMs, signal, retries: 1 })) as { metadata?: { name: string }[]; data?: (unknown[] | Row)[] };
   if (!t?.metadata || !Array.isArray(t.data)) throw new Error("unexpected TAP response");
-  return t.data.map((r) => Object.fromEntries(t.metadata!.map((m, i) => [m.name, r[i]])));
+  // Rows come as arrays in metadata order (ESA, VizieR) or as objects keyed by column (ARI).
+  return t.data.map((r) => (Array.isArray(r) ? Object.fromEntries(t.metadata!.map((m, i) => [m.name, r[i]])) : r));
 }
-const gaia = (q: string, signal: AbortSignal, timeoutMs?: number) => tap(GAIA_TAP, q, signal, timeoutMs);
+const gaia = (q: string, signal: AbortSignal, timeoutMs?: number) =>
+  tap(GAIA_TAP_ARI, q, signal, timeoutMs).catch((e) => {
+    if (signal.aborted) throw e;
+    return tap(GAIA_TAP, q, signal, timeoutMs);
+  });
 
 // ── Gaia DR3 ────────────────────────────────────────────────────────────────
 

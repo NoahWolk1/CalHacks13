@@ -3,10 +3,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { ArrowLeft, CircleDashed, Crosshair, ExternalLink, LoaderCircle, Radar, Telescope } from "lucide-react";
+import { ArrowLeft, CircleDashed, Crosshair, ExternalLink, Globe2, LoaderCircle, Radar, Telescope } from "lucide-react";
 import type { SkyActivity } from "@/lib/client/skyFleet";
 import { Body, Equator, Observer } from "astronomy-engine";
 import { APP_NAME } from "@/lib/brand";
+import { dragPanel, useLayout, useLayoutSync } from "@/lib/client/layout";
+import Sash from "../Sash";
 import { formatDec, formatRa, parseCone } from "@/lib/sky/geom";
 import { isNewFind, SKY_MAX_RADIUS, type AnalysisStar, type Cone, type MissionMeta, type MissionView, type SkyAnalysis, type SkyEvent, type SkyNote, type SkyObject, type SkyObserver, type SkyPlan, type SkySourceReport, type SkySummary, type StarResult, type SurveyView } from "@/lib/sky/types";
 import { CATEGORY_STYLE, SURVEYS, type AtlasApi } from "./SkyAtlas";
@@ -14,7 +16,10 @@ import SkySearch from "./SkySearch";
 import { AGENT_COLOR, fmt, FindCard, Notebook, PLAYBOOK, sectorList } from "./finds";
 import SpaceMissions from "./SpaceMissions";
 import SurveyPanel from "./SurveyPanel";
+import SweepPanel from "./SweepPanel";
+import { SWEEP_BUDGET, SWEEP_MAX_RADIUS, tileRegion } from "@/lib/sky/sweepGrid";
 
+const SKY_MIN = 400;
 const SkyAtlas = dynamic(() => import("./SkyAtlas"), { ssr: false });
 
 /** Jupiter's J2000 RA/Dec right now (geocentric, astronomy-engine), so the sample never goes stale. */
@@ -37,6 +42,9 @@ const QUESTIONS = ["What's the most interesting thing here?", "Did the agents fi
 type Status = "idle" | "running" | "summarising" | "done" | "error";
 
 export default function SkyApp() {
+  // Shares the Earth panel's saved width; there is no collapse rail here, so dragging never snaps shut.
+  // The action row needs SKY_MIN, so a narrower Earth width still renders at that floor.
+  useLayoutSync();
   const [cone, setCone] = useState<Cone>(SAMPLES[0].cone);
   const [draft, setDraft] = useState({ ra: String(SAMPLES[0].cone.ra), dec: String(SAMPLES[0].cone.dec), radius: String(SAMPLES[0].cone.radius) });
   const [status, setStatus] = useState<Status>("idle");
@@ -63,6 +71,10 @@ export default function SkyApp() {
   // Deep survey being viewed (?survey=id).
   const [deepId, setDeepId] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  // Planet sweep being viewed (?sweep=id), and the form that starts one.
+  const [sweepId, setSweepId] = useState<string | null>(null);
+  const [sweepForm, setSweepForm] = useState({ radius: "30", budget: "5", allSky: false });
+  const [sweeping, setSweeping] = useState(false);
   // Mission on screen (?mission=id): this tab's own run, or one opened from a link (watching).
   const [mission, setMission] = useState<{ id: string; watching: boolean; meta?: MissionMeta } | null>(null);
   const deepCone = useRef<string | null>(null);
@@ -70,10 +82,10 @@ export default function SkyApp() {
   const abort = useRef<AbortController | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  /** Keeps ?mission= or ?survey= (at most one) in the URL, for sharing. */
-  function setLink(key: "mission" | "survey" | null, id: string | null) {
+  /** Keeps ?mission=, ?survey= or ?sweep= (at most one) in the URL, for sharing. */
+  function setLink(key: "mission" | "survey" | "sweep" | null, id: string | null) {
     const u = new URL(window.location.href);
-    u.searchParams.delete("mission"); u.searchParams.delete("survey");
+    u.searchParams.delete("mission"); u.searchParams.delete("survey"); u.searchParams.delete("sweep");
     if (key && id) u.searchParams.set(key, id);
     window.history.replaceState(null, "", u);
   }
@@ -82,7 +94,20 @@ export default function SkyApp() {
   function openDeep(id: string | null) {
     setDeepId(id);
     deepCone.current = null;
-    if (id) { setMission(null); setLink("survey", id); } else setLink(null, null);
+    if (id) { setMission(null); setLink("survey", id); } else if (sweepId) setLink("sweep", sweepId); else setLink(null, null);
+  }
+
+  /** Clears whatever run is on screen and shows a deep survey (from the missions menu or a sweep's tile). */
+  function showSurvey(id: string) {
+    abort.current?.abort();
+    setStatus("idle"); setSources([]); setSummary(null); setObs(null); setNote(null); setLcStars([]); setLcResults([]); setPlan(null); setNotes([]); setAnalysis(null);
+    openDeep(id);
+  }
+
+  /** Shows a planet sweep's panel (null closes it). */
+  function openSweep(id: string | null) {
+    setSweepId(id);
+    if (id) { setMission(null); setLink("sweep", id); } else setLink(deepId ? "survey" : null, deepId);
   }
 
   const reset = useCallback(() => {
@@ -187,9 +212,10 @@ export default function SkyApp() {
 
   useEffect(() => {
     const q = new URLSearchParams(window.location.search);
-    const m = q.get("mission"), id = q.get("survey");
+    const m = q.get("mission"), id = q.get("survey"), sw = q.get("sweep");
     if (m) void openMission(m);
     else if (id) openDeep(id);
+    else if (sw) openSweep(sw);
     return () => abort.current?.abort();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -208,6 +234,23 @@ export default function SkyApp() {
       setError(`Couldn't start the survey: ${(e as Error).message}`);
     } finally {
       setStarting(false);
+    }
+  };
+  const sweepRegion = { ra: cone.ra, dec: cone.dec, radius: sweepForm.allSky ? SWEEP_MAX_RADIUS : Math.min(SWEEP_MAX_RADIUS, Math.max(0.1, Number(sweepForm.radius) || 0)) };
+  const sweepTiles = useMemo(() => tileRegion(sweepRegion).length, [sweepRegion.ra, sweepRegion.dec, sweepRegion.radius]); // eslint-disable-line react-hooks/exhaustive-deps
+  const startSweep = async () => {
+    const budgetUsd = Number(sweepForm.budget);
+    if (!(budgetUsd >= SWEEP_BUDGET.min && budgetUsd <= SWEEP_BUDGET.max)) { setError(`Enter a budget of $${SWEEP_BUDGET.min}–$${SWEEP_BUDGET.max}`); return; }
+    setSweeping(true); setError(null);
+    try {
+      const res = await fetch("/api/sky/sweep", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...sweepRegion, budgetUsd }) });
+      const j = await res.json().catch(() => null);
+      if (!res.ok || !j?.id) throw new Error(j?.error ?? `${res.status} ${res.statusText}`);
+      openSweep(j.id);
+    } catch (e) {
+      setError(`Couldn't start the sweep: ${(e as Error).message}`);
+    } finally {
+      setSweeping(false);
     }
   };
   const onDeepView = useCallback((v: SurveyView) => {
@@ -251,7 +294,7 @@ export default function SkyApp() {
         <span className="truncate text-[12px] text-fg3">Space research</span>
         <div className="flex-1" />
         <SpaceMissions missionId={mission?.id ?? null} surveyId={deepId} watching={!!mission?.watching} live={mission?.meta?.status === "running"}
-          onMission={(id) => void openMission(id)} onSurvey={(id) => { abort.current?.abort(); setStatus("idle"); setSources([]); setSummary(null); setObs(null); setNote(null); setLcStars([]); setLcResults([]); setPlan(null); setNotes([]); setAnalysis(null); openDeep(id); }} />
+          onMission={(id) => void openMission(id)} onSurvey={showSurvey} onSweep={(id) => openSweep(id)} />
         <div className="flex h-[30px] items-center gap-0.5 rounded-md border border-line bg-bg p-0.5 max-sm:hidden">
           {SURVEYS.map((s) => (
             <button key={s.id} onClick={() => { setSurvey(s.id); api.current?.setSurvey(s.id); }} aria-pressed={survey === s.id}
@@ -276,7 +319,10 @@ export default function SkyApp() {
           <Legend objects={objects} />
         </div>
 
-        <aside className="dock scroll-thin flex min-h-0 w-[400px] shrink-0 flex-col overflow-y-auto border-l border-line max-lg:w-full max-lg:flex-1 max-lg:border-l-0 max-lg:border-t">
+        <div className="relative flex min-h-0 w-[max(var(--gs-rw),400px)] shrink-0 flex-col max-lg:w-full max-lg:flex-1">
+        <Sash axis="x" id="right" label="Resize research panel" className="inset-y-0 -left-[4px] max-lg:hidden"
+          onMove={(x) => dragPanel(Math.max(SKY_MIN, window.innerWidth - x))} onReset={() => useLayout.getState().set({ rightWidth: null })} />
+        <aside className="dock scroll-thin flex min-h-0 flex-1 flex-col overflow-y-auto border-l border-line max-lg:border-l-0 max-lg:border-t">
           <section className="border-b border-line p-4">
             <SkySearch disabled={locked} onPick={(h) => applyCone({ ra: h.ra, dec: h.dec, radius: h.category === "solar-system" ? 2 : cone.radius }, true)} />
             <div className="mb-2 mt-4 text-[11.5px] uppercase tracking-[0.06em] text-fg3">Sample targets</div>
@@ -334,6 +380,33 @@ export default function SkyApp() {
             </div>
           </section>
 
+          <section className="border-b border-line p-4">
+            <div className="mb-1 text-[11.5px] uppercase tracking-[0.06em] text-fg3">Planet sweep</div>
+            <p className="mb-2.5 text-[12px] leading-relaxed text-fg3">Search a large area for new planets: it is split into 3° tiles, each deep-surveyed in the background, deepest TESS coverage first, until the area is done or the budget runs out.</p>
+            <div className="flex items-end gap-1.5">
+              <label className="w-[72px] text-[11.5px] text-fg3">Radius °
+                <input value={sweepForm.allSky ? String(SWEEP_MAX_RADIUS) : sweepForm.radius} disabled={sweepForm.allSky || sweeping} inputMode="decimal" onChange={(e) => setSweepForm({ ...sweepForm, radius: e.target.value })}
+                  className="num mt-1 h-[30px] w-full rounded-md border border-line bg-bg px-2 text-[12.5px] text-fg1 outline-none focus:border-line-strong disabled:opacity-60" />
+              </label>
+              <label className="w-[72px] text-[11.5px] text-fg3">Budget $
+                <input value={sweepForm.budget} disabled={sweeping} inputMode="decimal" onChange={(e) => setSweepForm({ ...sweepForm, budget: e.target.value })}
+                  className="num mt-1 h-[30px] w-full rounded-md border border-line bg-bg px-2 text-[12.5px] text-fg1 outline-none focus:border-line-strong disabled:opacity-60" />
+              </label>
+              <label className="flex h-[30px] items-center gap-1.5 whitespace-nowrap text-[12px] text-fg2">
+                <input type="checkbox" checked={sweepForm.allSky} disabled={sweeping} onChange={(e) => setSweepForm({ ...sweepForm, allSky: e.target.checked })} className="accent-[var(--accent)]" /> Whole sky
+              </label>
+              <div className="flex-1" />
+              <button onClick={startSweep} disabled={sweeping}
+                className="flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-accent/60 px-2.5 text-[12.5px] text-accent transition-colors hover:bg-accent/10 disabled:opacity-50">
+                {sweeping ? <LoaderCircle size={13} className="animate-spin" /> : <Globe2 size={13} strokeWidth={1.5} />} Start sweep
+              </button>
+            </div>
+            <div className="num mt-1.5 text-[11.5px] text-fg4">
+              {sweepTiles.toLocaleString()} tile{sweepTiles === 1 ? "" : "s"}{sweepForm.allSky ? "" : ` around RA ${cone.ra.toFixed(2)}°, Dec ${cone.dec.toFixed(2)}° (the circle's centre)`} · stops at the budget: Claude, plus estimated compute when hosted on Vercel
+            </div>
+          </section>
+
+          {sweepId && <SweepPanel id={sweepId} onSurvey={showSurvey} onClose={() => openSweep(null)} />}
           {deepId && <SurveyPanel id={deepId} byId={byId} onView={onDeepView} onCite={select} onClose={() => openDeep(null)} />}
 
           {(sources.length > 0 || status === "running") && (
@@ -407,6 +480,7 @@ export default function SkyApp() {
             </section>
           )}
         </aside>
+        </div>
       </div>
     </div>
   );

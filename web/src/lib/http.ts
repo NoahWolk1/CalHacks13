@@ -4,11 +4,18 @@
 // the live request fails, so flaky gov APIs can't break a demo once `npm run warm` has run.
 
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-const cache = new Map<string, { at: number; data: unknown }>();
+const cache = new Map<string, { at: number; data: unknown; bytes: number }>();
 const TTL = 10 * 60_000;
+// Bounds for long-running servers (a sweep downloads tens of thousands of light curves): the oldest
+// entries go first, in memory and on disk.
+const MEM_MAX_ENTRIES = 2000;
+const MEM_MAX_BYTES = 256 * 1024 * 1024;
+const DISK_MAX_BYTES = (Number(process.env.HTTP_DISK_CACHE_MB) || 2048) * 1024 * 1024;
+const DISK_PRUNE_EVERY_MS = 10 * 60_000;
+let memBytes = 0;
 const DISK_FRESH = 6 * 60 * 60_000;
 // Vercel's filesystem is read-only except /tmp (per-instance, ephemeral: still saves repeat fetches).
 const DISK_DIR = process.env.VERCEL ? path.join("/tmp", "geoswarm-cache", "http") : path.join(process.cwd(), ".cache", "http");
@@ -39,12 +46,12 @@ async function cached(url: string, opts: Opts, kind: Kind, read: (r: Response) =
   if (hit && Date.now() - hit.at < TTL) return hit.data;
   const disk = await diskRead(key, kind);
   if (disk && Date.now() - disk.at < DISK_FRESH) {
-    cache.set(key, disk);
+    remember(key, disk.at, disk.data);
     return disk.data;
   }
   try {
     const data = await live(url, opts, read);
-    cache.set(key, { at: Date.now(), data });
+    remember(key, Date.now(), data);
     void diskWrite(key, kind, data);
     return data;
   } catch (e) {
@@ -85,6 +92,25 @@ async function live(url: string, opts: Opts, read: (r: Response) => Promise<unkn
   }
 }
 
+/** Keeps a response in memory, newest last; drops the oldest past the entry and byte bounds. Only
+ *  binary bodies are measured (light curves, MBs each); JSON and text count by entries. */
+function remember(key: string, at: number, data: unknown) {
+  forget(key);
+  const bytes = data instanceof ArrayBuffer ? data.byteLength : 0;
+  cache.set(key, { at, data, bytes });
+  memBytes += bytes;
+  for (const k of cache.keys()) {
+    if (cache.size <= MEM_MAX_ENTRIES && memBytes <= MEM_MAX_BYTES) break;
+    forget(k);
+  }
+}
+function forget(key: string) {
+  const e = cache.get(key);
+  if (!e) return;
+  memBytes -= e.bytes;
+  cache.delete(key);
+}
+
 // ─── disk cache ─────────────────────────────────────────────────────────────
 
 const diskPath = (key: string, kind: Kind) => path.join(DISK_DIR, createHash("sha1").update(key).digest("hex") + (kind === "bin" ? ".bin" : kind === "text" ? ".txt.json" : ".json"));
@@ -115,6 +141,26 @@ async function diskWrite(key: string, kind: Kind, data: unknown) {
   } catch (e) {
     if (!diskWarned) console.warn("[http] disk cache write failed (further failures silenced):", (e as Error).message);
     diskWarned = true;
+  }
+  if (Date.now() - lastPrune > DISK_PRUNE_EVERY_MS) {
+    lastPrune = Date.now();
+    void pruneDisk().catch(() => {});
+  }
+}
+
+let lastPrune = 0;
+/** Deletes the oldest cached files until the cache fits in DISK_MAX_BYTES (HTTP_DISK_CACHE_MB). */
+export async function pruneDisk(dir = DISK_DIR, maxBytes = DISK_MAX_BYTES) {
+  const files = await Promise.all((await readdir(dir)).map(async (f) => {
+    const st = await stat(path.join(dir, f)).catch(() => null);
+    return st ? { f, at: st.mtimeMs, size: st.size } : null;
+  }));
+  const live = files.filter((x) => x !== null).sort((a, b) => a.at - b.at);
+  let total = live.reduce((k, x) => k + x.size, 0);
+  for (const x of live) {
+    if (total <= maxBytes) break;
+    await unlink(path.join(dir, x.f)).catch(() => {});
+    total -= x.size;
   }
 }
 

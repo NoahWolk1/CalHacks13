@@ -29,6 +29,12 @@ export function rememberVet(saved: SavedVet) {
   listeners.forEach((f) => f());
 }
 
+/** A report on this star was saved elsewhere (a sweep's automatic vetting): load it again. */
+export function forgetVets(tic: string) {
+  byTic.delete(tic);
+  listeners.forEach((f) => f());
+}
+
 export function useSavedVet(input: VetInput | null): SavedVet | null {
   const [saved, setSaved] = useState<SavedVet | null>(null);
   const key = input ? JSON.stringify([input.tic, input.kind, input.period, input.times]) : "";

@@ -1,5 +1,6 @@
 // Shared types for the /sky page: a cone on the celestial sphere and what sky agents found in it.
 import type { Pipeline } from "./lightcurves";
+import type { VetInput, VetTier } from "./vetShared";
 
 export type Cone = { ra: number; dec: number; radius: number }; // degrees, ICRS
 
@@ -209,9 +210,51 @@ export type SurveySummary = {
   cpuMs: number; steps: number;
   finds: number; candidates: number;
   error?: string; note?: string;
+  /** Claude spend so far (USD, from the API's token counts) and the serverless time its steps took. */
+  usd?: number; fnMs?: number;
+  /** A tile of a planet sweep: no Claude plan (every star gets searched anyway), one review at the end,
+   *  and Claude only while its spend stays under usdCap. */
+  sweepId?: string; usdCap?: number;
+  /** "tic": the star list came from the TESS Input Catalog (complete to T 13.5). Sweep tiles planned before
+   *  that had SIMBAD's list only (capped at 2000 stars) and are topped up once (survey.ts). */
+  starList?: "tic";
+  /** Set on a planet sweep's own row (sweep.ts): `cone` is then the whole region. */
+  sweep?: SweepState;
+};
+
+// ── planet sweeps (sweep.ts): a large region searched as many deep surveys, under a budget ──────
+
+export type SweepTile = {
+  cone: Cone; status: "pending" | SurveyStatus; surveyId?: string;
+  finds?: number; stars?: number; seasons?: number; done?: number; usd?: number; fnMs?: number;
+};
+export type SweepState = {
+  /** Spend cap (USD): Claude plus estimated compute. */
+  budgetUsd: number;
+  tiles: SweepTile[];
+  /** Claude spend of the sweep's own final review. */
+  reviewUsd: number;
+  /** Claude spend and estimated compute so far, over all tiles. */
+  claudeUsd: number; computeUsd: number;
+  budgetHit?: boolean;
+  /** Automatic vetting (vetReport.ts) of every transit find, as soon as it shows up (keys "v1", "v2"..),
+   *  and the time it took (priced as compute). */
+  vets?: Record<string, SweepVet>;
+  vetMs?: number;
+};
+/** One signal's vetting. A running tile renumbers its finds as it goes, so the vet is matched to the find
+ *  by its tile and signal (sameFind), not by the find's id; `findId` is the id it had when vetting began. */
+export type SweepVet = {
+  status: "running" | "done" | "error"; startedAt: number; tries: number; tile: number; input: VetInput; findId: string; tier?: VetTier; reason?: string;
+  finishedAt?: number;
+  /** Checks that couldn't reach their service (an archive down or timing out). A viable find vetted with
+   *  gaps is vetted again later (`revets` times so far), since those checks could still reject it. */
+  gaps?: string[]; revets?: number;
 };
 
 /** A star's progress in a survey, as the page lists it. */
 export type SurveyStarRow = { tic: string; name: string; ra: number; dec: number; playbook: Playbook; priority: number; seasons: number; done: number; failed: number; signals: number; singles: number; variable: boolean };
+
+export type SweepView = { sweep: SurveySummary; notes: SkyNote[]; objects: SkyObject[] };
 
 export type SurveyView = { survey: SurveySummary; notes: SkyNote[]; objects: SkyObject[]; stars: SurveyStarRow[]; backend: string };

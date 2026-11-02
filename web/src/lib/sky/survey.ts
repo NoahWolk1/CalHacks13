@@ -17,15 +17,17 @@
 // The Strategist plans the order (Claude picks the first stars, the heuristic score orders the rest),
 // bumps a star whose season turned something up so its other seasons come next, and at each quarter
 // of progress Claude reviews the finds, writes notebook notes and can move stars up the queue.
-import { analyseStar, download, forcedCheck, signalObject, singleObject, variableObject } from "./analysis";
-import { seasonsFor, surveyInventory, type LcProduct, type LightCurve } from "./lightcurves";
+import { download, signalObject, singleObject, variableObject } from "./analysis";
+import { forcedChecksLcs, searchSeasonLcs, searchThreads } from "@/lib/server/searchPool";
+import { seasonsFor, surveyInventory, type LcProduct } from "./lightcurves";
 import { variabilityClass, type LsResult } from "./lombscargle";
 import { LABEL as OTYPE_LABEL } from "./simbad";
 import { claudePlan, claudeSurveyReview, PLAYBOOK_LABEL, prospects } from "./strategy";
 import { CONTAM_ARCMIN, ebNeighbours, impliedRadiusEarth, knownPlanetsNear, knownTransitAt, knownTransitLabel, MAX_PLANET_REARTH, periodsMatch, toisNear, transitVariability, unreliableHost, vetSignal } from "./vetting";
 import { ctoiSignals } from "./hostStar";
-import { VARIABLE_OTYPES, variablesNear, vsxEntry } from "./vsx";
+import { VARIABLE_OTYPES, variablesNear, vsxEntry, vsxWithin } from "./vsx";
 import { separation } from "./geom";
+import { measureSpend } from "@/lib/llm";
 import type { SurveyField, SurveyStore } from "./surveyStore";
 import {
   isNewFind, type AnalysisStar, type Cone, type ForcedCheck, type SingleDip, type SkyNote, type SkyObject, type SurveySeason, type SurveyStar, type SurveyStarRow,
@@ -36,20 +38,26 @@ import {
 export const STEP_BUDGET_MS = Number(process.env.SKY_SURVEY_STEP_MS) || 230_000;
 /** No new season starts this close to the step's end (4 downloads + a multi-sector search fit in it). */
 const STEP_TAIL_MS = 45_000;
-export const SURVEY_CONCURRENCY = 4;
+/** Seasons a step searches at once (downloads overlap; with search threads on, so do the searches). */
+export const SURVEY_CONCURRENCY = Number(process.env.SKY_SURVEY_CONCURRENCY) || 4;
 const SAVE_EVERY_MS = 4_000;
+/** Sweep tiles save less often: nobody watches them live, and a tile's file (every star and season of a
+ *  3° cone, ~20-35 MB) is rewritten whole on each save. */
+const TILE_SAVE_EVERY_MS = 30_000;
 /** Claude picks this many stars to search first; the heuristic orders the rest. */
 const PLAN_FIRST = 20;
 const MAX_NOTES = 80;
 /** Rejected signals kept in the stored results (every new find is kept). */
 const MAX_REJECTED = 150;
 const BUMP = 50;
+/** Most one survey review can cost (≈6K tokens in, 1.5K out on Opus): a review needs this much budget left. */
+export const REVIEW_RESERVE_USD = 0.06;
 
 // ── planning (the first step) ───────────────────────────────────────────────
 
-export function newSummary(id: string, cone: Cone, llm: boolean): SurveySummary {
+export function newSummary(id: string, cone: Cone, llm: boolean, extra: Partial<SurveySummary> = {}): SurveySummary {
   const now = Date.now();
-  return { id, cone, status: "running", createdAt: now, updatedAt: now, llm, planned: false, stars: 0, seasons: 0, seasonsDone: 0, seasonsFailed: 0, lightCurves: 0, cpuMs: 0, steps: 0, finds: 0, candidates: 0 };
+  return { id, cone, status: "running", createdAt: now, updatedAt: now, llm, planned: false, stars: 0, seasons: 0, seasonsDone: 0, seasonsFailed: 0, lightCurves: 0, cpuMs: 0, steps: 0, finds: 0, candidates: 0, usd: 0, fnMs: 0, ...extra };
 }
 
 const within = <T,>(p: Promise<T>, ms: number) => Promise.race([p, new Promise<never>((_, rej) => setTimeout(() => rej(new Error(`timed out after ${Math.round(ms / 1000)}s`)), ms))]);
@@ -57,9 +65,9 @@ const within = <T,>(p: Promise<T>, ms: number) => Promise.race([p, new Promise<n
 /** Inventory every light curve in the field, cross-match catalogs, rank the stars and lay out their seasons. */
 export async function planSurvey(c: Cone, signal: AbortSignal, useClaude: boolean) {
   const notes: SkyNote[] = [];
-  const settle = <T,>(p: Promise<T>) => within(p, 40_000).then((v) => ({ v, err: "" }), (e: Error) => ({ v: null as T | null, err: e.message }));
+  const settle = <T,>(p: Promise<T>, ms = 40_000) => within(p, ms).then((v) => ({ v, err: "" }), (e: Error) => ({ v: null as T | null, err: e.message }));
   const [inv, kp, ti, nb, vx] = await Promise.all([
-    surveyInventory(c, signal), settle(knownPlanetsNear(c, signal)), settle(toisNear(c, signal)), settle(ebNeighbours(c, signal)), settle(variablesNear(c, signal)),
+    surveyInventory(c, signal), settle(knownPlanetsNear(c, signal)), settle(toisNear(c, signal)), settle(ebNeighbours(c, signal)), settle(variablesNear(c, signal), c.radius >= 0.5 ? 240_000 : 40_000),
   ]);
   // Community TOIs too (one cached ExoFOP download): masked and matched like the archive's TOIs.
   const ct = await settle(ctoiSignals(inv.stars, signal));
@@ -95,24 +103,15 @@ export async function planSurvey(c: Cone, signal: AbortSignal, useClaude: boolea
   notes.unshift({ agent: "strategist", text: strategy });
   for (const n of inv.notes) notes.push({ agent: "lightcurves", text: n });
   if (field.unchecked.length) notes.push({ agent: "vetting", text: `Cross-match unavailable this survey: ${field.unchecked.join(", ")}. Finds can't be called new against ${field.unchecked.length === 1 ? "it" : "them"}.` });
-  return { stars, field, notes, plan: { strategy, by, pool: pool.length } };
+  // What failed: the star lists (the TESS Input Catalog's for completeness, SIMBAD's for names and types),
+  // the full-frame-image lookups (stars whose light curves weren't found) and the cross-match catalogs.
+  const degraded = [inv.tic === false && "TESS Input Catalog star list", !inv.simbad && "SIMBAD star list", inv.ffiFailed && "full-frame-image lookups", ...field.unchecked].filter(Boolean) as string[];
+  return { stars, field, notes, plan: { strategy, by, pool: pool.length }, degraded };
 }
 
 // ── one season ──────────────────────────────────────────────────────────────
 
-/** Time ranges (BTJD) with good data; gaps longer than `gap` days split them. */
-export function coverageOf(lcs: Pick<LightCurve, "time" | "flux" | "quality">[], gap = 0.15): [number, number][] {
-  const t: number[] = [];
-  for (const lc of lcs) for (let i = 0; i < lc.time.length; i++) if (Number.isFinite(lc.time[i]) && Number.isFinite(lc.flux[i]) && !lc.quality[i]) t.push(lc.time[i]);
-  t.sort((a, b) => a - b);
-  const out: [number, number][] = [];
-  for (const x of t) {
-    const last = out[out.length - 1];
-    if (last && x - last[1] <= gap) last[1] = x;
-    else out.push([x, x]);
-  }
-  return out.filter(([a, b]) => b - a > 0.05).map(([a, b]) => [+a.toFixed(3), +b.toFixed(3)]);
-}
+export { coverageOf } from "./seasonSearch";
 
 const round = (n: number, d = 5) => +n.toPrecision(d);
 const compactSignal = (t: TransitSignal): TransitSignal => ({ ...t, period: round(t.period, 9), t0: round(t.t0, 9), duration: round(t.duration), depth: round(t.depth), snr: round(t.snr, 4), sde: round(t.sde, 4), oddEven: round(t.oddEven, 3), oddEvenSigma: round(t.oddEvenSigma, 3), secondary: round(t.secondary, 3), secondarySigma: round(t.secondarySigma, 3) });
@@ -137,9 +136,6 @@ export function forcedTargets(star: SurveyStar, season: SurveySeason): TransitSi
   return out;
 }
 
-const forcedAll = (lcs: LightCurve[], targets: TransitSignal[]): ForcedCheck[] => targets.flatMap((t) => {
-  try { return [forcedCheck(lcs, t)]; } catch { return []; }
-});
 /** Recorded when a re-check can't run, so the season isn't queued for it again. */
 const unmeasured = (t: TransitSignal): ForcedCheck => ({ period: t.period, depth: 0, err: 0, snr: 0, transits: 0, result: "inconclusive" });
 
@@ -150,7 +146,7 @@ export async function recheckSeason(star: SurveyStar, season: SurveySeason, sign
   const products: LcProduct[] = season.files.map((f) => ({ tic: star.tic, sector: f.sector, pipeline: f.pipeline, cadence: 0, uri: f.uri }));
   const { lcs } = await download(products, signal, deadline);
   await new Promise<void>((r) => setImmediate(r));
-  const got = lcs.length ? forcedAll(lcs, targets) : [];
+  const got = lcs.length ? await forcedChecksLcs(lcs, targets) : [];
   const forced = [...(season.forced ?? []), ...got, ...targets.filter((t) => !got.some((g) => periodsMatch(g.period, t.period, 0.01))).map(unmeasured)];
   return { ...season, forced };
 }
@@ -162,12 +158,11 @@ export async function searchSeason(star: SurveyStar, season: SurveySeason, signa
   if (!lcs.length) return { ...season, status: "error", error: `download failed: ${errors[0] ?? "unknown"}`, ms: Date.now() - ts };
   await new Promise<void>((r) => setImmediate(r));
   try {
-    const a = analyseStar(lcs, star.masks);
+    const { analysis: a, coverage } = await searchSeasonLcs(lcs, star.masks);
     const ls = { period: round(a.ls.period, 7), amplitude: round(a.ls.amplitude, 4), power: round(a.ls.power, 3), fap: a.ls.fap, variable: a.ls.fap < 1e-3 && a.ls.power > 0.1 && a.ls.amplitude >= 5e-4 };
     const signals = a.signals.map((t) => compactSignal({ period: t.period, t0: t.t0, duration: t.duration, depth: t.depth, snr: t.snr, sde: t.sde, transits: t.transits, oddEven: t.oddEven, oddEvenSigma: t.oddEvenSigma, secondary: t.secondary, secondarySigma: t.secondarySigma, detected: true }));
-    const coverage = coverageOf(lcs);
     const searched = { ...season, status: "ok" as const, signals, coverage, forced: [] };
-    const forced = forcedAll(lcs, forcedTargets(star, searched));
+    const forced = await forcedChecksLcs(lcs, forcedTargets(star, searched));
     return {
       ...season, sectors: lcs.map((l) => l.sector), status: "ok", points: a.points, days: +a.days.toFixed(2), coverage,
       signals, ...(forced.length ? { forced } : {}),
@@ -349,7 +344,7 @@ export function surveyObjects(stars: SurveyStar[], field: SurveyField) {
     const v = season.ls!;
     const own = catalogued(star);
     const shared = vars.filter((x) => x.star !== star && Math.abs(x.season.ls!.period / v.period - 1) < 0.02).length;
-    const near = (field.vsx ?? []).find((x) => x !== own && x.period && periodsMatch(v.period, x.period, 0.02) && separation(x.ra, x.dec, star.ra, star.dec) * 60 <= CONTAM_ARCMIN);
+    const near = (field.vsx ? vsxWithin(star, field.vsx, CONTAM_ARCMIN) : []).find((x) => x !== own && x.period && periodsMatch(v.period, x.period, 0.02));
     let census: { label: string; reason: string };
     const fromTransits = transitVariability(star, v.period, season.days ?? 27, field.known, season.signals ?? []);
     if (own) census = { label: `Catalogued variable: ${own.name} (${own.type})`, reason: `AAVSO VSX lists it${own.period ? ` with P ${own.period} d${periodsMatch(v.period, own.period, 0.03) ? ", which this period matches" : ", unlike this period"}` : ""}` };
@@ -418,34 +413,71 @@ export function nextSeason(stars: SurveyStar[], busy: Set<string>): { star: Surv
 /** "idle": work is left but this step couldn't do any (the chain should not fire again at once). */
 export type StepResult = "continue" | "done" | "busy" | "stopped" | "missing" | "idle";
 
+/** Planning holds the lease this long: the archives can take minutes, and a sweep tile waits out an outage
+ *  inside the step (below) rather than let a restart run beside it. */
+const PLAN_LEASE_MS = 20 * 60_000;
+/** A sweep tile re-plans while an archive is down (a 1-minute wait more each time, up to 10 minutes),
+ *  then accepts the reduced plan: one tile planned in an outage would otherwise search far fewer stars. */
+const PLAN_TRIES = 12;
+
 /** One step of a survey: take the lease, plan if needed, search seasons until the budget is used, save
  *  as it goes. Returns "continue" when work is left for the next step. */
-export async function runSurveyStep(store: SurveyStore, id: string, owner: string, opts: { budgetMs?: number } = {}): Promise<StepResult> {
+export async function runSurveyStep(store: SurveyStore, id: string, owner: string, opts: { budgetMs?: number; planWaitMs?: number } = {}): Promise<StepResult> {
   const t0 = Date.now();
   const budget = opts.budgetMs ?? STEP_BUDGET_MS;
   const deadline = t0 + budget;
-  if (!(await store.lease(id, owner, deadline + 60_000))) return "busy";
+  const pre = (await store.get(id))?.summary;
+  const topUp = !!pre?.planned && !!pre.sweepId && !pre.starList;
+  if (!(await store.lease(id, owner, pre?.planned === false || topUp ? t0 + PLAN_LEASE_MS : deadline + 60_000))) return "busy";
   const ctl = new AbortController();
   try {
     const row = await store.get(id);
-    if (!row) return "missing";
+    if (!row || row.summary.sweep) return "missing";
     if (row.summary.status !== "running") return row.summary.status === "done" ? "done" : "stopped";
     let summary: SurveySummary = { ...row.summary, steps: row.summary.steps + 1 };
+    const addUsd = (usd: number) => { summary = { ...summary, usd: (summary.usd ?? 0) + usd }; };
+    const addStepTime = () => { summary = { ...summary, fnMs: (summary.fnMs ?? 0) + Date.now() - t0 }; };
     let notes = row.notes;
-    let stars: SurveyStar[], field: SurveyField;
+    let stars: SurveyStar[], field: SurveyField, toppedUp = false;
     const dirty = new Set<string>();
     if (!summary.planned) {
-      const p = await planSurvey(summary.cone, ctl.signal, summary.llm);
+      // A sweep tile skips the Claude plan: it only orders the first stars, and every star is searched anyway.
+      const p = await measureSpend(() => planSurvey(summary.cone, ctl.signal, summary.llm && !summary.sweepId), addUsd);
+      if (summary.sweepId && p.degraded.length && summary.steps < PLAN_TRIES) {
+        // Off Vercel the wait is free; on it, only what is left of this step's budget.
+        const wait = Math.min(summary.steps * (opts.planWaitMs ?? 60_000), 10 * 60_000, process.env.VERCEL ? Math.max(0, deadline - Date.now()) : Infinity);
+        summary = { ...summary, note: `${p.degraded.join(", ")} unavailable: planning again (try ${summary.steps} of ${PLAN_TRIES}).` };
+        addStepTime();
+        await store.save(id, owner, { summary: { ...summary, updatedAt: Date.now() }, notes, objects: row.objects }, []);
+        await new Promise((r) => setTimeout(r, wait));
+        return "continue";
+      }
       stars = p.stars; field = p.field;
       notes = [...notes, ...p.notes];
-      summary = { ...summary, planned: true, plan: p.plan, ...(p.stars.length ? {} : { note: "No star in this cone has a TESS light curve at MAST." }) };
+      summary = { ...summary, planned: true, plan: p.plan, note: p.stars.length ? undefined : "No star in this cone has a TESS light curve at MAST.", ...(p.degraded.includes("TESS Input Catalog star list") ? {} : { starList: "tic" as const }) };
       stars.forEach((s) => dirty.add(s.tic));
-      if (!stars.length) summary.status = "done";
+      if (!stars.length) { summary.status = "done"; addStepTime(); }
       await store.save(id, owner, { summary: { ...summary, ...counts(stars), updatedAt: Date.now() }, notes, objects: [], field }, stars);
       dirty.clear();
       if (!stars.length) return "done";
     } else {
       [stars, field] = await Promise.all([store.stars(id), store.field(id).then((f) => f ?? { known: [], neighbours: [], unchecked: ["cross-match data"] })]);
+      // A sweep tile planned from SIMBAD's capped list: add the TESS Input Catalog's other stars, once
+      // (when the catalog and the light-curve lookups all answer; otherwise the next step tries again).
+      if (summary.sweepId && !summary.starList) {
+        toppedUp = true; // the catalogs took this step's time: the next step searches
+        const p = await planSurvey(summary.cone, ctl.signal, false);
+        if (!p.degraded.some((d) => d === "TESS Input Catalog star list" || d === "full-frame-image lookups")) {
+          const have = new Set(stars.map((s) => s.tic));
+          const added = p.stars.filter((s) => !have.has(s.tic));
+          stars = [...stars, ...added];
+          added.forEach((s) => dirty.add(s.tic));
+          summary = { ...summary, starList: "tic" };
+          notes = [...notes, { agent: "lightcurves", text: `Star list completed from the TESS Input Catalog: ${added.length} more stars, ${added.reduce((k, s) => k + s.seasons.length, 0)} more seasons (SIMBAD's list had stopped at its cap).` }];
+          await store.save(id, owner, { summary: { ...summary, ...counts(stars), updatedAt: Date.now() }, notes, objects: row.objects }, added);
+          dirty.clear();
+        }
+      }
     }
     const byTic = new Map(stars.map((s) => [s.tic, s]));
     let stopped = false, lastSave = 0, cpuMs = 0;
@@ -453,7 +485,7 @@ export async function runSurveyStep(store: SurveyStore, id: string, owner: strin
     const reviewed = new Set<number>(row.notes.filter((n) => n.agent === "strategist" && /^\[review \d+%\]/.test(n.text)).map((n) => Number(n.text.match(/\d+/)![0])));
 
     const save = async (force = false) => {
-      if (!force && Date.now() - lastSave < SAVE_EVERY_MS) return;
+      if (!force && Date.now() - lastSave < (summary.sweepId ? TILE_SAVE_EVERY_MS : SAVE_EVERY_MS)) return;
       lastSave = Date.now();
       const { objects, finds, candidates } = surveyObjects(stars, field);
       summary = { ...summary, ...counts(stars), finds, candidates, cpuMs: summary.cpuMs + cpuMs, updatedAt: Date.now() };
@@ -469,13 +501,15 @@ export async function runSurveyStep(store: SurveyStore, id: string, owner: strin
       if (!summary.llm) return;
       const c = counts(stars);
       const pct = c.seasons ? Math.floor((c.seasonsDone + c.seasonsFailed) / c.seasons * 4) * 25 : 0;
-      if (!pct || reviewed.has(pct)) return;
+      // A sweep tile is reviewed once, at the end: the milestone reviews only reorder stars that all get searched.
+      if (!pct || reviewed.has(pct) || (summary.sweepId && pct < 100)) return;
       reviewed.add(pct);
+      if ((summary.usd ?? 0) + REVIEW_RESERVE_USD > (summary.usdCap ?? Infinity)) { note({ agent: "strategist", text: `[review ${pct}%] skipped: the Claude budget for this survey is used up.` }); return; }
       const { objects } = surveyObjects(stars, field);
       if (!objects.some(isNewFind)) { note({ agent: "strategist", text: `[review ${pct}%] ${c.seasonsDone} of ${c.seasons} seasons searched; nothing new has survived vetting yet.` }); return; }
       const lines = objects.slice(0, 60).map((o) => `[${o.id}] ${o.name}: ${o.type} · ${Object.entries(o.props).filter(([k]) => !["light curve", "status", "playbook"].includes(k)).map(([k, v]) => `${k}=${v}`).join("; ")}`).join("\n");
       try {
-        const r = await within(claudeSurveyReview(`${pct}% of seasons done: ${c.seasonsDone} searched, ${c.seasonsFailed} failed, of ${c.seasons} (${c.stars} stars).`, lines, new Set(objects.map((o) => o.id)), new Set(byTic.keys()), ctl.signal), 30_000);
+        const r = await measureSpend(() => within(claudeSurveyReview(`${pct}% of seasons done: ${c.seasonsDone} searched, ${c.seasonsFailed} failed, of ${c.seasons} (${c.stars} stars).`, lines, new Set(objects.map((o) => o.id)), new Set(byTic.keys()), ctl.signal), 30_000), addUsd);
         r.notes.forEach((n, i) => note({ agent: "strategist", text: i ? n.text : `[review ${pct}%] ${n.text}`, ids: n.ids }));
         if (!r.notes.length) note({ agent: "strategist", text: `[review ${pct}%] reviewed ${objects.filter(isNewFind).length} new finds.` });
         for (const p of r.prioritize) {
@@ -526,7 +560,8 @@ export async function runSurveyStep(store: SurveyStore, id: string, owner: strin
         await review();
       }
     };
-    await Promise.all(Array.from({ length: SURVEY_CONCURRENCY }, worker));
+    // With search threads, enough seasons in flight to keep them busy (two each: one searching, one downloading).
+    await Promise.all(Array.from({ length: Math.max(SURVEY_CONCURRENCY, 2 * searchThreads()) }, worker));
     const left = nextSeason(stars, new Set()) !== null;
     if (!left && !stopped) {
       summary.status = "done";
@@ -535,8 +570,9 @@ export async function runSurveyStep(store: SurveyStore, id: string, owner: strin
       const { finds } = surveyObjects(stars, field);
       note({ agent: "strategist", text: `Survey complete: ${counts(stars).seasonsDone} seasons of ${stars.length} stars searched, ${finds} new find${finds === 1 ? "" : "s"} survived vetting.` });
     }
+    addStepTime();
     await save(true);
-    return stopped ? "stopped" : !left ? "done" : searched || !row.summary.planned ? "continue" : "idle";
+    return stopped ? "stopped" : !left ? "done" : searched || toppedUp || !row.summary.planned ? "continue" : "idle";
   } finally {
     ctl.abort();
     await store.release(id, owner).catch(() => {});
