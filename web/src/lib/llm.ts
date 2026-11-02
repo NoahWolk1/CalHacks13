@@ -51,3 +51,13 @@ export async function withUsageTally<T>(name: string, fn: () => Promise<T>): Pro
     if (t.calls) console.info(`[llm-run] ${name} calls=${t.calls} in=${t.input} out=${t.output} cache_read=${t.cacheRead} cache_write=${t.cacheWrite} searches=${t.searches} ~$${t.usd.toFixed(4)}`);
   }
 }
+
+/** Runs fn with its own tally and hands the Claude spend (USD) it caused to `add`, even when fn throws. */
+export async function measureSpend<T>(fn: () => Promise<T>, add: (usd: number) => void): Promise<T> {
+  const t: Tally = { name: "", calls: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, searches: 0, usd: 0 };
+  try {
+    return await runTally.run(t, fn);
+  } finally {
+    add(t.usd);
+  }
+}

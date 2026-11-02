@@ -15,7 +15,7 @@ import type { LsResult } from "./lombscargle";
 import type { FieldStar } from "./lightcurves";
 import { ephemerisSigma } from "./timeseries";
 import type { Cone } from "./types";
-import { isEclipsingType, VARIABLE_OTYPES, vsxEntry, type VsxStar } from "./vsx";
+import { isEclipsingType, VARIABLE_OTYPES, vsxEntry, vsxWithin, type VsxStar } from "./vsx";
 
 /** A known periodic transit source: a confirmed planet or a TOI, with its host's position. */
 export type KnownSignal = { tic: string; name: string; period: number; ra: number; dec: number; kind: "planet" | "toi"; disposition?: string;
@@ -107,7 +107,7 @@ export function vetSignal(sig: VetSignal, ctx: VetContext): Verdict {
   if (src) return { kind: "contamination", label: `Light from TIC ${src.tic}, ${arcmin(src, ctx.star).toFixed(1)}′ away`, reasons: [`TIC ${src.tic} shows the same period ${(src.depth / sig.depth).toFixed(1)}x deeper and is close enough to leak into this aperture`] };
   // A catalogued variable with this period: on the star itself, or a neighbour leaking in.
   const own = ctx.vsx ? vsxEntry(ctx.star, ctx.vsx) : undefined;
-  const vNear = (ctx.vsx ?? []).filter((v) => v !== own && v.period && periodsMatch(sig.period, v.period, 0.01) && arcmin(v, ctx.star) <= CONTAM_ARCMIN)
+  const vNear = (ctx.vsx ? vsxWithin(ctx.star, ctx.vsx, CONTAM_ARCMIN) : []).filter((v) => v !== own && v.period && periodsMatch(sig.period, v.period, 0.01))
     .sort((a, b) => arcmin(a, ctx.star) - arcmin(b, ctx.star))[0];
   if (vNear) return { kind: "contamination", label: `Light from ${vNear.name}, ${arcmin(vNear, ctx.star).toFixed(1)}′ away`, reasons: [`AAVSO VSX lists ${vNear.name} (${vNear.type}, P ${vNear.period!.toFixed(4)} d) at this period, close enough to leak into this aperture`] };
 

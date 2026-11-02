@@ -108,6 +108,12 @@ export function sameFind(a: VetInput, b: VetInput): boolean {
   return ta.length > 0 && ta.length === tb.length && ta.every((t, i) => Math.abs(t - tb[i]) < tol);
 }
 
+/** Checks in a report that couldn't reach their service (an archive down or timing out), as opposed to
+ *  checks that don't apply or had too little signal: what a later run could still fill in. */
+export function vetGaps(r: Pick<VetReport, "checks">): string[] {
+  return [...new Set(r.checks.filter((c) => c.stage < 4 && (c.status === "not-run" || c.status === "flag") && /unavailable|unreachable|aborted|timed out|time ?out|didn't answer|didn't, so|wasn't checked|fetch failed/i.test(c.detail)).map((c) => c.name))];
+}
+
 /** A finished report as saved on the server (vetStore.ts). */
 export type SavedVet = { id: string; savedAt: number; report: VetReport };
 

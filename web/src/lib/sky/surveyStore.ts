@@ -39,13 +39,22 @@ export class LeaseLost extends Error {}
 
 const SURVEY_ID = /^[A-Za-z0-9_-]{6,64}$/;
 export const validSurveyId = (id: string) => SURVEY_ID.test(id);
+/** list() limit meaning every survey: sweeps make thousands, and the newest are mostly their tiles. */
+export const LIST_ALL = 1_000_000;
 
 // ── files (dev) ─────────────────────────────────────────────────────────────
 
-type FileDoc = { summary: SurveySummary; notes: SkyNote[]; objects: SkyObject[]; field: SurveyField | null; leaseOwner: string; leaseUntil: number; stars: Record<string, SurveyStar> };
+type FileRow = { summary: SurveySummary; notes: SkyNote[]; objects: SkyObject[]; field: SurveyField | null; leaseOwner: string; leaseUntil: number };
 
 export function fileStore(dir = process.env.SKY_SURVEY_DIR || join(tmpdir(), "coordinate-sky-surveys")): SurveyStore {
+  // Three files per survey: the row (<id>.json: summary, notes, finds, cross-match field, lease), its
+  // stars (<id>.stars.json: every season of every star, 20-35 MB for a sweep tile) and its summary alone
+  // (<id>.summary, for listing). Leases, reads and stops touch the small files only; a save rewrites the
+  // stars only when stars changed. Surveys saved before the split (stars inside the row) are split on
+  // their first locked write.
   const path = (id: string) => join(dir, `${id}.json`);
+  const starsPath = (id: string) => join(dir, `${id}.stars.json`);
+  const summaryPath = (id: string) => join(dir, `${id}.summary`);
   // One process owns the files: serialise each survey's read-modify-writes.
   const locks = new Map<string, Promise<unknown>>();
   const locked = <T,>(id: string, fn: () => Promise<T>): Promise<T> => {
@@ -53,52 +62,79 @@ export function fileStore(dir = process.env.SKY_SURVEY_DIR || join(tmpdir(), "co
     locks.set(id, p.catch(() => {}));
     return p;
   };
-  const read = async (id: string): Promise<FileDoc | null> => {
-    if (!validSurveyId(id)) return null;
-    try { return JSON.parse(await readFile(path(id), "utf8")) as FileDoc; } catch { return null; }
-  };
-  const write = async (doc: FileDoc) => {
+  const atomic = async (file: string, text: string) => {
     await mkdir(dir, { recursive: true });
-    const tmp = `${path(doc.summary.id)}.${process.pid}.tmp`;
-    await writeFile(tmp, JSON.stringify(doc));
-    await rename(tmp, path(doc.summary.id));
+    const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2, 7)}.tmp`;
+    await writeFile(tmp, text);
+    await rename(tmp, file);
+  };
+  const readRow = async (id: string, migrate = false): Promise<FileRow | null> => {
+    if (!validSurveyId(id)) return null;
+    let d: FileRow & { stars?: Record<string, SurveyStar> };
+    try { d = JSON.parse(await readFile(path(id), "utf8")); } catch { return null; }
+    if (!d.stars) return d;
+    const { stars, ...row } = d;
+    if (migrate) {
+      await atomic(starsPath(id), JSON.stringify(stars));
+      await atomic(path(id), JSON.stringify(row));
+    }
+    return row;
+  };
+  const readStars = async (id: string): Promise<Record<string, SurveyStar>> => {
+    if (!validSurveyId(id)) return {};
+    try { return JSON.parse(await readFile(starsPath(id), "utf8")); } catch { /* none yet, or not split yet */ }
+    try { return (JSON.parse(await readFile(path(id), "utf8")) as { stars?: Record<string, SurveyStar> }).stars ?? {}; } catch { return {}; }
+  };
+  const writeRow = async (row: FileRow) => {
+    await atomic(path(row.summary.id), JSON.stringify(row));
+    await atomic(summaryPath(row.summary.id), JSON.stringify(row.summary));
+  };
+  const readSummary = async (id: string): Promise<SurveySummary | null> => {
+    try { return JSON.parse(await readFile(summaryPath(id), "utf8")) as SurveySummary; } catch { /* written before the summary files */ }
+    const d = await readRow(id);
+    if (d) await atomic(summaryPath(id), JSON.stringify(d.summary)).catch(() => {});
+    return d?.summary ?? null;
   };
   return {
     name: "file",
-    create: (summary) => locked(summary.id, () => write({ summary, notes: [], objects: [], field: null, leaseOwner: "", leaseUntil: 0, stars: {} })),
-    async get(id) { const d = await read(id); return d && { summary: d.summary, notes: d.notes, objects: d.objects, leaseOwner: d.leaseOwner, leaseUntil: d.leaseUntil }; },
-    async stars(id) { return Object.values((await read(id))?.stars ?? {}); },
-    async field(id) { return (await read(id))?.field ?? null; },
+    create: (summary) => locked(summary.id, () => writeRow({ summary, notes: [], objects: [], field: null, leaseOwner: "", leaseUntil: 0 })),
+    async get(id) { const d = await readRow(id); return d && { summary: d.summary, notes: d.notes, objects: d.objects, leaseOwner: d.leaseOwner, leaseUntil: d.leaseUntil }; },
+    async stars(id) { return Object.values(await readStars(id)); },
+    async field(id) { return (await readRow(id))?.field ?? null; },
     async list(limit) {
       const files = await readdir(dir).catch(() => [] as string[]);
-      const docs = await Promise.all(files.filter((f) => f.endsWith(".json")).map((f) => read(f.slice(0, -5))));
-      return docs.flatMap((d) => (d ? [d.summary] : [])).sort((a, b) => b.createdAt - a.createdAt).slice(0, limit);
+      const ids = files.filter((f) => f.endsWith(".json")).map((f) => f.slice(0, -5)).filter(validSurveyId);
+      const all = await Promise.all(ids.map((id) => locked(id, () => readSummary(id))));
+      return all.flatMap((x) => (x ? [x] : [])).sort((a, b) => b.createdAt - a.createdAt).slice(0, limit);
     },
     lease: (id, owner, untilMs) => locked(id, async () => {
-      const d = await read(id);
+      const d = await readRow(id, true);
       if (!d || d.summary.status !== "running") return false;
       if (d.leaseOwner && d.leaseOwner !== owner && d.leaseUntil > Date.now()) return false;
-      await write({ ...d, leaseOwner: owner, leaseUntil: untilMs });
+      await writeRow({ ...d, leaseOwner: owner, leaseUntil: untilMs });
       return true;
     }),
     release: (id, owner) => locked(id, async () => {
-      const d = await read(id);
-      if (d && d.leaseOwner === owner) await write({ ...d, leaseOwner: "", leaseUntil: 0 });
+      const d = await readRow(id, true);
+      if (d && d.leaseOwner === owner) await writeRow({ ...d, leaseOwner: "", leaseUntil: 0 });
     }),
     save: (id, owner, data, stars) => locked(id, async () => {
-      const d = await read(id);
+      const d = await readRow(id, true);
       if (!d) throw new Error("unknown survey");
       if (d.leaseOwner !== owner) throw new LeaseLost("lease lost");
+      if (stars.length) {
+        const all = await readStars(id);
+        for (const s of stars) all[s.tic] = s;
+        await atomic(starsPath(id), JSON.stringify(all));
+      }
       const status = d.summary.status === "stopped" ? "stopped" : data.summary.status;
-      const next: FileDoc = { ...d, summary: { ...data.summary, status }, notes: data.notes, objects: data.objects, field: data.field ?? d.field, stars: { ...d.stars } };
-      for (const s of stars) next.stars[s.tic] = s;
-      await write(next);
+      await writeRow({ ...d, summary: { ...data.summary, status }, notes: data.notes, objects: data.objects, field: data.field ?? d.field });
       return status;
     }),
     stop: (id) => locked(id, async () => {
-      const d = await read(id);
+      const d = await readRow(id, true);
       if (!d || d.summary.status !== "running") return false;
-      await write({ ...d, summary: { ...d.summary, status: "stopped", updatedAt: Date.now() } });
+      await writeRow({ ...d, summary: { ...d.summary, status: "stopped", updatedAt: Date.now() } });
       return true;
     }),
   };

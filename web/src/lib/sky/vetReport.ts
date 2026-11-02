@@ -28,6 +28,7 @@ import {
 } from "./transitFit";
 import { BTJD, GIANT_RADIUS, knownPlanetsNear, periodsMatch, SATURATED_TMAG, toisNear, type KnownSignal } from "./vetting";
 import { isEclipsingType, variablesNear, vsxEntry } from "./vsx";
+import { combineDepths, confirmation, engineeringAt, localDepth, pixelPhotometry, rawPoints } from "./artifacts";
 import { separation } from "./geom";
 import { tierOf, type VetCheck, type VetPixels, type VetEventRow, type VetInput, type VetReport, type VetStage, type VetStatus, type VetStreamEvent } from "./vetShared";
 
@@ -621,10 +622,60 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
   } else {
     const lost = rows.filter((r) => r.m && r.coverage >= 0.5 && (r.snr ?? 0) < 3);
     // This SNR is the vetting's own re-measurement on a fresh reduction, not the search's number.
-    const v = rows.map((r) => `BTJD ${r.t.toFixed(2)}: ${r.snr !== undefined ? `vetting SNR ${r.snr.toFixed(1)}, ${ppt(r.depth!)}` : "no data"}`).join("; ") + (input.snr ? ` (the search's SNR was ${r3(input.snr)}: a different detrending, binning and noise estimate)` : "");
+    const v = rows.map((r) => `BTJD ${r.t.toFixed(2)}${r.sector ? ` (sector ${r.sector}, ${r.pipeline})` : ""}: ${r.snr !== undefined ? `vetting SNR ${r.snr.toFixed(1)}, ${ppt(r.depth!)}` : "no data"}`).join("; ") + (input.snr ? ` (the search's SNR was ${r3(input.snr)}: a different detrending, binning and noise estimate)` : "");
     if (lost.length) add(1, "events", "Individual transits", "fail", `the dip at BTJD ${lost.map((r) => r.t.toFixed(2)).join(", ")} isn't there in a fresh reduction (SNR < 3): a systematic of the first search`, v);
     else if (N < rows.length) add(1, "events", "Individual transits", "not-run", `${rows.length - N} of the listed dips fall outside the light curves that downloaded`, v);
     else add(1, "events", "Individual transits", "flag", input.kind === "single" ? (ztfPeriod ? `one TESS transit: the period (${r3(ztfPeriod.period)} d) comes from ZTF alone` : "one transit: the period is unknown") : "two transits: the period rests on one spacing (and its aliases)", v);
+  }
+
+  // ── instrumental artifacts (artifacts.ts) ──
+  // Engineering data: a dip in cadences that aren't science data (QLP leaves them unflagged; they're
+  // masked on reading now, so a find from before that lands here).
+  {
+    const sectorAt = (t: number) => prods.find((p) => p.tmin !== undefined && p.tmax !== undefined && t >= p.tmin && t <= p.tmax)?.sector;
+    const hits = (periodic ? measured.map((r) => r.t) : input.times ?? []).flatMap((t) => { const s = sectorAt(t), e = s !== undefined ? engineeringAt(t, s) : undefined; return e ? [{ t, e }] : []; });
+    if (!hits.length) add(1, "engineering", "Engineering data", "pass", "no transit falls in a known engineering interval");
+    else if (!periodic) add(1, "engineering", "Engineering data", "fail", `the dip at BTJD ${hits.map((h) => h.t.toFixed(2)).join(", ")} falls in ${hits[0].e.why}: not science data`);
+    else add(1, "engineering", "Engineering data", "info", `${hits.length} transit${hits.length === 1 ? "" : "s"} fall in engineering data and are left out (${hits[0].e.why})`);
+  }
+  // Raw flux and background: each transit measured again, with the same local baseline, in the
+  // pipeline's flux, its raw aperture flux (SAP) and the SAP with its background estimate regressed out.
+  {
+    const per = measured.flatMap((r) => {
+      const lc = r.part!.lc;
+      if (!lc.sap) return [];
+      const pipe = rawPoints(lc.time, lc.flux, lc.quality), sap = rawPoints(lc.time, lc.sap, lc.quality, lc.bkg);
+      const lp = pipe && localDepth(pipe, r.t, dur), ls = sap && localDepth(sap, r.t, dur);
+      return lp && ls ? [{ r, lc, lp, ls }] : [];
+    });
+    if (!per.length) {
+      add(1, "rawflux", "Raw flux (SAP)", "not-run", "no raw aperture flux (SAP_FLUX) around the transits in the light curves downloaded");
+      add(1, "background", "Background correlation", "not-run", "no raw aperture flux or background estimate around the transits");
+    } else {
+      const pipeC = combineDepths(per.map((x) => x.lp.plain))!, sapC = combineDepths(per.map((x) => x.ls.plain))!;
+      const crowd = median(per.map((x) => x.lc.crowdsap ?? 1));
+      // PDCSAP is corrected for the light of other stars in the aperture, SAP isn't.
+      const expected = pipeC.depth * crowd;
+      const v = `${per.length} transit${per.length === 1 ? "" : "s"}: pipeline flux ${ppt(pipeC.depth)} ± ${r3(pipeC.err * 1000)}, raw SAP ${ppt(sapC.depth)} ± ${r3(sapC.err * 1000)}${crowd < 0.99 ? ` (expected ${ppt(expected)} after SPOC's crowding correction, CROWDSAP ${crowd.toFixed(2)})` : ""}; ${[...new Set(per.map((x) => `s${x.lc.sector} ${x.lc.pipeline}`))].join(", ")}`;
+      if (!(pipeC.depth / pipeC.err >= 3)) add(1, "rawflux", "Raw flux (SAP)", "info", "the dip isn't significant against a local baseline in the pipeline flux either, so the raw flux can't confirm or rule it out", v);
+      else {
+        const c = confirmation(sapC, expected);
+        if (c === "absent") add(1, "rawflux", "Raw flux (SAP)", "fail", "the dip isn't in the raw aperture flux: the pipeline's detrending (PDC / QLP's spline) made it, typically at a momentum dump, a data gap or a scattered-light edge", v);
+        else if (c === "confirmed") add(1, "rawflux", "Raw flux (SAP)", "pass", "the dip is in the raw aperture flux too, not made by the detrending", v);
+        else add(1, "rawflux", "Raw flux (SAP)", "info", "the raw flux is too noisy here to confirm or rule out the dip", v);
+      }
+      const withB = per.filter((x) => x.ls.decorrelated);
+      if (!withB.length) add(1, "background", "Background correlation", "not-run", "no background estimate (SAP_BKG) in the light curves with transits");
+      else {
+        const before = combineDepths(withB.map((x) => x.ls.plain))!, after = combineDepths(withB.map((x) => x.ls.decorrelated!))!;
+        const corr = median(withB.map((x) => Math.abs(x.ls.corr ?? 0)));
+        const drop = (before.depth - after.depth) / Math.hypot(before.err, after.err);
+        const bv = `raw SAP ${ppt(before.depth)} ± ${r3(before.err * 1000)}; with the background regressed out ${ppt(after.depth)} ± ${r3(after.err * 1000)}; flux-background correlation |r| ${corr.toFixed(2)} within ±1.5 d`;
+        if (before.depth / before.err >= 3 && after.depth < 0.35 * before.depth && drop >= 3 && corr >= 0.5) add(1, "background", "Background correlation", "fail", "the dip follows the pipeline's background estimate and is gone once it's regressed out: a background-subtraction error (scattered light, a CCD edge), not the star", bv);
+        else if (before.depth / before.err >= 3 && after.depth < 0.6 * before.depth && drop >= 2) add(1, "background", "Background correlation", "flag", "much of the dip goes with the background estimate", bv);
+        else add(1, "background", "Background correlation", "pass", "the dip doesn't follow the pipeline's background estimate", bv);
+      }
+    }
   }
 
   // Event consistency: one depth for every transit, and the signal not resting on a few outliers.
@@ -832,8 +883,15 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     if (!lone) add(2, "secondary", "Secondary eclipse", "not-run", "the single-event scan didn't run");
     else {
       const o = lone.other, red = o.snr / lone.fred;
-      const v = `deepest other dip: BTJD ${o.t.toFixed(2)}, ${ppt(o.depth)} (${red.toFixed(1)}σ red); limit for an eclipse anywhere in ${lone.days.toFixed(0)} d of data: ${ppt(lone.limit)} (3σ red)`;
-      if (red > lone.fa && o.depth > 1.5 * D) add(2, "secondary", "Secondary eclipse", "fail", `a deeper eclipse at BTJD ${o.t.toFixed(2)} (${ppt(o.depth)}, ${(o.depth / D).toFixed(1)}× this dip): the star eclipses, and this dip is most likely its secondary eclipse`, v);
+      // The other dip must be real before it condemns this one: in the raw flux, and not the
+      // background estimate (a QLP background failure once passed for a 309 ppt "eclipse").
+      const oPart = partAt(primary, o.t, dur), oLc = oPart?.lc;
+      const oSap = oLc?.sap ? rawPoints(oLc.time, oLc.sap, oLc.quality, oLc.bkg) : null;
+      const oLd = oSap ? localDepth(oSap, o.t, dur) : null;
+      const oArtifact = !!oLd && (confirmation(oLd.plain, o.depth) === "absent" || (!!oLd.decorrelated && confirmation(oLd.decorrelated, o.depth) === "absent" && Math.abs(oLd.corr ?? 0) >= 0.5));
+      const v = `deepest other dip: BTJD ${o.t.toFixed(2)}, ${ppt(o.depth)} (${red.toFixed(1)}σ red)${oLd ? `; in raw SAP ${ppt(oLd.plain.depth)} ± ${r3(oLd.plain.err * 1000)}${oLd.decorrelated ? `, background regressed out ${ppt(oLd.decorrelated.depth)}` : ""}` : ""}; limit for an eclipse anywhere in ${lone.days.toFixed(0)} d of data: ${ppt(lone.limit)} (3σ red)`;
+      if (red > lone.fa && o.depth > 0.1 * D && oArtifact) add(2, "secondary", "Secondary eclipse", "info", `the deepest other dip (BTJD ${o.t.toFixed(2)}) isn't in the raw flux once the background is accounted for: an artifact, not an eclipse; nothing else stands out`, v);
+      else if (red > lone.fa && o.depth > 1.5 * D) add(2, "secondary", "Secondary eclipse", "fail", `a deeper eclipse at BTJD ${o.t.toFixed(2)} (${ppt(o.depth)}, ${(o.depth / D).toFixed(1)}× this dip): the star eclipses, and this dip is most likely its secondary eclipse`, v);
       else if (red > lone.fa && o.depth > 0.1 * D) add(2, "secondary", "Secondary eclipse", "flag", `another significant dip at BTJD ${o.t.toFixed(2)} (${Math.round((o.depth / D) * 100)}% of the depth): a secondary eclipse of a binary, or a second transit`, v);
       else add(2, "secondary", "Secondary eclipse", "info", `no other eclipse-like dip deeper than ${ppt(lone.limit)} anywhere in the data (a binary's secondary under ${Math.round((lone.limit / D) * 100)}% of the depth, or one in a gap, isn't excluded)`, v);
     }
@@ -1024,7 +1082,15 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
   const gcone = await gaiaConeP;
   // Stars that could be the source: Gaia within 2.5′ (TIC as the fallback), the target first.
   const tgtTmag = star?.tmag ?? 10;
-  const others: GaiaNeighbour[] = gcone.v ? gcone.v.filter((g) => g.sep > 1.5 || Math.abs(g.tmag - tgtTmag) > 1.5) : [];
+  // The cone's positions are Gaia's (epoch 2016), the target's the TIC's (epoch 2000): a high-proper-
+  // motion target turns up as a "neighbour" a few arcsec from itself. Drop it by its Gaia id and
+  // measure separations from its Gaia position; without an id, the old magnitude-and-distance test.
+  const selfId = gaia.v?.source ?? star?.gaia;
+  const me = selfId ? gcone.v?.find((g) => g.source === selfId) : undefined;
+  const others: GaiaNeighbour[] = gcone.v
+    ? gcone.v.filter((g) => g.source !== selfId).map((g) => (me ? { ...g, sep: separation(g.ra, g.dec, me.ra, me.dec) * 3600 } : g))
+      .filter((g) => me || g.sep > 1.5 || Math.abs(g.tmag - tgtTmag) > 1.5).sort((a, b) => a.sep - b.sep)
+    : [];
   const capableOf = (tmag: number) => { const fr = 10 ** (-0.4 * (tmag - tgtTmag)); return (D * (1 + fr)) / fr <= 1; };
   const pixStars: PixStar[] = [{ id: "target", label: `TIC ${input.tic} (target)`, ra: pos.ra, dec: pos.dec, tmag: tgtTmag },
     ...others.filter((g) => g.sep <= 120 && (capableOf(g.tmag) || g.tmag < tgtTmag + 4)).slice(0, 60).map((g) => ({ id: g.source, label: `Gaia ${g.source} (${g.sep.toFixed(0)}″, T ${g.tmag.toFixed(1)})`, ra: g.ra, dec: g.dec, tmag: g.tmag }))];
@@ -1068,6 +1134,53 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
       }
       pixels = { sector: show.sector, detection: show.detection, ...show.image, verdict };
     }
+  }
+
+  // Our own photometry of the cutout pixels (artifacts.ts: pixelPhotometry): no pipeline in between,
+  // the background per frame and per CCD column. A pipeline's dip that isn't here was made on the way
+  // to its light curve (a column offset, a background error, detrending). And the CCD edge.
+  {
+    const cuts = (await cutoutsP).filter((c) => c.v);
+    // Only the transits the pipeline measured (D is their depth): a predicted epoch in a pipeline gap
+    // may have cutout frames, but nothing to confirm there.
+    const times = (c: NonNullable<(typeof cuts)[number]["v"]>) => measured.map((r) => r.t).filter((t) => t > c.t[0] && t < c.t[c.t.length - 1]);
+    type Dp = { depth: number; err: number; points: number };
+    const per: { sector: number; col: Dp; plain?: Dp; pipe: Dp[] }[] = [];
+    // The pipeline's own dip at the same transits, on the same local baseline: what our photometry should show.
+    const pipeAt = (t: number) => {
+      const r = measured.find((x) => x.t === t), lc = r?.part?.lc;
+      const pts = lc && rawPoints(lc.time, lc.flux, lc.quality);
+      return (pts && localDepth(pts, t, dur)?.plain) || [];
+    };
+    let edge = Infinity;
+    for (const c of cuts) {
+      const ts = times(c.v!);
+      if (!ts.length) continue;
+      const ph = pixelPhotometry(c.v!, pos.ra, pos.dec), ph0 = pixelPhotometry(c.v!, pos.ra, pos.dec, { column: false });
+      if (!ph) continue;
+      edge = Math.min(edge, ph.edge);
+      const col = combineDepths(ts.flatMap((t) => { const d = localDepth(ph, t, dur); return d ? [d.plain] : []; }));
+      const plain = ph0 ? combineDepths(ts.flatMap((t) => { const d = localDepth(ph0, t, dur); return d ? [d.plain] : []; })) : null;
+      if (col) per.push({ sector: c.sector, col, ...(plain ? { plain } : {}), pipe: ts.flatMap(pipeAt) });
+    }
+    if (!per.length) add(3, "pixelphot", "Own pixel photometry", "not-run", cuts.length ? "the cutouts don't cover a transit with enough clean frames around it" : "no TESScut cutout of a sector with a transit");
+    else {
+      const col = combineDepths(per.map((x) => x.col))!, plainAll = per.every((x) => x.plain) ? combineDepths(per.map((x) => x.plain!)) : null;
+      const crowd = median(primary.map((p) => p.lc.crowdsap ?? 0.8));
+      const pipe = combineDepths(per.flatMap((x) => x.pipe));
+      // The pipeline's local depth when it's positive (its error isn't needed: a tight null in the pixels is decisive).
+      const ref = pipe && pipe.depth > 0 ? pipe : { depth: D, err: 0, points: 0 };
+      const expected = ref.depth * crowd;
+      const v = `${per.map((x) => `s${x.sector}`).join(", ")}: ${ppt(col.depth)} ± ${r3(col.err * 1000)} with column-wise background${plainAll ? `, ${ppt(plainAll.depth)} ± ${r3(plainAll.err * 1000)} without` : ""}; pipeline ${ppt(ref.depth)}${ref === pipe ? ` ± ${r3(pipe.err * 1000)} at the same transits` : ""} (expected here ~${ppt(expected)})`;
+      const c = confirmation(col, expected);
+      const columnMade = plainAll && confirmation(plainAll, expected) === "confirmed" && c === "absent";
+      if (!(expected > 0)) add(3, "pixelphot", "Own pixel photometry", "info", "the pipeline shows no dip against a local baseline at these transits, so there is nothing for the pixels to confirm", v);
+      else if (c === "absent") add(3, "pixelphot", "Own pixel photometry", "fail", columnMade ? "the dip is an offset down the star's CCD column: it vanishes once each column's own offset is removed, so it isn't the star (often a column next to a bad one)" : "our own photometry of the pixels shows no dip: the pipeline's light curve made it (background, detrending or a detector artifact)", v);
+      else if (c === "confirmed") add(3, "pixelphot", "Own pixel photometry", "pass", "the dip is in our own photometry of the pixels, with the background removed per column: not a pipeline artifact", v);
+      else add(3, "pixelphot", "Own pixel photometry", "info", "our own photometry of the pixels is too noisy here to confirm or rule out the dip", v);
+    }
+    if (Number.isFinite(edge) && edge <= 3) add(3, "edge", "Detector position", "flag", `the star is ${edge.toFixed(1)} px from the edge of the CCD in a sector with a transit: pipeline backgrounds and photometry go wrong there`, `${edge.toFixed(1)} px from a dead row or column of the cutout`);
+    else if (per.length) add(3, "edge", "Detector position", "pass", "well inside the CCD", Number.isFinite(edge) ? `${edge.toFixed(1)} px from the edge` : "no dead row or column in the cutout");
   }
 
   {
@@ -1125,7 +1238,7 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
   // Unresolved companions: what Gaia can't see is what high-resolution imaging would look for.
   {
     const g = gaia.v, dpc = star?.distance ?? (g?.parallax && g.parallax > 0 ? 1000 / g.parallax : undefined);
-    const close = gcone.v?.filter((x) => x.sep > 0.3 && x.sep < 4 && x.source !== g?.source) ?? [];
+    const close = gcone.v ? others.filter((x) => x.sep > 0.3 && x.sep < 4) : [];
     const imaging = exo.v?.imaging ?? [];
     const v = [g ? `RUWE ${g.ruwe?.toFixed(2) ?? "?"}` : "", close.length ? `${close.length} Gaia source${close.length === 1 ? "" : "s"} within 4″: ${close.map((x) => `${x.sep.toFixed(1)}″ ΔG ${(x.g - (g?.g ?? x.g)).toFixed(1)}`).join(", ")}` : "no Gaia source within 4″", imaging.length ? `${imaging.length} high-resolution image${imaging.length === 1 ? "" : "s"} on ExoFOP` : ""].filter(Boolean).join(" · ");
     const au = (as: number) => (dpc ? ` (${Math.round(as * dpc)} au at ${Math.round(dpc)} pc)` : "");

@@ -18,6 +18,9 @@
 
 # next.js
 /.next/
+
+# deep-survey search worker bundle (scripts/build-search-worker.mjs)
+/.worker/
 /out/
 
 # production

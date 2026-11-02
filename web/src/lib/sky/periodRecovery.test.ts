@@ -102,4 +102,12 @@ describe("the period through repeats", () => {
     expect(fits[0].period).toBeCloseTo(P, 2);
     expect(fits[0].hits).toHaveLength(3);
   });
+  it("finds the true period when every repeat is more than maxN periods away (not 2P)", () => {
+    // A synthetic measure: a dip on every epoch of P from 0, nothing elsewhere. The only repeats are
+    // 600 and 602 periods out, past maxN = 400, so spacing/n alone reaches 2P (n = 300) but not P.
+    const P = 0.94, depth = 0.01, dur = 0.09;
+    const at = (t: number) => { const ph = Math.abs(t / P - Math.round(t / P)) * P; return { depth: ph < dur / 4 ? depth : 0, err: 5e-4, snr: ph < dur / 4 ? 20 : 0, coverage: 1 }; };
+    const fits = bestPeriods(0, [600 * P, 602 * P], depth, 0.5, [-10, 600], at);
+    expect(fits[0].period).toBeCloseTo(P, 4);
+  });
 });

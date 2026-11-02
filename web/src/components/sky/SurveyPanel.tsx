@@ -82,7 +82,7 @@ export default function SurveyPanel({ id, byId, onView, onCite, onClose }: {
               ? `${finished} of ${s.seasons} seasons (${pct}%) · ${s.lightCurves} light curves · ${s.stars} stars · ${dur(elapsed)}${eta ? ` · ~${dur(eta)} left` : ""}${s.seasonsFailed ? ` · ${s.seasonsFailed} failed` : ""}`
               : `Listing every TESS light curve in the field and ranking ${dur(elapsed)}`}
           </div>
-          <div className="mt-0.5 text-[11.5px] text-fg4">r {s.cone.radius}° at RA {s.cone.ra.toFixed(3)}°, Dec {s.cone.dec.toFixed(3)}° · keeps running with this tab closed · {view!.backend === "file" ? "stored on this server's disk" : "stored in SpacetimeDB"}</div>
+          <div className="mt-0.5 text-[11.5px] text-fg4">r {s.cone.radius}° at RA {s.cone.ra.toFixed(3)}°, Dec {s.cone.dec.toFixed(3)}° · keeps running with this tab closed · {view!.backend === "file" ? "stored on this server's disk" : "stored in SpacetimeDB"}{s.usd ? ` · Claude $${s.usd.toFixed(3)}` : ""}{s.sweepId ? " · a tile of a planet sweep" : ""}</div>
           {s.note && <div className="mt-1 text-[12.5px] text-fg3">{s.note}</div>}
 
           <div className="mt-3">

@@ -54,7 +54,7 @@ export function bestPeriods(t1: number, repeats: number[], depth: number, minPer
   const cands = new Set<number>();
   for (const e of repeats) for (let n = 1; Math.abs(e - t1) / n >= minPeriod && n <= maxN; n++) cands.add(Math.abs(e - t1) / n);
   const scored: { period: number; hits: number[]; misses: number }[] = [];
-  for (const P of cands) {
+  const score = (P: number) => {
     const hits: number[] = [];
     let misses = 0;
     for (let k = Math.ceil((span[0] - t1) / P); t1 + k * P <= span[1] && !misses; k++) {
@@ -63,7 +63,18 @@ export function bestPeriods(t1: number, repeats: number[], depth: number, minPer
       if (Math.abs(m.depth - depth) < 3 * Math.hypot(m.err, 0.15 * depth) && m.snr >= 3) hits.push(t);
       else if (depth / m.err >= 3 && m.depth < 0.3 * depth) misses++;
     }
-    if (!misses && hits.length >= 2) scored.push({ period: P, hits, misses });
+    return !misses && hits.length >= 2 ? { period: P, hits, misses } : null;
+  };
+  for (const P of cands) { const s = score(P); if (s) scored.push(s); }
+  // A repeat more than maxN periods away can't give P itself, only a multiple of it (2P when it's
+  // under 2·maxN periods away): every survivor's integer fractions are tried too, and one that hits
+  // more transits without a miss wins. (WASP-18 b, vetted from one transit, came out at 2P.)
+  const top = Math.max(0, ...scored.map((x) => x.hits.length));
+  for (const x of scored.filter((y) => y.hits.length === top).slice(0, 20)) {
+    for (let m = 2; x.period / m >= minPeriod && m <= 50; m++) {
+      const s = score(x.period / m);
+      if (s && s.hits.length > x.hits.length) scored.push(s);
+    }
   }
   const most = Math.max(0, ...scored.map((x) => x.hits.length));
   // Candidates from different repeats land on the same solution with slightly different periods:
