@@ -29,6 +29,8 @@ import {
 import { BTJD, GIANT_RADIUS, knownPlanetsNear, knownTransitAt, periodsMatch, SATURATED_TMAG, toisNear, type KnownSignal } from "./vetting";
 import { isEclipsingType, variablesNear, vsxEntry } from "./vsx";
 import { apertureGrowth, combineDepths, confirmation, engineeringAt, jitterAt, localDepth, pixelPhotometry, rawPoints } from "./artifacts";
+import { simbadTap } from "./simbad";
+import { commonMode, dipCensus, dumpNear, magellanicHost, scatteredLightAt, variabilityAt } from "./followupChecks";
 import { separation } from "./geom";
 import { tierOf, type VetCheck, type VetPixels, type VetEventRow, type VetInput, type VetReport, type VetStage, type VetStatus, type VetStreamEvent } from "./vetShared";
 
@@ -92,6 +94,10 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
   // Gaia DR3 from the ESA archive (VizieR's copy if that fails), every Gaia source within 2.5′, APOGEE.
   const gaiaConeP = settle(gaiaCone(pos.ra, pos.dec, 150, signal));
   const apogeeP = settle(apogeeNear(pos.ra, pos.dec, signal));
+  // SIMBAD's object type: an "EB*" there may be in no catalog the vetter reads (OGLE's LMC binaries;
+  // TIC 404970655 is OGLE LMC-ECL-37031, which VSX and Gaia don't list as an eclipsing binary).
+  const simbadP = settle(simbadTap(`SELECT TOP 5 main_id, otype, DISTANCE(POINT('ICRS', ra, dec), POINT('ICRS', ${pos.ra}, ${pos.dec})) * 3600 AS sep FROM basic WHERE CONTAINS(POINT('ICRS', ra, dec), CIRCLE('ICRS', ${pos.ra}, ${pos.dec}, ${3 / 3600})) = 1 ORDER BY sep`, { timeoutMs: 15_000, signal })
+    .then((t) => { const col = (n: string) => (t.metadata ?? []).findIndex((m) => m.name.toLowerCase() === n); return (t.data ?? []).map((r) => ({ id: String(r[col("main_id")]), otype: String(r[col("otype")]).trim(), sep: Number(r[col("sep")]) })); }));
   const gaiaLookup = (id: string) => gaiaStar(id, signal).catch((e: Error) => gaiaStarVizier(id, signal).catch(() => { throw e; }));
   const [gaia, exo, ctois, eb, vsx, planets, tois, kois] = await Promise.all([
     tic.v?.gaia ? settle(gaiaLookup(tic.v.gaia)) : Promise.resolve({ v: undefined as GaiaStar | undefined, err: tic.err ? "no TIC entry" : "no Gaia id in the TIC" }),
@@ -102,14 +108,24 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
   const star = tic.v;
   // No TIC radius (common for very bright and evolved stars): estimated from Tmag, distance and Teff.
   const Rest = !star?.radius && star?.tmag !== undefined && star.distance && star.teff ? radiusFromLuminosity(star.tmag, star.distance, star.teff) : undefined;
-  const R = star?.radius ?? Rest, M = star?.mass ?? (star?.logg && R ? (10 ** star.logg * (R * 6.957e10) ** 2) / 6.674e-8 / 1.989e33 : undefined);
-  const rho = star?.rho ?? (M && R ? rhoOf(M, R) : undefined);
+  // The TIC's distance (and so its radius) is wrong for stars in the Magellanic Clouds, and its radius
+  // can come from a spectroscopic logg with no parallax behind it: a Cloud member is placed at the
+  // Cloud's distance, and Gaia's FLAME / GSP-Phot radius wins when it disagrees with the TIC's by
+  // more than 50% (TIC 149538842: TIC 0.86 R☉ from RAVE's logg, Gaia 2.4-3.4 R☉; follow-ups 2026-11).
+  const mc = magellanicHost(pos.ra, pos.dec, gaia.v ? { ...gaia.v, teff: gaia.v.ap?.teff } : undefined, star?.teff ?? gaia.v?.ap?.teff);
+  const gR = gaia.v?.ap?.radius, tR = star?.radius ?? Rest;
+  const gaiaWins = !mc && gR !== undefined && gR > 0 && (tR === undefined || gR / tR > 1.5 || tR / gR > 1.5);
+  const Rsrc = mc?.radius ? `at the ${mc.cloud}'s distance, from the luminosity` : gaiaWins ? `Gaia DR3 FLAME/GSP-Phot${star?.radius ? `; the TIC has ${r3(star.radius)} R☉` : ""}` : Rest ? "estimated from Tmag, distance and Teff" : "";
+  const Rnew = !!mc?.radius || gaiaWins;
+  const R = mc?.radius ?? (gaiaWins ? gR : tR);
+  const M = Rnew ? (gaiaWins ? gaia.v?.ap?.mass : undefined) : star?.mass ?? (star?.logg && R ? (10 ** star.logg * (R * 6.957e10) ** 2) / 6.674e-8 / 1.989e33 : undefined);
+  const rho = (Rnew ? undefined : star?.rho) ?? (M && R ? rhoOf(M, R) : undefined);
   const k0 = Math.sqrt(depth0);
   /** Gaia's orbit is at this signal's period and its minimum mass is below the hydrogen-burning limit. */
   const orbitIsCompanion = (o: NonNullable<GaiaStar["orbit"]>) => !!(o.period && o.k1 && M && (periodic ? periodsMatch(input.period!, o.period, 0.01) : false) && minMassFromK(o.k1, o.period, M) < 0.075);
 
   if (star) add(0, "star", "Host star parameters", "info", `TESS Input Catalog v8.2${star.lumclass ? `; luminosity class ${star.lumclass.toLowerCase()}` : ""}`,
-    [star.teff && `Teff ${Math.round(star.teff)} K`, R && `R ${r3(R)} R☉${Rest ? " (estimated from Tmag, distance and Teff)" : ""}`, M && `M ${r3(M)} M☉`, star.logg && `logg ${star.logg.toFixed(2)}`, rho && `ρ ${r3(rho)} ρ☉`, star.tmag !== undefined && `Tmag ${star.tmag.toFixed(2)}`, star.distance && `${Math.round(star.distance)} pc`].filter(Boolean).join(" · "));
+    [star.teff && `Teff ${Math.round(star.teff)} K`, R && `R ${r3(R)} R☉${Rsrc ? ` (${Rsrc})` : ""}`, M && `M ${r3(M)} M☉`, star.logg && `logg ${star.logg.toFixed(2)}`, rho && `ρ ${r3(rho)} ρ☉`, star.tmag !== undefined && `Tmag ${star.tmag.toFixed(2)}`, star.distance && `${Math.round(star.distance)} pc`].filter(Boolean).join(" · "));
   else add(0, "star", "Host star parameters", "not-run", `TIC lookup failed (${tic.err})`);
 
   // Companion radius: a lower limit (grazing transits and diluted light both hide depth).
@@ -127,12 +143,13 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     const why: string[] = [];
     if (star.teff && star.teff > 7500) why.push(`hot (Teff ${Math.round(star.teff)} K): pulsation and fast rotation are likely, and RVs will be hard`);
     // The TIC's luminosity class can call a star with no radius a dwarf from its Teff alone: the radius (or its estimate) decides.
-    const giant = star.lumclass === "GIANT" || (star.logg !== undefined && star.logg < 3.5) || (R !== undefined && R > GIANT_RADIUS);
+    const giant = star.lumclass === "GIANT" || (star.logg !== undefined && star.logg < 3.5) || (R !== undefined && R > GIANT_RADIUS) || (!!mc && mc.absG < -1.5);
     const sizeTxt = R !== undefined ? `R ${r3(R)} R☉${Rest ? ", estimated" : ""}` : `logg ${star.logg?.toFixed(2) ?? "?"}`;
     if (giant) why.push(`${R !== undefined && R > 30 ? "a supergiant or bright giant" : "a giant"} (${sizeTxt}${star.lumclass === "DWARF" ? `; the TIC's "dwarf" class is wrong for a star this size` : ""}): a large star makes any companion big, and a blended eclipse easy`);
     else if ((star.logg !== undefined && star.logg < 3.9) || (R !== undefined && R > 2.5)) why.push(`a subgiant (${sizeTxt}): an evolved, larger star`);
     // A lone dip on a big giant (planets do transit smaller ones): no planet makes it, and giants vary on these time scales.
-    const big = (R !== undefined && R > GIANT_RADIUS) || (star.logg !== undefined && star.logg < 3);
+    if (mc) why.unshift(`in the ${mc.cloud} (parallax consistent with zero, the Cloud's proper motion): M_G ${mc.absG.toFixed(1)} at ${Math.round(mc.distance / 1000)} kpc${mc.radius ? `, R ≈ ${r3(mc.radius)} R☉` : ""}, not the TIC's ${star.distance ? `${Math.round(star.distance)} pc ` : ""}${star.lumclass === "DWARF" ? "dwarf" : "star"}`);
+    const big = (R !== undefined && R > GIANT_RADIUS) || (star.logg !== undefined && star.logg < 3) || (!!mc && mc.absG < -1.5);
     if (big && !periodic) add(0, "host", "Host type", "fail", `${why.join("; ")}; a lone dip on a star this large isn't a planet candidate`);
     else if (why.length) add(0, "host", "Host type", "flag", why.join("; "));
     else add(0, "host", "Host type", "pass", `a main-sequence dwarf${star.teff ? ` (Teff ${Math.round(star.teff)} K)` : ""}`);
@@ -221,8 +238,18 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     if (g?.varClass && /ECL/.test(g.varClass.name)) lines.push(`Gaia DR3's classifier calls the star an eclipsing binary (${g.varClass.name}, score ${g.varClass.score?.toFixed(2)})`);
     const own = vsx.v ? vsxEntry(pos, vsx.v) : undefined;
     if (own) {
-      if (periodic && own.period && isEclipsingType(own.type) && periodsMatch(input.period!, own.period, 0.01)) fail ??= `AAVSO VSX lists the star as ${own.name} (${own.type}, P ${own.period} d): this is its eclipse`;
-      else lines.push(`AAVSO VSX lists the star as ${own.name} (${own.type}${own.period ? `, P ${own.period} d` : ""})`);
+      // VSX's match radius is 15″: name the separation, since a bright neighbour can be the entry
+      // (TIC 277173662's "LMC V3604" is HD 269859, 5.4″ away).
+      const sep = separation(own.ra, own.dec, pos.ra, pos.dec) * 3600;
+      const where = sep > 3 ? `, ${sep.toFixed(1)}″ from the target: possibly a neighbour` : "";
+      if (periodic && own.period && isEclipsingType(own.type) && periodsMatch(input.period!, own.period, 0.01)) fail ??= `AAVSO VSX lists the star as ${own.name} (${own.type}, P ${own.period} d${where}): this is its eclipse`;
+      else lines.push(`AAVSO VSX lists ${sep > 3 ? "a source near the star" : "the star"} as ${own.name} (${own.type}${own.period ? `, P ${own.period} d` : ""}${where})`);
+    }
+    const sim = (await simbadP).v?.find((x) => x.sep <= 2);
+    if (sim && /^(EB\*|El\*|SB\*|EclBin|EllipVar|SB)/.test(sim.otype)) {
+      const eclipsing = /^(EB\*|EclBin)/.test(sim.otype);
+      if (eclipsing && !periodic) fail ??= `SIMBAD lists the star as ${sim.id.replace(/\s+/g, " ")}, an eclipsing binary (${sim.otype}): a lone dip on it is most likely one of its eclipses`;
+      else lines.push(`SIMBAD lists the star as ${sim.id.replace(/\s+/g, " ")} (${sim.otype}${eclipsing ? ", an eclipsing binary" : sim.otype.startsWith("SB") ? ", a spectroscopic binary" : ", an ellipsoidal variable"})`);
     }
     if (periodic) for (const v of vsx.v ?? []) {
       if (v === own || !v.period || !isEclipsingType(v.type) || !periodsMatch(input.period!, v.period, 0.01)) continue;
@@ -230,8 +257,8 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     }
     // A known planet that a binary catalog also lists (the TESS EB catalog has some) is the planet.
     if (known && fail) { lines.push(fail.replace(/: this is its eclipse$/, "")); fail = undefined; }
-    const failed = [exo.err && "ExoFOP", ctois.err && "CTOI table", tois.err && "TOI list", planets.err && "Exoplanet Archive", eb.err && "TESS EB catalog", vsx.err && "AAVSO VSX", kois.err && "KOI table", gaia.err && "Gaia DR3 binary tables"].filter(Boolean);
-    const checked = `${failed.length ? "partly checked" : "checked"}: TOIs, CTOIs, confirmed planets${inKeplerField(pos.ra, pos.dec) ? ", KOIs" : ""}, TESS EB catalog, AAVSO VSX, Gaia DR3 eclipsing binaries and orbits${failed.length ? `; unavailable: ${failed.join(", ")}` : ""}`;
+    const failed = [exo.err && "ExoFOP", ctois.err && "CTOI table", tois.err && "TOI list", planets.err && "Exoplanet Archive", eb.err && "TESS EB catalog", vsx.err && "AAVSO VSX", kois.err && "KOI table", (await simbadP).err && "SIMBAD", gaia.err && "Gaia DR3 binary tables"].filter(Boolean);
+    const checked = `${failed.length ? "partly checked" : "checked"}: TOIs, CTOIs, confirmed planets${inKeplerField(pos.ra, pos.dec) ? ", KOIs" : ""}, TESS EB catalog, AAVSO VSX, SIMBAD object types, Gaia DR3 eclipsing binaries and orbits${failed.length ? `; unavailable: ${failed.join(", ")}` : ""}`;
     if (known) add(0, "known", "Already catalogued", "info", `${known}${lines.length ? `; also: ${lines.join("; ")}` : ""}. Not new: add notes on ExoFOP instead of a new submission`, checked);
     else if (fail) add(0, "known", "Already catalogued", "fail", fail, checked);
     else if (failed.length >= 4) add(0, "known", "Already catalogued", "not-run", `${failed.length} of the catalogs were unavailable: it may already be known`, checked);
@@ -384,22 +411,42 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
   let posterior: PeriodPosterior | null = null;
   if (!periodic && input.times?.length) {
     progress("Period recovery: the transit searched for again in every sector, then in the ZTF archive");
-    const known = [...input.times].sort((a, b) => a - b), t1 = known[0];
     const why: string[] = [], vals: string[] = [];
+    // The dips as the vet's own flux has them. The search's box can sit off a dip and read it far too
+    // shallow, and repeats are matched on depth: TIC 167304394 was found at 3.66 ppt, 1.7 h off a 61 ppt
+    // eclipse that repeats every 22.8 d, and every repeat was thrown out as "much deeper". Each dip is
+    // re-centred (within a duration); when clearly deeper than found, repeats are sought at that depth.
+    let depthR = depth0;
+    const t0s = input.times ?? [];
+    {
+      const re = t0s.map((t) => recentre(primary, t, dur));
+      if (re.every((r) => r && r.snr >= 5)) {
+        const shift = Math.max(...re.map((r, i) => Math.abs(r!.t - t0s[i])));
+        if (shift > dur / 6) { input = { ...input, times: re.map((r) => r!.t) }; setFlat(windowsOf(P, T0, dur)); }
+        const d = median(re.map((r) => r!.t).map((t) => { const p = partAt(primary, t, dur); return (p && measureEvent(p.flat, t, dur, p.cadence, p.beta)?.depth) || 0; }));
+        if (d > 1.5 * depth0) depthR = d;
+        if (shift > dur / 6 || depthR !== depth0) why.push(`the dip${t0s.length === 1 ? " is" : "s are"} ${shift > dur / 6 ? `${(shift * 24).toFixed(1)} h from where the search put ${t0s.length === 1 ? "it" : "them"}` : "where the search put them"}${depthR !== depth0 ? `, and ${ppt(depthR)} deep there (found at ${ppt(depth0)}): repeats are sought at that depth` : ""}`);
+      }
+    }
+    const known = [...(input.times ?? t0s)].sort((a, b) => a - b), t1 = known[0];
     let status: VetStatus = "info";
-    const k = Math.sqrt(depth0);
+    const k = Math.sqrt(depthR);
     // The transit can't be much longer than a central one at P: a floor on the period (eccentric orbits get 1.3x).
     const pFloor = rho ? minPeriodFromDuration(dur / 1.3, rho, k) : 0;
-    const rep0 = findRepeats(primary, known, dur, depth0);
+    const rep0 = findRepeats(primary, known, dur, depthR);
     // A "repeat" that a known planet's or TOI's ephemeris puts a transit at is that object, not this
     // one coming round again (TIC 150098860: TOI-220 b's transit was taken as the second dip of a
     // 2,592 d "duo", with the first dip a pointing-jitter artifact).
-    const ksRep: KnownSignal[] = [...(planets.v ?? []), ...(tois.v ?? [])];
-    const theirs = rep0.events.flatMap((e) => { const m = knownTransitAt({ tic: input.tic, ra: pos.ra, dec: pos.dec }, e.t, dur, ksRep); return m ? [{ e, m }] : []; });
+    // Unless the find is that object's transit itself (WASP-18 b found as one transit): then its repeats
+    // are what recovers the period.
+    const at0 = (t: number, ks: KnownSignal[]) => knownTransitAt({ tic: input.tic, ra: pos.ra, dec: pos.dec }, t, dur, ks);
+    // (Each catalogue entry on its own: a planet is often listed as a TOI too.)
+    const ksRep: KnownSignal[] = [...(planets.v ?? []), ...(tois.v ?? [])].filter((x) => !known.some((t) => at0(t, [x])));
+    const theirs = rep0.events.flatMap((e) => { const m = at0(e.t, ksRep); return m ? [{ e, m }] : []; });
     const rep = { ...rep0, events: rep0.events.filter((e) => !theirs.some((x) => x.e === e)) };
     if (theirs.length) why.push(`left out ${theirs.length} dip${theirs.length === 1 ? "" : "s"} that ${theirs.length === 1 ? "is a transit" : "are transits"} of ${[...new Set(theirs.map((x) => x.m.k.name))].join(", ")} (BTJD ${theirs.map((x) => x.e.t.toFixed(2)).join(", ")}), already catalogued`);
     vals.push(`${primary.length} sector${primary.length === 1 ? "" : "s"} scanned (${rep.days.toFixed(0)} d)${rep.events.length ? `: ${rep.events.slice(0, 4).map((e) => `BTJD ${e.t.toFixed(2)}, ${ppt(e.depth)}, SNR ${e.snr.toFixed(1)}`).join("; ")}` : ""}`);
-    if (rep.events.length) why.push(`found the ${ppt(depth0)} transit ${rep.events.length} more time${rep.events.length === 1 ? "" : "s"} in TESS (BTJD ${rep.events.map((e) => e.t.toFixed(2)).join(", ")}; same depth and duration, above the ${rep.threshold.toFixed(1)}σ false-alarm threshold)`);
+    if (rep.events.length) why.push(`found the ${ppt(depthR)} transit ${rep.events.length} more time${rep.events.length === 1 ? "" : "s"} in TESS (BTJD ${rep.events.map((e) => e.t.toFixed(2)).join(", ")}; same depth and duration, above the ${rep.threshold.toFixed(1)}σ false-alarm threshold)`);
     else if (Number.isFinite(rep.threshold)) why.push(`no repeat of the transit in ${rep.days.toFixed(0)} days of TESS data (nothing of its depth above ${rep.threshold.toFixed(1)}σ)`);
     const z = ztfP ? await ztfP : undefined;
     const gr = groundP ? await groundP : undefined;
@@ -408,7 +455,7 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     const zpts = [...(z?.v ?? []), ...(gr?.v?.pts ?? [])];
     const zs = zpts.length ? ztfSeries(zpts) : null;
     if (z?.err) vals.push(`ZTF unavailable (${z.err.slice(0, 60)})`);
-    else if (!ztfP) vals.push(gMag !== undefined && gMag < 12.5 ? `ZTF not used: the star (G ${gMag.toFixed(1)}) saturates it` : `ZTF not used: ${ppt(depth0)} is too shallow for its ~1-2% points`);
+    else if (!ztfP) vals.push(gMag !== undefined && gMag < 12.5 ? `ZTF not used: the star (G ${gMag.toFixed(1)}) saturates it` : `ZTF not used: ${ppt(depthR)} is too shallow for its ~1-2% points`);
     if (gr?.v?.notes.length) vals.push(gr.v.notes.join("; "));
     else if (gr?.err) vals.push(`ASAS-SN/ATLAS unavailable (${gr.err.slice(0, 60)})`);
     if (zpts.length && !zs) vals.push(`${zl} has too few points on the star`);
@@ -417,19 +464,20 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     // Through the known transit (the second of a duo counts as a repeat): the periods explaining the most dips.
     const repeats = [...known.slice(1), ...[...rep.events].sort((a, b) => b.snr - a.snr).slice(0, 8).map((e) => e.t)];
     const at = (t: number) => { const p = partAt(primary, t, dur); return p ? measureEvent(p.flat, t, dur, p.cadence, p.beta) : null; };
-    const fits = repeats.length ? bestPeriods(t1, repeats, depth0, Math.max(0.5, pFloor), [from, to], at) : [];
+    const fits = repeats.length ? bestPeriods(t1, repeats, depthR, Math.max(0.5, pFloor), [from, to], at) : [];
     const fitTimes = fits[0]?.hits ?? [];
     const others = repeats.filter((t) => !fitTimes.some((h) => Math.abs(h - t) < dur));
     const events = fits.length ? fitTimes : known;
     if (fits.length && others.length) why.push(`${others.length} of the dips don't fit the period (BTJD ${others.slice(0, 4).map((t) => t.toFixed(2)).join(", ")}): other events, or systematics`);
     if (repeats.length && !fits.length) { status = "flag"; why.push("the dips don't fit one period without predicting a transit where TESS saw none: not one transiting body, or the repeats are something else"); }
     if (fits.length) {
-      let aliases = fits.map((f) => f.period);
+      // Periods that predict the same transits across the data (within a duration) are one period.
+      let aliases = fits.map((f) => f.period).filter((p, i, a) => !a.slice(0, i).some((q) => Math.abs(p - q) * ((to - from) / p) < dur / 2));
       if (M && R) aliases = aliases.filter((p) => centralDuration(p, M, R, k) * 1.3 >= dur);
       if (zs && aliases.length > 1) {
         const sc = aliases.map((p) => ztfScore(zs, p, events[0], dur));
-        const det = sc.filter((s) => ztfDetects(s, depth0, aliases.length)).sort((a, b) => b.dchi2 - a.dchi2);
-        const kept = sc.filter((s) => !ztfExcludes(s, depth0));
+        const det = sc.filter((s) => ztfDetects(s, depthR, aliases.length)).sort((a, b) => b.dchi2 - a.dchi2);
+        const kept = sc.filter((s) => !ztfExcludes(s, depthR));
         if (det.length && det.every((s) => s === det[0] || s.dchi2 < det[0].dchi2 - 9)) {
           why.push(`${zl} sees the transit at P ${r3(det[0].period)} d: ${zTxt(det[0])}`);
           aliases = [det[0].period];
@@ -466,7 +514,7 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
       const allowed = grid.map((p) => coverageAllows(p, t1, dur, cov, known));
       let ztfOut = grid.map(() => false);
       if (zs && grid.length) {
-        const zr = ztfSearch(zs, t1, dur, depth0, grid, allowed);
+        const zr = ztfSearch(zs, t1, dur, depthR, grid, allowed);
         ztfOut = zr.excluded;
         if (zr.best) {
           const best = zr.best, distinct = zr.rivals;
@@ -495,13 +543,13 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     if (!periodic && !ztfPeriod) {
       const mp = await missionParts();
       if (mp.length) {
-        const mrep = findRepeats(mp, [], dur, depth0);
+        const mrep = findRepeats(mp, [], dur, depthR);
         vals.push(`Kepler/K2 ${mp.map((m) => m.label).join(", ")}: ${mrep.events.length} dip${mrep.events.length === 1 ? "" : "s"} of this depth and duration${mrep.events.length ? ` (BTJD ${mrep.events.slice(0, 4).map((e) => e.t.toFixed(2)).join(", ")})` : ""}`);
         if (mrep.events.length >= 2) {
           const mAt = (t: number) => { const pt = partAt(mp, t, dur); return pt ? measureEvent(pt.flat, t, dur, pt.cadence, pt.beta) : null; };
           const ts = mrep.events.map((e) => e.t);
           const mSpan: [number, number] = [Math.min(...mp.map((m) => m.raw.t[0])), Math.max(...mp.map((m) => m.raw.t[m.raw.t.length - 1]))];
-          const mf = bestPeriods(ts[0], ts.slice(1), depth0, Math.max(0.5, pFloor), mSpan, mAt);
+          const mf = bestPeriods(ts[0], ts.slice(1), depthR, Math.max(0.5, pFloor), mSpan, mAt);
           if (mf.length === 1) {
             const hits = [...mf[0].hits].sort((a, b) => a - b), PK = mf[0].period;
             // A timed dip is good to about a third of its duration: the period to that over the orbits it spans.
@@ -510,7 +558,7 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
             const missesTess = (Pn: number) => epochs(Pn, t1, from, to).some(({ t }) => {
               if (Math.abs(t - t1) < dur) return false;
               const m = at(t);
-              return !!m && m.coverage >= 0.5 && depth0 - m.depth > 3 * m.err && m.depth < 0.3 * depth0;
+              return !!m && m.coverage >= 0.5 && depthR - m.depth > 3 * m.err && m.depth < 0.3 * depthR;
             });
             const fit: number[] = [];
             for (let n = Math.max(1, Math.floor(gap / (PK + 3 * sigK))); n <= Math.ceil(gap / Math.max(PK - 3 * sigK, 0.1)) && fit.length < 20; n++) {
@@ -683,6 +731,79 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
         else add(1, "background", "Background correlation", "pass", "the dip doesn't follow the pipeline's background estimate", bv);
       }
     }
+  }
+
+  // The star's own light and the detector's state around each dip (followupChecks.ts): what the
+  // follow-ups of the first sweep's tier-C finds checked by hand (candidates-2026-11/*/REPORT.md).
+  {
+    // Every pipeline's raw flux; per sector, the one with the most usable points (a TESS-SPOC light
+    // curve can be all flagged where QLP isn't: TIC 149572699).
+    const rawAll = [...primary, ...alt].flatMap((p) => { const pts = rawPoints(p.lc.time, p.lc.sap ?? p.lc.flux, p.lc.quality); return pts ? [{ p, pts }] : []; });
+    const dips = measured.length ? measured.map((r) => r.t) : input.times ?? [];
+    const near = (x: (typeof rawAll)[number], t: number) => { let k = 0; for (const v of x.pts.t) if (Math.abs(v - t) < 0.5) k++; return k; };
+    const setAt = (t: number) => rawAll.filter((x) => near(x, t) >= 20).sort((a, b) => near(b, t) - near(a, t))[0];
+    const bySector = new Map<number, (typeof rawAll)[number]>();
+    for (const x of rawAll) { const o = bySector.get(x.p.lc.sector); if (!o || x.pts.t.length > o.pts.t.length) bySector.set(x.p.lc.sector, x); }
+    for (const t of dips) { const x = setAt(t); if (x) bySector.set(x.p.lc.sector, x); }
+    const raw = [...bySector.values()];
+    const sapTxt = raw.some((x) => x.p.lc.sap) ? "raw aperture flux (SAP)" : "pipeline flux";
+
+    // Dips and brightenings of the event's size in the raw flux of every sector. A transit makes only
+    // dips; noise, scattered light and stellar variability make both (TIC 382198431: 18 dips and 15
+    // brightenings over 40 sectors). For a periodic signal the other transits are dips too: single and duo only.
+    let cen: ReturnType<typeof dipCensus> = null;
+    if (!periodic) {
+      const c = raw.length ? dipCensus(raw.map((x) => x.pts), dips, dur) : null;
+      cen = c;
+      if (!c || c.sig < 1) add(1, "census", "Dips vs brightenings", "not-run", c ? "the dip isn't significant against a local baseline in the raw flux" : "no raw flux around the dip");
+      else {
+        const v = `the dip ${ppt(c.event.depth)} ± ${r3(c.event.err * 1000)} (${c.sig.toFixed(1)}σ, red noise included) in the ${sapTxt}; elsewhere in ${c.days.toFixed(0)} days of ${raw.length} sector${raw.length === 1 ? "" : "s"}: ${c.dips} other dip${c.dips === 1 ? "" : "s"} and ${c.ups} brightening${c.ups === 1 ? "" : "s"} at least as significant`;
+        if (c.ups >= 3 && c.ups >= 0.5 * c.dips) add(1, "census", "Dips vs brightenings", "fail", `the light curve makes brightenings as significant as this dip about as often as dips (${c.ups} vs ${c.dips}): noise or systematics make events this size in both directions, so one dip means nothing`, v);
+        else if (c.dips >= 3) add(1, "census", "Dips vs brightenings", "flag", `${c.dips} other dips in the raw flux are at least as significant: the event isn't unique (and none is a repeat at its depth)`, v);
+        else add(1, "census", "Dips vs brightenings", "pass", "nothing else in the raw flux, dip or brightening, is as significant", v);
+      }
+    }
+
+    // The star's own variability at each dip: a dip at the bottom of a trough five times deeper than
+    // itself (TIC 149107538: 9 of 11 dips at rotation minima), or beside a brightening (a flare,
+    // TIC 149538842; a quasi-periodic peak, TIC 149155022), is what detrending leaves there.
+    {
+      const at = dips.flatMap((t) => { const x = setAt(t); const v = x && variabilityAt(x.pts, t, dur, D); return v ? [{ t, ...v }] : []; });
+      const hit = at.filter((a) => a.atMinimum || a.brightening);
+      const txt = hit.slice(0, 4).map((a) => `BTJD ${a.t.toFixed(2)}: ${a.atMinimum ? `${(a.minAt - a.t >= 0 ? "+" : "")}${((a.minAt - a.t) * 24).toFixed(0)} h from the minimum of a ${ppt(a.amp)} trough` : ""}${a.atMinimum && a.brightening ? "; " : ""}${a.brightening ? `a ${ppt(a.brightening.excess)} brightening ${((a.brightening.t - a.t) * 24).toFixed(0)} h away` : ""}`).join("; ");
+      const v = `${at.length} dip${at.length === 1 ? "" : "s"} measured in the ${sapTxt}${txt ? `; ${txt}` : ""}`;
+      if (!at.length) add(1, "starvar", "Stellar variability at the dip", "not-run", "too little raw flux around the dips");
+      else if (hit.length >= 2 && hit.length >= (2 / 3) * at.length) add(1, "starvar", "Stellar variability at the dip", "fail", `${hit.length} of ${at.length} dips sit at the bottom of the star's own variability or beside a brightening: a dip tied to the star's light curve, made by detrending it, not a transit`, v);
+      // Beside a brightening and not significant in the raw flux at all: only detrending makes it (TIC 149155022).
+      else if (hit.length && !periodic && cen && cen.sig < 2) add(1, "starvar", "Stellar variability at the dip", "fail", `the dip sits ${hit[0].atMinimum ? `at the bottom of a ${ppt(hit[0].amp)} trough of the star's own variability` : `beside a ${ppt(hit[0].brightening!.excess)} brightening`} and is only ${cen.sig.toFixed(1)}σ in the raw flux against a local baseline: detrending the star's variability made it`, v);
+      else if (hit.length && !periodic) add(1, "starvar", "Stellar variability at the dip", "flag", `the dip sits ${hit[0].atMinimum ? `at the bottom of a ${ppt(hit[0].amp)} trough of the star's own variability` : `beside a ${ppt(hit[0].brightening!.excess)} brightening (a flare, or the star's own variability)`}: detrending around it makes dips like this; model the variability before believing it`, v);
+      else add(1, "starvar", "Stellar variability at the dip", "pass", "the dips don't follow the star's own variability", v);
+    }
+
+    // Scattered light and momentum dumps at each dip.
+    {
+      const hits: string[] = [], dumps: string[] = [];
+      for (const t of dips) {
+        for (const p of [...primary, ...alt].filter((q) => t > q.lc.time[0] && t < q.lc.time[q.lc.time.length - 1])) {
+          const sl = scatteredLightAt(p.lc, t, dur);
+          const spoc = p.lc.pipeline === "SPOC" || p.lc.pipeline === "TESS-SPOC";
+          if (spoc && sl.cadences >= 5 && sl.flagged >= 0.5) hits.push(`BTJD ${t.toFixed(2)}: ${Math.round(sl.flagged * 100)}% of ${p.lc.pipeline} s${p.lc.sector} cadences flagged as scattered light`);
+          else if (sl.rampPct !== undefined && sl.rampPct >= 0.95 && (sl.level ?? 0) >= 3) hits.push(`BTJD ${t.toFixed(2)}: ${p.lc.pipeline} s${p.lc.sector} background steeper than ${Math.round(sl.rampPct * 100)}% of the sector and ${sl.level!.toFixed(0)}σ above its median`);
+          const d = dumpNear(p.lc, t, dur);
+          if (d !== undefined && !periodic) dumps.push(`BTJD ${t.toFixed(2)}: momentum dump at ${d.toFixed(3)} (${p.lc.pipeline} s${p.lc.sector})`);
+        }
+      }
+      const uniq = (xs: string[]) => [...new Set(xs)];
+      // In scattered light and not unique in the raw flux either: the detector's background makes these (TIC 149572699).
+      if (hits.length && hits.length >= dips.length / 2 && !periodic && cen && cen.dips >= 3) add(1, "scattered", "Scattered light", "fail", `the dip falls where scattered light is strong (${uniq(hits).slice(0, 2).join("; ")}), and the raw flux has ${cen.dips} other dips at least as significant: a background artifact, not a transit`);
+      else if (hits.length && hits.length >= dips.length / 2) add(1, "scattered", "Scattered light", "flag", `the dip falls where scattered light is strong: ${uniq(hits).slice(0, 3).join("; ")}. Pipelines misjudge the background there (check our own photometry and the other stars in the pixels)`);
+      else add(1, "scattered", "Scattered light", "pass", "no scattered-light flag or background ramp at the dips");
+      if (dumps.length) add(1, "dump", "Momentum dump", "flag", `a momentum dump falls in or right beside the dip: ${uniq(dumps).slice(0, 3).join("; ")}. The pointing jumps and detrending breaks there`);
+    }
+
+    // A crowded aperture: SPOC's crowding correction divides the dip by the target's share of the light.
+    const crowd = median(primary.map((p) => p.lc.crowdsap ?? 1));
+    if (crowd < 0.2) add(1, "crowded", "Crowded aperture", "flag", `the target is only ${Math.round(crowd * 100)}% of the light in the aperture (CROWDSAP ${crowd.toFixed(3)}): the corrected depth is the raw dip divided by that, so a ${ppt(D * crowd)} wiggle of the blend reads as ${ppt(D)}. Judge the dip in the raw flux`, `CROWDSAP ${crowd.toFixed(3)}`);
   }
 
   // Event consistency: one depth for every transit, and the signal not resting on a few outliers.
@@ -879,9 +1000,20 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     const fred = shift?.fred ?? 1;
     sec.snr /= fred; worst.snr /= fred;
     const v = `phase 0.5: ${Number.isFinite(sec.depth) ? `${ppt(sec.depth)} (${sec.snr.toFixed(1)}σ)` : "no data"}${worst.snr ? `; deepest elsewhere: phase ${worst.ph.toFixed(2)}, ${ppt(worst.depth)} (${worst.snr.toFixed(1)}σ)` : ""}${fred > 1 ? `; σ include red noise (×${fred.toFixed(2)})` : ""}`;
+    // The brightest a planet's occultation can be: all the light it reflects (albedo 1) plus its thermal
+    // glow (no redistribution, zero albedo) in the TESS band, for a planet that blocks D of the star. An
+    // eclipse well above that at > 5σ is a companion with light of its own (TIC 167304394: a 0.66 ppt
+    // secondary on a 22.8 d orbit, where a planet manages ~0.03 ppt). a/R★ from the star's density, or a
+    // dwarf's mass for its radius.
+    const rhoOcc = rho ?? (R && R < 2 && star?.lumclass !== "giant" ? rhoOf(R ** 1.25, R) : undefined);
+    const aR = rhoOcc ? 4.206 * P ** (2 / 3) * rhoOcc ** (1 / 3) : undefined;
+    const planck = (T: number) => 1 / Math.expm1(17_985 / T); // ∝ B at 0.8 µm
+    const occMax = aR && aR > 1.5 && star?.teff ? D * (1 / aR ** 2 + planck(star.teff * (2 / 3) ** 0.25 / Math.sqrt(aR)) / planck(star.teff)) : undefined;
+    const occ = [{ ph: 0.5, snr: sec.snr, depth: sec.depth }, worst].filter((x) => Number.isFinite(x.depth) && x.snr > 5).sort((a, b) => b.depth - a.depth)[0];
     if (!Number.isFinite(sec.depth)) add(2, "secondary", "Secondary eclipse", "not-run", "no data at phase 0.5");
     else if (sec.snr > 3 && sec.depth > 0.1 * D) add(2, "secondary", "Secondary eclipse", "fail", `a ${sec.snr.toFixed(1)}σ eclipse at phase 0.5, ${Math.round((sec.depth / D) * 100)}% of the transit depth: too bright to be a planet's occultation`, v);
     else if (worst.snr > 4 && worst.depth > 1.5 * D && repeatsAt(worst.ph)) add(2, "secondary", "Secondary eclipse", "fail", `a deeper eclipse at phase ${worst.ph.toFixed(2)} (${ppt(worst.depth)}, ${(worst.depth / D).toFixed(1)}× the transit): an eclipsing binary on an eccentric orbit, and this signal is its secondary eclipse`, v);
+    else if (occMax !== undefined && occ && occ.depth > 3 * occMax) add(2, "secondary", "Secondary eclipse", "fail", `a ${occ.snr.toFixed(1)}σ eclipse at phase ${occ.ph.toFixed(2)} (${ppt(occ.depth)}): too bright for a planet's occultation, which at a/R★ ≈ ${aR!.toFixed(0)} would be at most ${ppt(occMax)} (reflected and thermal light): the companion shines, so it's a star`, v);
     else if (worst.snr > 4 && worst.depth > 0.1 * D) add(2, "secondary", "Secondary eclipse", "flag", `a ${worst.snr.toFixed(1)}σ dip at phase ${worst.ph.toFixed(2)}: a secondary eclipse on an eccentric orbit?`, v);
     else add(2, "secondary", "Secondary eclipse", "pass", sec.snr > 3 ? "a shallow occultation at phase 0.5 (under 10% of the depth): consistent with a hot planet's thermal emission" : "no secondary eclipse at phase 0.5 or elsewhere", v);
   } else {
@@ -1193,7 +1325,9 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
     // (apertureGrowth): jitter blurs the PSF, so light leaves the core pixels for the wings and only a
     // small aperture dips.
     const jit = measured.flatMap((r) => { const j = r.part?.lc ? jitterAt(r.part.lc, r.t, dur) : null; return j ? [{ t: r.t, sector: r.sector, ...j }] : []; });
-    const jittery = jit.filter((j) => j.ratio >= 2);
+    // A few of many transits land on jittery stretches by chance (WASP-126 b: 3 of 111): flagged when
+    // the jitter rises in most transits, as an artifact needs it to.
+    const jittery = jit.filter((j) => j.ratio >= 2).length > jit.length / 2 ? jit.filter((j) => j.ratio >= 2) : [];
     const jitTxt = jittery.map((j) => `BTJD ${j.t.toFixed(2)} (s${j.sector}): centroid jitter ${j.ratio.toFixed(1)}× the sector's median${j.dump !== undefined ? `, momentum dump at ${j.dump.toFixed(3)}` : ""}`).join("; ");
     const grow = cuts.flatMap((c) => { const ts = times(c.v!); const g = ts.length ? apertureGrowth(c.v!, pos.ra, pos.dec, ts, dur) : null; return g ? [{ sector: c.sector, ...g }] : []; });
     let shrink = false;
@@ -1202,12 +1336,33 @@ export async function runVetting(input: VetInput, signal: AbortSignal, emit: (e:
       const expL = small.depth * median(grow.map((g) => g.dilution));
       const v = `${grow.map((g) => `s${g.sector}`).join(", ")}: r 1 px (${grow[0].pixels[0]} px) ${ppt(small.depth)} ± ${r3(small.err * 1000)}, r 3 px (${grow[0].pixels[1]} px) ${ppt(large.depth)} ± ${r3(large.err * 1000)}; expected in the large one from the neighbours' dilution ${ppt(expL)}`;
       shrink = small.depth / small.err >= 3 && confirmation(large, expL) === "absent";
-      if (shrink) add(3, "apgrowth", "Aperture growth", "fail", `the dip shrinks as the aperture grows: light moved from the star's core pixels into its wings rather than going missing, as when pointing jitter blurs the PSF${jittery.length ? ` (and the jitter rises in the dip: ${jitTxt})` : ""}`, v);
+      // The other way: a dip that deepens with the aperture is flux missing in proportion to its area,
+      // a background error, not the star (TIC 149572699: 0.55 ppt in the core, 3.8 ppt in 39 px;
+      // TIC 382198431, 149217620 the same).
+      const grows = (large.depth - Math.max(expL, small.depth)) / Math.hypot(large.err, small.err);
+      const deepens = large.depth / large.err >= 3 && large.depth >= 1.8 * Math.max(small.depth, 0);
+      if (deepens && grows >= 3) add(3, "apgrowth", "Aperture growth", "fail", `the dip deepens as the aperture grows (${ppt(small.depth)} → ${ppt(large.depth)}), the opposite of what the neighbours' light would do: flux is missing in proportion to the aperture's area, a background or scattered-light error, not the star dimming`, v);
+      else if (deepens && grows >= 2) add(3, "apgrowth", "Aperture growth", "flag", `the dip deepens as the aperture grows (${ppt(small.depth)} → ${ppt(large.depth)}): part of it looks like a background error`, v);
+      else if (shrink) add(3, "apgrowth", "Aperture growth", "fail", `the dip shrinks as the aperture grows: light moved from the star's core pixels into its wings rather than going missing, as when pointing jitter blurs the PSF${jittery.length ? ` (and the jitter rises in the dip: ${jitTxt})` : ""}`, v);
       else if (small.depth / small.err >= 3 && confirmation(large, expL) === "confirmed") add(3, "apgrowth", "Aperture growth", "pass", "the dip keeps its depth in a bigger aperture: light lost, not moved by a blurred PSF", v);
       else add(3, "apgrowth", "Aperture growth", "info", "too noisy in our own photometry to say whether the dip keeps its depth in a bigger aperture", v);
     }
     if (jittery.length && !shrink) add(1, "pointing", "Pointing jitter", "flag", `the spacecraft's pointing jitters more during the dip: ${jitTxt}. Jitter moves light between pixels; check the dip in a bigger aperture`, `${jit.length} transit${jit.length === 1 ? "" : "s"} with centroids`);
     else if (jit.length && !jittery.length) add(1, "pointing", "Pointing jitter", "pass", "no extra pointing jitter during the dip", jit.map((j) => `BTJD ${j.t.toFixed(2)}: ${j.ratio.toFixed(1)}×`).slice(0, 6).join(", "));
+
+    // The same dip in other stars' light (followupChecks.ts: commonMode): a background error takes
+    // about the same flux from every aperture, whichever star is in it (TIC 149217620 in S63: 23 of
+    // 25 stars on the CCD dipped together, deeper the fainter they were).
+    const cm = cuts.flatMap((c) => { const ts = times(c.v!); const r = ts.length ? commonMode(c.v!, { ...pos, tmag: tgtTmag }, pixStars, ts, dur) : null; return r?.mean ? [{ sector: c.sector, ...r, mean: r.mean }] : []; });
+    if (cm.length) {
+      const own = combineDepths(cm.map((x) => x.own))!, mean = combineDepths(cm.map((x) => x.mean))!;
+      const per = cm.flatMap((x) => x.per), pos2 = per.filter((x) => x.z >= 2).length, neg2 = per.filter((x) => x.z <= -2).length;
+      const v = `${cm.map((x) => `s${x.sector}`).join(", ")}: the target ${ppt(own.depth)} ± ${r3(own.err * 1000)} in a 1 px aperture; ${per.length} other star${per.length === 1 ? "" : "s"} in the cutout give ${ppt(mean.depth)} ± ${r3(mean.err * 1000)} on the target's scale (${pos2} dip at > 2σ, ${neg2} brighten)`;
+      const share = own.depth > 0 ? mean.depth / own.depth : 0;
+      if (mean.depth / mean.err >= 3 && share >= 0.5 && pos2 > neg2) add(3, "commonmode", "Other stars at the same time", "fail", `the other stars in the pixels lose about as much light at the same moment (${Math.round(share * 100)}% of the target's dip): a background or scattered-light error across the detector, not the star`, v);
+      else if (mean.depth / mean.err >= 2 && share >= 0.3 && pos2 > neg2) add(3, "commonmode", "Other stars at the same time", "flag", `the other stars in the pixels dip too (${Math.round(share * 100)}% of the target's dip on its scale): part of the dip is common to the detector`, v);
+      else add(3, "commonmode", "Other stars at the same time", "pass", "the other stars in the pixels don't dip at the same time", v);
+    }
   }
 
   {
@@ -1520,6 +1675,17 @@ function missionPart(c: MissionCurve): MissionPart | null {
   const raw = trimGaps(binSeries(cleanSeries(c.t, c.f, new Float64Array(c.t.length)), 0.5 / 24));
   if (raw.t.length < 50) return null;
   return { label: `${c.mission === "Kepler" ? "Q" : "C"}${c.segment}`, raw, flat: raw, cadence: cadenceOf(raw.t), beta: 1 };
+}
+
+/** The centre within a duration of `t` where a box of that duration reads most significant, and its measure. */
+function recentre(parts: Part[], t: number, duration: number) {
+  let best: (ReturnType<typeof measureEvent> & { t: number }) | null = null;
+  for (let dt = -duration; dt <= duration + 1e-9; dt += duration / 12) {
+    const x = t + dt, p = partAt(parts, x, duration);
+    const m = p ? measureEvent(p.flat, x, duration, p.cadence, p.beta) : null;
+    if (m && m.coverage >= 0.8 && (!best || m.snr > best.snr)) best = { ...m, t: x };
+  }
+  return best;
 }
 
 function partAt<T extends { flat: Series }>(parts: T[], t: number, duration: number) {

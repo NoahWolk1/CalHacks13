@@ -22,8 +22,13 @@ export function findRepeats(parts: { flat: Series; cadence: number; beta?: numbe
   for (const p of parts) {
     const t = p.flat.t;
     if (t.length < 50) continue;
+    // Gap edges (> 0.3 d): detrending bends the flux there, so a "repeat" within 0.15 d of one is
+    // left out (TIC 277173662's S97 "repeat" sat 0.09 d before a 2.6 d gap).
+    const edges: number[] = [t[0], t[t.length - 1]];
+    for (let i = 1; i < t.length; i++) if (t[i] - t[i - 1] > 0.3) edges.push(t[i - 1], t[i]);
+    const nearEdge = (x: number) => edges.some((e) => Math.abs(x - e) < dur / 2 + 0.15);
     for (let x = t[0] + dur / 2; x < t[t.length - 1] - dur / 2; x += step) {
-      if (known.some((k) => Math.abs(x - k) < 1.5 * dur)) continue;
+      if (known.some((k) => Math.abs(x - k) < 1.5 * dur) || nearEdge(x)) continue;
       const m = measureEvent(p.flat, x, dur, p.cadence, p.beta ?? 1);
       if (m && m.coverage >= 0.8) grid.push({ t: x, depth: m.depth, err: m.err, snr: m.snr });
     }

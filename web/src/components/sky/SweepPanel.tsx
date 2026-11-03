@@ -10,6 +10,9 @@ import { forgetVets } from "@/lib/client/savedVets";
 import { TIER_LABEL } from "@/lib/sky/vetShared";
 import { FindCard, Notebook } from "./finds";
 
+/** Under a find: its vetting reason, and its watch for new TESS data once the sweep is done (watchlist.ts). */
+const findDetail = (o: SkyObject) => [o.props.vetted, o.props.watch].filter(Boolean).map(String).join(" · ") || undefined;
+
 /** A find's vetting state, as sweep.ts puts it on the find (props.vet): best tier first. */
 const VET_RANK: Record<string, number> = { A: 0, B: 1, C: 2, vetting: 3, queued: 4, failed: 5, K: 6, X: 7 };
 const VIABLE = new Set(["A", "B", "C"]);
@@ -145,7 +148,7 @@ export default function SweepPanel({ id, onSurvey, onClose }: { id: string; onSu
                 ? <>{viable.length} candidate{viable.length === 1 ? "" : "s"} still viable after vetting, best tier first (A passed every check, B passed with open items, C ambiguous). Candidates for follow-up, not confirmed planets.</>
                 : s.status === "running" ? "Nothing has survived vetting yet: candidates appear here as soon as they pass." : "Nothing new survived vetting in the tiles searched."}
             </div>
-            {viable.length > 0 && <ul className="space-y-1.5">{viable.map((o) => <FindCard key={o.id} o={o} onCite={openFind} detail={o.props.vetted ? String(o.props.vetted) : undefined} />)}</ul>}
+            {viable.length > 0 && <ul className="space-y-1.5">{viable.map((o) => <FindCard key={o.id} o={o} onCite={openFind} detail={findDetail(o)} />)}</ul>}
           </div>
           {[
             { label: `${waiting.length} waiting for vetting`, list: waiting },
@@ -154,7 +157,7 @@ export default function SweepPanel({ id, onSurvey, onClose }: { id: string; onSu
           ].filter((g) => g.list.length).map((g) => (
             <details key={g.label} className="mb-1.5 text-[12px]">
               <summary className="cursor-pointer text-fg3">{g.label}</summary>
-              <ul className="mt-1 space-y-1.5">{g.list.slice(0, 60).map((o) => <FindCard key={o.id} o={o} onCite={openFind} detail={o.props.vetted ? String(o.props.vetted) : undefined} />)}</ul>
+              <ul className="mt-1 space-y-1.5">{g.list.slice(0, 60).map((o) => <FindCard key={o.id} o={o} onCite={openFind} detail={findDetail(o)} />)}</ul>
             </details>
           ))}
 
