@@ -42,11 +42,11 @@ const gaia = (q: string, signal: AbortSignal, timeoutMs?: number) =>
 
 export type GaiaStar = {
   source: string; ruwe?: number; ipdHarmonic?: number; ipdMultiPeak?: number; nss?: number; varFlag?: string;
-  g?: number; bpRp?: number; parallax?: number; pmra?: number; pmdec?: number;
+  g?: number; bpRp?: number; parallax?: number; parallaxErr?: number; pmra?: number; pmdec?: number;
   rv?: { value?: number; err?: number; epochs?: number; pvalue?: number; gof?: number; amplitude?: number; templateTeff?: number };
   vbroad?: number;
   /** FLAME / GSP-Phot. */
-  ap?: { radius?: number; mass?: number; binaryProb?: number; vsini?: number };
+  ap?: { radius?: number; mass?: number; binaryProb?: number; vsini?: number; teff?: number; logg?: number };
   orbit?: { type: string; period?: number; ecc?: number; k1?: number };
   eb?: { period: number; ranking?: number };
   varClass?: { name: string; score?: number };
@@ -55,7 +55,7 @@ export type GaiaStar = {
 /** Gaia DR3 for one source (TIC 8.2 stores DR2 ids: mapped through dr2_neighbourhood when DR3 differs). */
 export async function gaiaStar(sourceId: string, signal: AbortSignal): Promise<GaiaStar> {
   if (!/^\d{6,20}$/.test(sourceId)) throw new Error("no Gaia id");
-  const cols = "source_id, ruwe, ipd_gof_harmonic_amplitude, ipd_frac_multi_peak, non_single_star, phot_variable_flag, phot_g_mean_mag, bp_rp, parallax, pmra, pmdec, radial_velocity, radial_velocity_error, rv_nb_transits, rv_chisq_pvalue, rv_renormalised_gof, rv_amplitude_robust, rv_template_teff, vbroad";
+  const cols = "source_id, ruwe, ipd_gof_harmonic_amplitude, ipd_frac_multi_peak, non_single_star, phot_variable_flag, phot_g_mean_mag, bp_rp, parallax, parallax_error, pmra, pmdec, radial_velocity, radial_velocity_error, rv_nb_transits, rv_chisq_pvalue, rv_renormalised_gof, rv_amplitude_robust, rv_template_teff, vbroad";
   let rows = await gaia(`SELECT ${cols} FROM gaiadr3.gaia_source WHERE source_id = ${sourceId}`, signal);
   if (!rows.length) {
     const m = await gaia(`SELECT TOP 1 dr3_source_id FROM gaiadr3.dr2_neighbourhood WHERE dr2_source_id = ${sourceId} ORDER BY angular_distance`, signal);
@@ -67,7 +67,7 @@ export async function gaiaStar(sourceId: string, signal: AbortSignal): Promise<G
   if (!r) throw new Error("not in Gaia DR3");
   const id = String(r.source_id);
   const [ap, orb, eb, vc] = await Promise.all([
-    gaia(`SELECT radius_flame, mass_flame, radius_gspphot, classprob_dsc_combmod_binarystar, vsini_esphs FROM gaiadr3.astrophysical_parameters WHERE source_id = ${id}`, signal).catch(() => []),
+    gaia(`SELECT radius_flame, mass_flame, radius_gspphot, teff_gspphot, logg_gspphot, teff_esphs, logg_esphs, classprob_dsc_combmod_binarystar, vsini_esphs FROM gaiadr3.astrophysical_parameters WHERE source_id = ${id}`, signal).catch(() => []),
     r.non_single_star ? gaia(`SELECT TOP 3 nss_solution_type, period, eccentricity, semi_amplitude_primary FROM gaiadr3.nss_two_body_orbit WHERE source_id = ${id}`, signal).catch(() => []) : Promise.resolve([]),
     gaia(`SELECT frequency, global_ranking FROM gaiadr3.vari_eclipsing_binary WHERE source_id = ${id}`, signal).catch(() => []),
     gaia(`SELECT best_class_name, best_class_score FROM gaiadr3.vari_classifier_result WHERE source_id = ${id}`, signal).catch(() => []),
@@ -76,10 +76,10 @@ export async function gaiaStar(sourceId: string, signal: AbortSignal): Promise<G
   return {
     source: id, ruwe: num(r.ruwe), ipdHarmonic: num(r.ipd_gof_harmonic_amplitude), ipdMultiPeak: num(r.ipd_frac_multi_peak), nss: num(r.non_single_star),
     varFlag: typeof r.phot_variable_flag === "string" ? r.phot_variable_flag : undefined,
-    g: num(r.phot_g_mean_mag), bpRp: num(r.bp_rp), parallax: num(r.parallax), pmra: num(r.pmra), pmdec: num(r.pmdec),
+    g: num(r.phot_g_mean_mag), bpRp: num(r.bp_rp), parallax: num(r.parallax), parallaxErr: num(r.parallax_error), pmra: num(r.pmra), pmdec: num(r.pmdec),
     ...(num(r.rv_nb_transits) ? { rv: { value: num(r.radial_velocity), err: num(r.radial_velocity_error), epochs: num(r.rv_nb_transits), pvalue: num(r.rv_chisq_pvalue), gof: num(r.rv_renormalised_gof), amplitude: num(r.rv_amplitude_robust), templateTeff: num(r.rv_template_teff) } } : {}),
     vbroad: num(r.vbroad),
-    ...(a ? { ap: { radius: num(a.radius_flame) ?? num(a.radius_gspphot), mass: num(a.mass_flame), binaryProb: num(a.classprob_dsc_combmod_binarystar), vsini: num(a.vsini_esphs) } } : {}),
+    ...(a ? { ap: { radius: num(a.radius_flame) ?? num(a.radius_gspphot), mass: num(a.mass_flame), binaryProb: num(a.classprob_dsc_combmod_binarystar), vsini: num(a.vsini_esphs), teff: num(a.teff_esphs) ?? num(a.teff_gspphot), logg: num(a.logg_esphs) ?? num(a.logg_gspphot) } } : {}),
     ...(o ? { orbit: { type: String(o.nss_solution_type), period: num(o.period), ecc: num(o.eccentricity), k1: num(o.semi_amplitude_primary) } } : {}),
     ...(e && num(e.frequency) ? { eb: { period: 1 / num(e.frequency)!, ranking: num(e.global_ranking) } } : {}),
     ...(v ? { varClass: { name: String(v.best_class_name), score: num(v.best_class_score) } } : {}),
